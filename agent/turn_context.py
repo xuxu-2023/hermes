@@ -112,6 +112,8 @@ class TurnContext:
     should_review_memory: bool = False
     # Context contributed by ``pre_llm_call`` plugins (appended to user message).
     plugin_user_context: str = ""
+    # Optional final response supplied by a ``pre_llm_call`` plugin.
+    plugin_short_circuit_response: Optional[str] = None
     # External-memory prefetch result, reused across loop iterations.
     ext_prefetch_cache: str = ""
 
@@ -430,6 +432,7 @@ def build_turn_context(
 
     # Plugin hook: pre_llm_call (context injected into user message, not system prompt).
     plugin_user_context = ""
+    plugin_short_circuit_response: Optional[str] = None
     try:
         from hermes_cli.plugins import invoke_hook as _invoke_hook
         _pre_results = _invoke_hook(
@@ -446,8 +449,14 @@ def build_turn_context(
         )
         _ctx_parts: list[str] = []
         for r in _pre_results:
-            if isinstance(r, dict) and r.get("context"):
-                _ctx_parts.append(str(r["context"]))
+            if isinstance(r, dict):
+                if r.get("context"):
+                    _ctx_parts.append(str(r["context"]))
+                if (
+                    plugin_short_circuit_response is None
+                    and r.get("short_circuit_response") is not None
+                ):
+                    plugin_short_circuit_response = str(r["short_circuit_response"])
             elif isinstance(r, str) and r.strip():
                 _ctx_parts.append(r)
         if _ctx_parts:
@@ -484,7 +493,11 @@ def build_turn_context(
 
     # External memory provider: prefetch once before the tool loop.
     ext_prefetch_cache = ""
-    if agent._memory_manager:
+    if (
+        agent._memory_manager
+        and not agent._interrupt_requested
+        and plugin_short_circuit_response is None
+    ):
         try:
             _query = original_user_message if isinstance(original_user_message, str) else ""
             ext_prefetch_cache = agent._memory_manager.prefetch_all(_query) or ""
@@ -502,5 +515,6 @@ def build_turn_context(
         current_turn_user_idx=current_turn_user_idx,
         should_review_memory=should_review_memory,
         plugin_user_context=plugin_user_context,
+        plugin_short_circuit_response=plugin_short_circuit_response,
         ext_prefetch_cache=ext_prefetch_cache,
     )
