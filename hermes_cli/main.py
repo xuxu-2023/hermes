@@ -1525,6 +1525,59 @@ def _tui_need_npm_install(root: Path) -> bool:
     return False
 
 
+def _node_deps_need_install(root: Path) -> bool:
+    """True when node_modules is missing or behind package-lock.json.
+
+    Compares ``package-lock.json`` against ``node_modules/.package-lock.json``
+    (npm's hidden lockfile) by content, not mtime — git checkouts and npm
+    rewrites can bump the root lockfile's timestamp even when installed deps
+    already match.  Falls back to mtime comparison if either file is
+    unparseable.  Returns True conservatively when the lockfile or marker is
+    absent.
+
+    Only hoisted packages (paths starting with ``node_modules/``) are compared.
+    Workspace-specific packages (e.g. ``apps/desktop/node_modules/…``) are
+    skipped because ``_update_node_dependencies`` installs with
+    ``--workspaces=false``, which materialises only the hoisted tree.
+    """
+    lock = root / "package-lock.json"
+    if not lock.is_file():
+        return True
+    marker = root / "node_modules" / ".package-lock.json"
+    if not marker.is_file():
+        return True
+
+    try:
+        wanted = json.loads(lock.read_text(encoding="utf-8")).get("packages") or {}
+        installed = json.loads(marker.read_text(encoding="utf-8")).get("packages") or {}
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return lock.stat().st_mtime > marker.stat().st_mtime
+
+    def comparable(pkg: dict) -> dict:
+        return {k: v for k, v in pkg.items() if k not in _NPM_LOCK_RUNTIME_KEYS}
+
+    for name, pkg in wanted.items():
+        if not name:
+            continue
+        if not isinstance(pkg, dict):
+            continue
+        # Skip workspace-specific packages — they live under a workspace path
+        # (e.g. "apps/desktop/node_modules/foo") and are never installed by
+        # the --workspaces=false install used by _update_node_dependencies.
+        if not name.startswith("node_modules/"):
+            continue
+        if name not in installed:
+            if pkg.get("optional") or pkg.get("peer"):
+                continue
+            return True
+        if isinstance(installed[name], dict) and comparable(pkg) != comparable(
+            installed[name]
+        ):
+            return True
+
+    return False
+
+
 _TUI_BUILD_INPUT_DIRS = (
     "src",
     "packages/hermes-ink/src",
@@ -6340,8 +6393,8 @@ def _update_via_zip(args):
             )
         _install_python_dependencies_with_optional_fallback(pip_cmd)
 
-    _update_node_dependencies()
     _build_web_ui(PROJECT_ROOT / "web")
+    _update_node_dependencies()
 
     # Sync skills
     try:
@@ -8076,54 +8129,41 @@ def _update_node_dependencies() -> None:
     if not (PROJECT_ROOT / "package.json").exists():
         return
 
-    # With a single workspace lockfile the root install would cover ALL
-    # workspaces — but apps/desktop pulls in Electron as a devDependency,
-    # and its postinstall downloads a ~200MB binary.  Most users don't
-    # need desktop during `hermes update`, so we install root-only first
-    # then add just the workspaces the CLI/TUI/web build actually requires.
+    if not _node_deps_need_install(PROJECT_ROOT):
+        return
+
+    # --workspaces=false installs only the hoisted tree (root-level
+    # node_modules/) from the lockfile, which includes root deps like
+    # agent-browser (and runs their postinstall scripts) while skipping
+    # workspace-specific packages.  In particular it never resolves
+    # apps/desktop, so Electron's ~200 MB binary postinstall never runs.
     # Desktop deps are installed on demand by the desktop launcher
     # (see _desktop_build_needed).
     print("→ Updating Node.js dependencies...")
-    extra_args = ["--no-fund", "--no-audit", "--progress=false"]
+    install_args = [
+        "--no-fund", "--no-audit", "--progress=false",
+        "--workspaces=false",
+    ]
 
     nixos_env = with_hermes_node_path(_nixos_build_env())
 
-    # Step 1: root install (no workspace recursion).
     # NOTE: capture_output=False here is deliberate (#18840) — optional
     # postinstall scripts (e.g. @askjo/camofox-browser's browser-binary fetch)
     # print download progress, and capturing it makes a long download look
     # hung. The chatty npm-deprecation noise during `hermes update` comes from
     # the *desktop* build, not this step; that one is captured to update.log.
-    root_args = [*extra_args, "--workspaces=false"]
-    root_result = _run_npm_install_deterministic(
+    result = _run_npm_install_deterministic(
         npm,
         PROJECT_ROOT,
-        extra_args=tuple(root_args),
+        extra_args=tuple(install_args),
         capture_output=False,
         env=nixos_env,
     )
-    if root_result.returncode != 0:
-        print("  ⚠ npm install failed in repo root")
-        stderr = (root_result.stderr or "").strip() if root_result.stderr else ""
-        if stderr:
-            print(f"    {stderr.splitlines()[-1]}")
-        return
-
-    # Step 2: install only the workspaces update needs (ui-tui, web).
-    # --workspace selects specific workspaces; the rest (desktop) are skipped.
-    ws_args = [*extra_args, "--workspace", "ui-tui", "--workspace", "web"]
-    ws_result = _run_npm_install_deterministic(
-        npm,
-        PROJECT_ROOT,
-        extra_args=tuple(ws_args),
-        capture_output=False,
-        env=nixos_env,
-    )
-    if ws_result.returncode == 0:
-        print("  ✓ repo root + ui-tui, web workspaces (desktop skipped)")
+    if result.returncode == 0:
+        print("  ✓ root node_modules installed (desktop skipped)")
     else:
-        print("  ⚠ npm workspace install failed")
-        stderr = (ws_result.stderr or "").strip() if ws_result.stderr else ""
+        print("  ⚠ npm install failed")
+        stderr = (result.stderr or "").strip() if result.stderr else ""
         if stderr:
             print(f"    {stderr.splitlines()[-1]}")
 
@@ -9648,8 +9688,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         _refresh_active_lazy_features()
 
-        _update_node_dependencies()
         _build_web_ui(PROJECT_ROOT / "web")
+        _update_node_dependencies()
 
         # Rebuild the desktop app if the source tree changed since the last
         # build.  ``hermes desktop --build-only`` uses the content-hash stamp
