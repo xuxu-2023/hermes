@@ -17370,7 +17370,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 try:
                     from gateway.approval_delegation import (
                         is_delegation_enabled, is_admin_user, get_admins,
-                        register_delegation,
+                        register_delegation, clear_delegation,
                     )
                     if is_delegation_enabled():
                         _src_plat = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
@@ -17419,7 +17419,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                                 chat_id=_admin_chat_id,
                                                 command=cmd,
                                                 session_key=_approval_session_key,
-                                                description=f"[Delegation] {_user_name} ({_src_plat}): {desc}",
+                                                description=f"[Delegation] {_user_name} ({_src_plat}): {desc} | {cmd[:50]}",
                                             ),
                                             _loop_for_step,
                                             logger=logger,
@@ -17475,6 +17475,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     )
                                     return  # Successfully sent to admin
                                 else:
+                                    # Clean up the delegation entry for this failed admin
+                                    clear_delegation(_admin["platform"], _admin_chat_id, session_key=_approval_session_key)
                                     logger.warning("[approval-delegation] Failed to send to admin %s:%s", _admin["platform"], _admin_chat_id)
                                     continue  # Try next admin
 
