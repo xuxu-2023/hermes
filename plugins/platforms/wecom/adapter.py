@@ -193,8 +193,8 @@ class WeComAdapter(BasePlatformAdapter):
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
 
         # Approval delegation: track in-flight template_card approvals.
-        # Maps task_id → (session_key, monotonic_timestamp). Entries
-        # auto-expire after _APPROVAL_TASK_TTL seconds.
+        # Maps task_id → (session_key, admin_chat_id, monotonic_timestamp).
+        # Entries auto-expire after _APPROVAL_TASK_TTL seconds.
         self._approval_tasks: Dict[str, tuple] = {}
         self._APPROVAL_TASK_TTL: float = 600.0
         self._device_id = uuid.uuid4().hex
@@ -499,7 +499,7 @@ class WeComAdapter(BasePlatformAdapter):
         now = time.monotonic()
         cutoff = now - self._APPROVAL_TASK_TTL
         expired = [
-            k for k, (_, ts) in self._approval_tasks.items() if ts < cutoff
+            k for k, (*_, ts) in self._approval_tasks.items() if ts < cutoff
         ]
         for k in expired:
             self._approval_tasks.pop(k, None)
@@ -529,7 +529,7 @@ class WeComAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="chat_id is required")
 
         task_id = self._new_req_id("approval")
-        self._approval_tasks[task_id] = (session_key, time.monotonic())
+        self._approval_tasks[task_id] = (session_key, chat_id, time.monotonic())
         self._expire_approval_tasks()
 
         # WeCom template_card field limits:
@@ -794,14 +794,27 @@ class WeComAdapter(BasePlatformAdapter):
             self._approval_tasks.pop(task_id, None)
             return
 
-        # Clean up the task mapping
-        self._approval_tasks.pop(task_id, None)
-
         # Extract sender info
         sender = body.get("from") if isinstance(body.get("from"), dict) else {}
         sender_id = str(sender.get("userid") or "").strip()
         chat_id = str(body.get("chatid") or sender_id).strip()
         is_group = str(body.get("chattype") or "").lower() == "group"
+
+        # Validate: button click must come from the expected admin chat.
+        # Prevents forwarded cards from being approved by unauthorized users.
+        stored = self._approval_tasks.get(task_id)
+        if stored:
+            _, expected_chat_id, _ = stored
+            if expected_chat_id and chat_id != expected_chat_id:
+                logger.warning(
+                    "[WeCom] Unauthorized approval click: "
+                    "expected chat %s, got %s (user=%s, key=%s)",
+                    expected_chat_id, chat_id, sender_id, event_key,
+                )
+                return  # Do NOT pop — let the real admin still approve
+
+        # Clean up the task mapping
+        self._approval_tasks.pop(task_id, None)
 
         # Synthesise a text command that flows through the normal
         # /approve /deny pipeline
