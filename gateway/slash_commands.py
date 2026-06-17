@@ -4209,6 +4209,83 @@ class GatewaySlashCommandsMixin:
         source = event.source
         session_key = self._session_key_for_source(source)
 
+        # Check if this is a delegated approval
+        try:
+            from gateway.approval_delegation import resolve_delegation, clear_delegation
+            _src_plat = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
+            _src_chat_id = str(source.chat_id or "")
+            _delegation = resolve_delegation(_src_plat, _src_chat_id)
+
+            if _delegation is not None:
+                from tools.approval import resolve_gateway_approval, has_blocking_approval
+
+                target_sk = _delegation["session_key"]
+
+                # Clean stale delegations
+                while _delegation is not None and not has_blocking_approval(target_sk):
+                    clear_delegation(_src_plat, _src_chat_id)
+                    _delegation = resolve_delegation(_src_plat, _src_chat_id)
+
+                if _delegation is None:
+                    return "This approval request has expired."
+
+                # Parse args for choice (once/session/always)
+                args_str = event.get_command_args() if hasattr(event, 'get_command_args') else ""
+                args = args_str.strip().lower().split() if args_str else []
+                resolve_all = "all" in args
+                remaining = [a for a in args if a != "all"]
+                if any(a in {"always", "permanent", "permanently"} for a in remaining):
+                    choice = "always"
+                elif any(a in {"session", "ses"} for a in remaining):
+                    choice = "session"
+                else:
+                    choice = "once"
+
+                count = resolve_gateway_approval(target_sk, choice, resolve_all=resolve_all)
+                clear_delegation(_src_plat, _src_chat_id)
+
+                if not count:
+                    return "This approval request has expired."
+
+                # Notify original user
+                user_platform = _delegation.get("user_platform", "")
+                user_chat_id = _delegation.get("user_chat_id", "")
+                user_chat_meta = _delegation.get("user_chat_meta")
+
+                if user_chat_id and user_platform:
+                    from gateway.config import Platform as _Plat
+                    _user_plat_enum = None
+                    try:
+                        _user_plat_enum = _Plat(user_platform)
+                    except (ValueError, KeyError):
+                        pass
+                    _user_adapter = self.adapters.get(_user_plat_enum) if _user_plat_enum else None
+                    if _user_adapter:
+                        try:
+                            from agent.async_utils import safe_schedule_threadsafe
+                            _notify_fut = safe_schedule_threadsafe(
+                                _user_adapter.send(
+                                    user_chat_id,
+                                    "✅ Admin approved. Executing...",
+                                    metadata=user_chat_meta,
+                                ),
+                                asyncio.get_running_loop(),
+                                logger=logger,
+                                log_message="Delegation user notify error",
+                            )
+                            if _notify_fut is not None:
+                                _notify_fut.result(timeout=15)
+                        except Exception:
+                            pass
+
+                logger.info(
+                    "Admin resolved delegated approval for session %s (%s)",
+                    target_sk[:16], choice,
+                )
+                return f"Approved ({choice})."
+        except Exception as _deleg_err:
+            logger.debug("[approval-delegation] Delegation check failed: %s", _deleg_err)
+
         from tools.approval import (
             resolve_gateway_approval, has_blocking_approval,
         )
@@ -4254,6 +4331,74 @@ class GatewaySlashCommandsMixin:
         """
         source = event.source
         session_key = self._session_key_for_source(source)
+
+        # Check if this is a delegated approval
+        try:
+            from gateway.approval_delegation import resolve_delegation, clear_delegation
+            _src_plat = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
+            _src_chat_id = str(source.chat_id or "")
+            _delegation = resolve_delegation(_src_plat, _src_chat_id)
+
+            if _delegation is not None:
+                from tools.approval import resolve_gateway_approval, has_blocking_approval
+
+                target_sk = _delegation["session_key"]
+
+                # Clean stale delegations
+                while _delegation is not None and not has_blocking_approval(target_sk):
+                    clear_delegation(_src_plat, _src_chat_id)
+                    _delegation = resolve_delegation(_src_plat, _src_chat_id)
+
+                if _delegation is None:
+                    return "This approval request has expired."
+
+                choice = "deny"
+                resolve_all = False
+
+                count = resolve_gateway_approval(target_sk, choice, resolve_all=resolve_all)
+                clear_delegation(_src_plat, _src_chat_id)
+
+                if not count:
+                    return "This approval request has expired."
+
+                # Notify original user
+                user_platform = _delegation.get("user_platform", "")
+                user_chat_id = _delegation.get("user_chat_id", "")
+                user_chat_meta = _delegation.get("user_chat_meta")
+
+                if user_chat_id and user_platform:
+                    from gateway.config import Platform as _Plat
+                    _user_plat_enum = None
+                    try:
+                        _user_plat_enum = _Plat(user_platform)
+                    except (ValueError, KeyError):
+                        pass
+                    _user_adapter = self.adapters.get(_user_plat_enum) if _user_plat_enum else None
+                    if _user_adapter:
+                        try:
+                            from agent.async_utils import safe_schedule_threadsafe
+                            _notify_fut = safe_schedule_threadsafe(
+                                _user_adapter.send(
+                                    user_chat_id,
+                                    "❌ Admin denied the operation.",
+                                    metadata=user_chat_meta,
+                                ),
+                                asyncio.get_running_loop(),
+                                logger=logger,
+                                log_message="Delegation user notify error",
+                            )
+                            if _notify_fut is not None:
+                                _notify_fut.result(timeout=15)
+                        except Exception:
+                            pass
+
+                logger.info(
+                    "Admin resolved delegated approval for session %s (%s)",
+                    target_sk[:16], choice,
+                )
+                return f"Denied ({choice})."
+        except Exception as _deleg_err:
+            logger.debug("[approval-delegation] Delegation check failed: %s", _deleg_err)
 
         from tools.approval import (
             resolve_gateway_approval, has_blocking_approval,

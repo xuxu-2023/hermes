@@ -62,6 +62,20 @@ gateway:
     always_singular:       "✅ 指令已批准（永久允許該模式）。代理正在恢復…"
     always_plural:         "✅ 指令已批准（永久允許該模式）（{count} 條指令）。代理正在恢復…"
 
+
+  approval_delegation:
+    header: 🔐 Approval Delegation — Dangerous command requires admin approval
+    user_label: 'User: {user} (from {platform})'
+    reason_label: 'Reason: {reason}'
+    reply_hint: Reply /approve to approve | /deny to reject
+    redirected: '[approval-delegation] Redirected approval to admin {platform}:{chat_id}'
+    admin_approved: ✅ Admin approved. Executing...
+    admin_denied: ❌ Admin denied the operation.
+    expired: This approval request has expired.
+    resolved_approved: Approved ({choice}).
+    resolved_denied: Denied ({choice}).
+
+
   background:
     usage:                 "用法：/background <提示>\n範例：/background 摘要今天 HN 上的熱門故事\n\n在獨立工作階段中執行該提示。你可以繼續聊天 — 完成後結果將顯示於此。"
     started:               "🔄 背景任務已啟動：「{preview}」\n任務 ID：{task_id}\n你可以繼續聊天 — 完成後結果將顯示於此。"
