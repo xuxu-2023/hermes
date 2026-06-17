@@ -13,6 +13,14 @@ This module provides:
 
 No monkey-patching — integration is via the standard approval flow in
 ``tools/approval.py`` and ``gateway/run.py``.
+
+.. note::
+
+    Delegation state is held **in-process** (module-level dict).  In a
+    multi-worker gateway deployment each worker maintains its own map, so
+    a delegation registered in worker A is not visible to worker B.
+    This is acceptable for the current single-worker gateway; horizontal
+    scaling would require a shared store (e.g. Redis).
 """
 
 import logging
@@ -179,7 +187,7 @@ def resolve_delegation(platform: str, chat_id: str) -> Optional[Dict[str, Any]]:
         if not sessions:
             _delegation_map.pop(key, None)
             return None
-        # Return the most recent entry
+        # Return the most recent entry (safe: empty-sessions guard above)
         return max(sessions.values(), key=lambda e: e["created_at"])
 
 
