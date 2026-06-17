@@ -545,13 +545,17 @@ class WeComAdapter(BasePlatformAdapter):
             _source_desc = _t("gateway.approval_delegation.card_source")
             _card_title = _t("gateway.approval_delegation.card_header")
             _cmd_label = _t("gateway.approval_delegation.card_command")
-            _btn_approve = _t("gateway.approval_delegation.btn_approve")
+            _btn_once = _t("gateway.approval_delegation.btn_allow_once")
+            _btn_session = _t("gateway.approval_delegation.btn_session")
+            _btn_always = _t("gateway.approval_delegation.btn_always")
             _btn_deny = _t("gateway.approval_delegation.btn_deny")
         except Exception:
             _source_desc = "审批委派"
             _card_title = "🔐 审批委派 · 危险命令"
             _cmd_label = "命令预览"
-            _btn_approve = "✅ 批准"
+            _btn_once = "✅ 允许一次"
+            _btn_session = "✅ 本次会话"
+            _btn_always = "✅ 始终允许"
             _btn_deny = "❌ 拒绝"
 
         try:
@@ -576,7 +580,9 @@ class WeComAdapter(BasePlatformAdapter):
                         ],
                         "task_id": task_id,
                         "button_list": [
-                            {"text": _btn_approve, "style": 1, "key": "approve"},
+                            {"text": _btn_once, "style": 1, "key": "approve"},
+                            {"text": _btn_session, "style": 1, "key": "approve_session"},
+                            {"text": _btn_always, "style": 1, "key": "approve_always"},
                             {"text": _btn_deny, "style": 2, "key": "deny"},
                         ],
                     },
@@ -786,7 +792,7 @@ class WeComAdapter(BasePlatformAdapter):
         event_key = str(card_event.get("event_key") or "").strip()
         task_id = str(card_event.get("task_id") or "").strip()
 
-        if event_key not in ("approve", "deny"):
+        if event_key not in ("approve", "approve_session", "approve_always", "deny"):
             logger.warning(
                 "[WeCom] Unknown template_card event_key=%s, "
                 "cleaning up task_id=%s",
@@ -826,7 +832,13 @@ class WeComAdapter(BasePlatformAdapter):
 
         # Synthesise a text command that flows through the normal
         # /approve /deny pipeline
-        synthetic_text = f"/{event_key}"
+        _cmd_map = {
+            "approve": "/approve",
+            "approve_session": "/approve session",
+            "approve_always": "/approve always",
+            "deny": "/deny",
+        }
+        synthetic_text = _cmd_map.get(event_key, f"/{event_key}")
         logger.info(
             "[WeCom] template_card button clicked: "
             "key=%s by %s in chat %s",
