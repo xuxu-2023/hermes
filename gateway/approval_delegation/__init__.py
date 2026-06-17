@@ -18,7 +18,6 @@ No monkey-patching — integration is via the standard approval flow in
 import logging
 import threading
 import time
-from collections import deque
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -107,20 +106,17 @@ def is_admin_user(platform: str, user_id: str) -> bool:
     )
 
 
-def get_first_admin() -> Optional[Dict]:
-    """Return the first admin entry, or None if no admins configured."""
-    admins = get_admins()
-    return admins[0] if admins else None
-
-
 # ── Delegation state ────────────────────────────────────────────────────
 #
 # When an approval is delegated, we store a mapping:
-#   admin_chat_key → delegation entry
+#   admin_chat_key → {session_key → delegation entry}
 # so that when the admin sends /approve or /deny, we can resolve the
-# original session's pending approval.
+# original session's pending approval.  Multiple concurrent delegations
+# to the same admin are supported (each session_key gets its own entry).
+#
+# The admin_chat_key format is "platform:chat_id".
 
-_delegation_map: Dict[str, Dict[str, Any]] = {}
+_delegation_map: Dict[str, Dict[str, Dict[str, Any]]] = {}
 _delegation_lock = threading.Lock()
 _DELEGATION_TTL = 600  # 10 minutes
 
@@ -143,7 +139,8 @@ def register_delegation(
 ) -> None:
     """Register a pending delegation: admin_chat → original session.
 
-    Called when an approval is redirected to an admin.
+    Called when an approval is redirected to an admin.  Supports multiple
+    concurrent delegations to the same admin (keyed by session_key).
     """
     key = _admin_chat_key(admin_platform, admin_chat_id)
     entry = {
@@ -156,7 +153,7 @@ def register_delegation(
         "created_at": time.monotonic(),
     }
     with _delegation_lock:
-        _delegation_map[key] = entry
+        _delegation_map.setdefault(key, {})[session_key] = entry
     logger.info(
         "[approval-delegation] Registered: admin=%s → session=%s cmd=%s",
         key, session_key[:16], command[:60],
@@ -166,26 +163,60 @@ def register_delegation(
 def resolve_delegation(platform: str, chat_id: str) -> Optional[Dict[str, Any]]:
     """Look up a pending delegation for the given admin chat.
 
-    Returns the delegation entry dict, or None if no pending delegation.
-    Automatically prunes stale entries.
+    Returns the most recent delegation entry dict, or None if no pending
+    delegation.  Automatically prunes stale entries.
     """
     key = _admin_chat_key(platform, chat_id)
+    now = time.monotonic()
     with _delegation_lock:
-        entry = _delegation_map.get(key)
+        sessions = _delegation_map.get(key)
+        if not sessions:
+            return None
+        # Prune stale entries and find the most recent
+        stale = [sk for sk, e in sessions.items() if now - e["created_at"] > _DELEGATION_TTL]
+        for sk in stale:
+            del sessions[sk]
+        if not sessions:
+            _delegation_map.pop(key, None)
+            return None
+        # Return the most recent entry
+        return max(sessions.values(), key=lambda e: e["created_at"])
+
+
+def resolve_delegation_for_session(platform: str, chat_id: str, session_key: str) -> Optional[Dict[str, Any]]:
+    """Look up a specific delegation entry by admin chat + session_key."""
+    key = _admin_chat_key(platform, chat_id)
+    with _delegation_lock:
+        sessions = _delegation_map.get(key)
+        if not sessions:
+            return None
+        entry = sessions.get(session_key)
         if entry is None:
             return None
-        # Check TTL
         if time.monotonic() - entry["created_at"] > _DELEGATION_TTL:
-            del _delegation_map[key]
+            del sessions[session_key]
+            if not sessions:
+                _delegation_map.pop(key, None)
             return None
         return entry
 
 
-def clear_delegation(platform: str, chat_id: str) -> None:
-    """Remove a delegation entry after it's been resolved."""
+def clear_delegation(platform: str, chat_id: str, session_key: Optional[str] = None) -> None:
+    """Remove a delegation entry after it's been resolved.
+
+    If session_key is given, only that entry is removed.  Otherwise all
+    entries for the admin chat are removed.
+    """
     key = _admin_chat_key(platform, chat_id)
     with _delegation_lock:
-        _delegation_map.pop(key, None)
+        if session_key:
+            sessions = _delegation_map.get(key)
+            if sessions:
+                sessions.pop(session_key, None)
+                if not sessions:
+                    _delegation_map.pop(key, None)
+        else:
+            _delegation_map.pop(key, None)
 
 
 def clear_all_delegations() -> None:

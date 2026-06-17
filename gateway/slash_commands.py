@@ -4223,11 +4223,17 @@ class GatewaySlashCommandsMixin:
 
                 # Clean stale delegations
                 while _delegation is not None and not has_blocking_approval(target_sk):
-                    clear_delegation(_src_plat, _src_chat_id)
+                    clear_delegation(_src_plat, _src_chat_id, session_key=target_sk)
                     _delegation = resolve_delegation(_src_plat, _src_chat_id)
+                    if _delegation:
+                        target_sk = _delegation["session_key"]
 
                 if _delegation is None:
-                    return "This approval request has expired."
+                    try:
+                        from agent.i18n import t as _t
+                        return _t("gateway.approval_delegation.expired")
+                    except Exception:
+                        return "This approval request has expired."
 
                 # Parse args for choice (once/session/always)
                 args_str = event.get_command_args() if hasattr(event, 'get_command_args') else ""
@@ -4242,12 +4248,16 @@ class GatewaySlashCommandsMixin:
                     choice = "once"
 
                 count = resolve_gateway_approval(target_sk, choice, resolve_all=resolve_all)
-                clear_delegation(_src_plat, _src_chat_id)
+                clear_delegation(_src_plat, _src_chat_id, session_key=target_sk)
 
                 if not count:
-                    return "This approval request has expired."
+                    try:
+                        from agent.i18n import t as _t
+                        return _t("gateway.approval_delegation.expired")
+                    except Exception:
+                        return "This approval request has expired."
 
-                # Notify original user
+                # Notify original user (cross-platform)
                 user_platform = _delegation.get("user_platform", "")
                 user_chat_id = _delegation.get("user_chat_id", "")
                 user_chat_meta = _delegation.get("user_chat_meta")
@@ -4263,10 +4273,15 @@ class GatewaySlashCommandsMixin:
                     if _user_adapter:
                         try:
                             from agent.async_utils import safe_schedule_threadsafe
+                            try:
+                                from agent.i18n import t as _t
+                                _notify_msg = _t("gateway.approval_delegation.admin_approved")
+                            except Exception:
+                                _notify_msg = "✅ Admin approved. Executing..."
                             _notify_fut = safe_schedule_threadsafe(
                                 _user_adapter.send(
                                     user_chat_id,
-                                    "✅ Admin approved. Executing...",
+                                    _notify_msg,
                                     metadata=user_chat_meta,
                                 ),
                                 asyncio.get_running_loop(),
@@ -4282,7 +4297,11 @@ class GatewaySlashCommandsMixin:
                     "Admin resolved delegated approval for session %s (%s)",
                     target_sk[:16], choice,
                 )
-                return f"Approved ({choice})."
+                try:
+                    from agent.i18n import t as _t
+                    return _t("gateway.approval_delegation.resolved_approved", choice=choice)
+                except Exception:
+                    return f"Approved ({choice})."
         except Exception as _deleg_err:
             logger.debug("[approval-delegation] Delegation check failed: %s", _deleg_err)
 
@@ -4346,22 +4365,32 @@ class GatewaySlashCommandsMixin:
 
                 # Clean stale delegations
                 while _delegation is not None and not has_blocking_approval(target_sk):
-                    clear_delegation(_src_plat, _src_chat_id)
+                    clear_delegation(_src_plat, _src_chat_id, session_key=target_sk)
                     _delegation = resolve_delegation(_src_plat, _src_chat_id)
+                    if _delegation:
+                        target_sk = _delegation["session_key"]
 
                 if _delegation is None:
-                    return "This approval request has expired."
+                    try:
+                        from agent.i18n import t as _t
+                        return _t("gateway.approval_delegation.expired")
+                    except Exception:
+                        return "This approval request has expired."
 
                 choice = "deny"
                 resolve_all = False
 
                 count = resolve_gateway_approval(target_sk, choice, resolve_all=resolve_all)
-                clear_delegation(_src_plat, _src_chat_id)
+                clear_delegation(_src_plat, _src_chat_id, session_key=target_sk)
 
                 if not count:
-                    return "This approval request has expired."
+                    try:
+                        from agent.i18n import t as _t
+                        return _t("gateway.approval_delegation.expired")
+                    except Exception:
+                        return "This approval request has expired."
 
-                # Notify original user
+                # Notify original user (cross-platform)
                 user_platform = _delegation.get("user_platform", "")
                 user_chat_id = _delegation.get("user_chat_id", "")
                 user_chat_meta = _delegation.get("user_chat_meta")
@@ -4377,10 +4406,15 @@ class GatewaySlashCommandsMixin:
                     if _user_adapter:
                         try:
                             from agent.async_utils import safe_schedule_threadsafe
+                            try:
+                                from agent.i18n import t as _t
+                                _notify_msg = _t("gateway.approval_delegation.admin_denied")
+                            except Exception:
+                                _notify_msg = "❌ Admin denied the operation."
                             _notify_fut = safe_schedule_threadsafe(
                                 _user_adapter.send(
                                     user_chat_id,
-                                    "❌ Admin denied the operation.",
+                                    _notify_msg,
                                     metadata=user_chat_meta,
                                 ),
                                 asyncio.get_running_loop(),
@@ -4396,7 +4430,11 @@ class GatewaySlashCommandsMixin:
                     "Admin resolved delegated approval for session %s (%s)",
                     target_sk[:16], choice,
                 )
-                return f"Denied ({choice})."
+                try:
+                    from agent.i18n import t as _t
+                    return _t("gateway.approval_delegation.resolved_denied", choice=choice)
+                except Exception:
+                    return f"Denied ({choice})."
         except Exception as _deleg_err:
             logger.debug("[approval-delegation] Delegation check failed: %s", _deleg_err)
 
