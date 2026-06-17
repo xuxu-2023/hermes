@@ -3230,11 +3230,12 @@ class SlackAdapter(BasePlatformAdapter):
     async def send_exec_approval(
         self,
         chat_id: str,
-        command: str,
-        session_key: str,
-        description: str = "dangerous command",
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> SendResult:
+        async def send_exec_approval(
+            self, chat_id: str, command: str, session_key: str,
+            description: str = "dangerous command",
+            metadata: Optional[Dict[str, Any]] = None,
+            **kwargs: Any,
+        ) -> SendResult:
         """Send a Block Kit approval prompt with interactive buttons.
 
         The buttons call ``resolve_gateway_approval()`` to unblock the waiting
