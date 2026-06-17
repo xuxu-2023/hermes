@@ -1950,24 +1950,38 @@ class FeishuAdapter(BasePlatformAdapter):
                     "value": {"hermes_action": action_name, "approval_id": approval_id},
                 }
 
+            try:
+                from agent.i18n import t as _t
+                _header = _t("gateway.approval_delegation.card_header")
+                _reason_label = _t("gateway.approval_delegation.card_reason")
+                _btn_once = _t("gateway.approval_delegation.btn_allow_once")
+                _btn_session = _t("gateway.approval_delegation.btn_session")
+                _btn_always = _t("gateway.approval_delegation.btn_always")
+                _btn_deny = _t("gateway.approval_delegation.btn_deny")
+            except Exception:
+                _header = "⚠️ Command Approval Required"
+                _reason_label = "Reason"
+                _btn_once, _btn_session = "✅ Allow Once", "✅ Session"
+                _btn_always, _btn_deny = "✅ Always", "❌ Deny"
+
             card = {
                 "config": {"wide_screen_mode": True},
                 "header": {
-                    "title": {"content": "⚠️ Command Approval Required", "tag": "plain_text"},
+                    "title": {"content": _header, "tag": "plain_text"},
                     "template": "orange",
                 },
                 "elements": [
                     {
                         "tag": "markdown",
-                        "content": f"```\n{cmd_preview}\n```\n**Reason:** {description}",
+                        "content": f"```\\n{cmd_preview}\\n```\\n**{_reason_label}:** {description}",
                     },
                     {
                         "tag": "action",
                         "actions": [
-                            _btn("✅ Allow Once", "approve_once", "primary"),
-                            _btn("✅ Session", "approve_session"),
-                            _btn("✅ Always", "approve_always"),
-                            _btn("❌ Deny", "deny", "danger"),
+                            _btn(_btn_once, "approve_once", "primary"),
+                            _btn(_btn_session, "approve_session"),
+                            _btn(_btn_always, "approve_always"),
+                            _btn(_btn_deny, "deny", "danger"),
                         ],
                     },
                 ],
