@@ -17420,6 +17420,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                                 command=cmd,
                                                 session_key=_approval_session_key,
                                                 description=f"[Delegation] {_user_name} ({_src_plat}): {desc} | {cmd[:50]}",
+                                                admin_user_id=_admin.get("user_id"),
                                             ),
                                             _loop_for_step,
                                             logger=logger,

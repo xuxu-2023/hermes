@@ -193,7 +193,7 @@ class WeComAdapter(BasePlatformAdapter):
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
 
         # Approval delegation: track in-flight template_card approvals.
-        # Maps task_id → (session_key, admin_chat_id, monotonic_timestamp).
+        # Maps task_id → (session_key, admin_chat_id, admin_user_id, monotonic_timestamp).
         # Entries auto-expire after _APPROVAL_TASK_TTL seconds.
         self._approval_tasks: Dict[str, tuple] = {}
         self._APPROVAL_TASK_TTL: float = 600.0
@@ -515,6 +515,7 @@ class WeComAdapter(BasePlatformAdapter):
         session_key: str,
         description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None,
+        admin_user_id: Optional[str] = None,
     ) -> SendResult:
         """Send a WeCom template_card with Approve / Deny buttons.
 
@@ -529,7 +530,7 @@ class WeComAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="chat_id is required")
 
         task_id = self._new_req_id("approval")
-        self._approval_tasks[task_id] = (session_key, chat_id, time.monotonic())
+        self._approval_tasks[task_id] = (session_key, chat_id, admin_user_id or "", time.monotonic())
         self._expire_approval_tasks()
 
         # WeCom template_card field limits:
@@ -800,16 +801,23 @@ class WeComAdapter(BasePlatformAdapter):
         chat_id = str(body.get("chatid") or sender_id).strip()
         is_group = str(body.get("chattype") or "").lower() == "group"
 
-        # Validate: button click must come from the expected admin chat.
+        # Validate: button click must come from the expected admin chat AND user.
         # Prevents forwarded cards from being approved by unauthorized users.
         stored = self._approval_tasks.get(task_id)
         if stored:
-            _, expected_chat_id, _ = stored
+            _, expected_chat_id, expected_user_id, _ = stored
             if expected_chat_id and chat_id != expected_chat_id:
                 logger.warning(
                     "[WeCom] Unauthorized approval click: "
                     "expected chat %s, got %s (user=%s, key=%s)",
                     expected_chat_id, chat_id, sender_id, event_key,
+                )
+                return  # Do NOT pop — let the real admin still approve
+            if expected_user_id and sender_id and sender_id != expected_user_id:
+                logger.warning(
+                    "[WeCom] Unauthorized approval click: "
+                    "expected user %s, got %s (chat=%s, key=%s)",
+                    expected_user_id, sender_id, chat_id, event_key,
                 )
                 return  # Do NOT pop — let the real admin still approve
 
