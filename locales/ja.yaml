@@ -74,6 +74,10 @@ gateway:
     expired: This approval request has expired.
     resolved_approved: Approved ({choice}).
     resolved_denied: Denied ({choice}).
+    approved_once: "1回承認"
+    approved_session: "セッション承認"
+    approved_always: "永続承認"
+    denied: "拒否"
 
 
   background:

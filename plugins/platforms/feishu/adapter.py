@@ -2081,7 +2081,19 @@ class FeishuAdapter(BasePlatformAdapter):
     def _build_resolved_approval_card(*, choice: str, user_name: str) -> Dict[str, Any]:
         """Build raw card JSON for a resolved approval action."""
         icon = "❌" if choice == "deny" else "✅"
-        label = _APPROVAL_LABEL_MAP.get(choice, "Resolved")
+        # Use i18n for approval result labels
+        try:
+            from agent.i18n import t as _t
+            _key_map = {
+                "once": "approved_once",
+                "session": "approved_session",
+                "always": "approved_always",
+                "deny": "denied",
+            }
+            _i18n_key = _key_map.get(choice, "approved_once")
+            label = _t(f"gateway.approval_delegation.{_i18n_key}")
+        except Exception:
+            label = _APPROVAL_LABEL_MAP.get(choice, "Resolved")
         return {
             "config": {"wide_screen_mode": True},
             "header": {

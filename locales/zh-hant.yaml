@@ -74,6 +74,10 @@ gateway:
     expired: This approval request has expired.
     resolved_approved: Approved ({choice}).
     resolved_denied: Denied ({choice}).
+    approved_once: "已批准一次"
+    approved_session: "已批准本次會話"
+    approved_always: "已永久批准"
+    denied: "已拒絕"
 
 
   background:

@@ -82,6 +82,10 @@ gateway:
     expired:               "此审批请求已过期。"
     resolved_approved:     "已批准（{choice}）。"
     resolved_denied:       "已拒绝（{choice}）。"
+    approved_once: "已批准一次"
+    approved_session: "已批准本次会话"
+    approved_always: "已永久批准"
+    denied: "已拒绝"
 
   background:
     usage:                 "用法：/background <提示>\n示例：/background 总结今天 HN 上热门的故事\n\n在独立会话中运行该提示。你可以继续聊天 — 结果完成后将在此显示。"
