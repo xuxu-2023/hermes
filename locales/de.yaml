@@ -71,9 +71,17 @@ gateway:
     redirected: '[approval-delegation] Redirected approval to admin {platform}:{chat_id}'
     admin_approved: ✅ Admin approved. Executing...
     admin_denied: ❌ Admin denied the operation.
+    card_header: ⚠️ Befehlsgenehmigung erforderlich
+    card_reason: Grund
+    btn_allow_once: ✅ Einmal erlauben
+    btn_session: ✅ Sitzung
+    btn_always: ✅ Immer
+    btn_deny: ❌ Ablehnen
+    card_source: Genehmigungsdelegation
+    card_command: Befehlsvorschau
     expired: This approval request has expired.
     resolved_approved: Approved ({choice}).
-    resolved_denied: Denied ({choice}).
+    resolved_denied:       "Abgelehnt."
     approved_once: "Approved once"
     approved_session: "Approved for session"
     approved_always: "Approved permanently"

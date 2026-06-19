@@ -71,9 +71,17 @@ gateway:
     redirected: '[approval-delegation] Redirected approval to admin {platform}:{chat_id}'
     admin_approved: ✅ Admin approved. Executing...
     admin_denied: ❌ Admin denied the operation.
+    card_header: ⚠️ 命令需要審批
+    card_reason: 原因
+    btn_allow_once: ✅ 允許一次
+    btn_session: ✅ 本次工作階段
+    btn_always: ✅ 始終允許
+    btn_deny: ❌ 拒絕
+    card_source: 審批委派
+    card_command: 命令預覽
     expired: This approval request has expired.
     resolved_approved: Approved ({choice}).
-    resolved_denied: Denied ({choice}).
+    resolved_denied:       "已拒絕。"
     approved_once: "已批准一次"
     approved_session: "已批准本次會話"
     approved_always: "已永久批准"
