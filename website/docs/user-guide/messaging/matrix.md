@@ -465,7 +465,9 @@ Matrix deployments remain compatible.
 Matrix defaults to live tool activity without response/thinking streaming. Tool
 activity is sent as one Matrix formatted message using a `<details>` / `<summary>`
 block where the client supports it, with a plain-text fallback in the event body.
-Reasoning/thinking text is hidden by default.
+Live reasoning/thinking progress is hidden by default. If explicitly enabled,
+Matrix sends it as a separate collapsible formatted message; final captured
+reasoning remains controlled by `show_reasoning`.
 
 To tune Matrix progress:
 
@@ -475,15 +477,16 @@ display:
     matrix:
       tool_progress: new      # off | new | all | verbose
       tool_preview_length: 320
-      show_reasoning: false   # true only if you want raw thinking panes
+      thinking_progress: false # true enables collapsible live thinking panes
+      show_reasoning: false   # true prepends final captured reasoning when available
       streaming: false        # true enables progressive response edits
       interim_assistant_messages: false
 ```
 
 Global `display.tool_progress` applies to Matrix unless overridden here.
-Global `display.interim_assistant_messages` and `streaming.enabled` do not make
-Matrix emit thinking/interim text or partial responses unless the Matrix-specific
-override is set.
+Global `display.thinking_progress`, `display.interim_assistant_messages`, and
+`streaming.enabled` do not make Matrix emit thinking/interim text or partial
+responses unless the Matrix-specific override is set.
 
 ### Media Limits
 

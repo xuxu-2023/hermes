@@ -16036,15 +16036,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
         # thinking_progress is independent — if enabled, we need the progress
         # queue even when tool_progress is off (thinking relay uses same infra).
-        # Mattermost requires a per-platform opt-in: global scratch-text display
-        # is too easy to leak into busy public threads.
+        # Mattermost and Matrix require a per-platform opt-in: global
+        # scratch-text display is too easy to leak into busy public rooms.
         _thinking_enabled = _resolve_gateway_display_bool(
             user_config,
             platform_key,
             "thinking_progress",
             default=False,
             platform=source.platform,
-            require_platform_override_for={Platform.MATTERMOST},
+            require_platform_override_for={Platform.MATTERMOST, Platform.MATRIX},
         )
         needs_progress_queue = tool_progress_enabled or _thinking_enabled
 
@@ -16172,14 +16172,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # is never ordinary tool progress: only relay it when the platform
             # explicitly opted into thinking_progress.  Handle both legacy
             # callback shapes: ("_thinking", text) and
-            # ("reasoning.available", "_thinking", text, ...).
-            if event_type == "_thinking" or tool_name == "_thinking":
+            # ("reasoning.available", "_thinking", text, ...). Matrix also
+            # accepts the older ("reasoning.available", text, text, ...) shape
+            # so it can render a dedicated collapsible thinking pane.
+            if (
+                event_type == "_thinking"
+                or tool_name == "_thinking"
+                or (
+                    source.platform == Platform.MATRIX
+                    and event_type == "reasoning.available"
+                )
+            ):
                 if not _thinking_enabled:
                     return
-                thinking_text = preview if tool_name == "_thinking" else tool_name
-                msg = f"💬 {thinking_text}" if thinking_text else None
-                if msg:
-                    progress_queue.put(msg)
+                thinking_text = str(preview or "").strip()
+                if not thinking_text and tool_name != "_thinking":
+                    thinking_text = str(tool_name or "").strip()
+                if not thinking_text:
+                    return
+                if source.platform == Platform.MATRIX:
+                    progress_queue.put(("__matrix_thinking__", thinking_text))
+                else:
+                    progress_queue.put(f"💬 {thinking_text}")
                 return
 
             # If tool_progress is off, only _thinking passes through (above).
@@ -16444,13 +16458,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 metadata["matrix_formatted_body"] = formatted
                 return plain, metadata
 
+            def _matrix_thinking_metadata(content: str) -> tuple[str, Dict[str, Any]]:
+                """Return Matrix plain text plus collapsible thinking metadata."""
+                import html as _html
+
+                lines = [line for line in str(content or "").splitlines() if line.strip()]
+                summary = "💭 Thinking"
+                plain = summary if not lines else f"{summary}\n" + "\n".join(lines)
+                escaped_summary = _html.escape(summary)
+                escaped_body = _html.escape("\n".join(lines))
+                if escaped_body:
+                    formatted = (
+                        f"<details><summary>{escaped_summary}</summary>"
+                        f"<pre><code>{escaped_body}</code></pre></details>"
+                    )
+                else:
+                    formatted = f"<details><summary>{escaped_summary}</summary></details>"
+                metadata = dict(_progress_metadata or {})
+                metadata["matrix_body"] = plain
+                metadata["matrix_formatted_body"] = formatted
+                return plain, metadata
+
             def _prepare_progress_payload(
                 content: str,
                 *,
                 matrix_tool_activity: bool = False,
+                matrix_thinking: bool = False,
             ) -> tuple[str, Optional[Dict[str, Any]]]:
                 if source.platform == Platform.MATRIX and matrix_tool_activity:
                     return _matrix_tool_activity_metadata(content)
+                if source.platform == Platform.MATRIX and matrix_thinking:
+                    return _matrix_thinking_metadata(content)
                 return content, _progress_metadata
 
             async def _edit_progress_message(
@@ -16562,12 +16600,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 content: str,
                 *,
                 matrix_tool_activity: bool = False,
+                matrix_thinking: bool = False,
             ) -> Optional[str]:
                 if not content:
                     return message_id
                 content, send_metadata = _prepare_progress_payload(
                     content,
                     matrix_tool_activity=matrix_tool_activity,
+                    matrix_thinking=matrix_thinking,
                 )
                 if can_edit and message_id is not None:
                     result = await _edit_progress_message(message_id, content, send_metadata)
@@ -16595,7 +16635,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         thinking_text = "...\n" + thinking_text[-3496:]
                     thinking_msg_id = await _send_or_edit_progress(
                         thinking_msg_id,
-                        f"💭 Thinking\n\n{thinking_text}",
+                        thinking_text,
+                        matrix_thinking=True,
                     )
                     return True
                 if tag == "__matrix_tool_completed__":

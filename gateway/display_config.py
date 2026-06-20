@@ -33,6 +33,7 @@ from typing import Any
 _GLOBAL_DEFAULTS: dict[str, Any] = {
     "tool_progress": "all",
     "tool_progress_grouping": "accumulate",  # "accumulate" = edit one bubble; "separate" = one msg per tool
+    "thinking_progress": False,
     "show_reasoning": False,
     # How a reasoning/thinking summary is rendered when show_reasoning is on.
     #   "code"      -> 💭 **Reasoning:** + fenced code block (legacy default)
@@ -245,6 +246,7 @@ def _normalise(setting: str, value: Any) -> Any:
         return str(value).lower()
     if setting in {
         "show_reasoning",
+        "thinking_progress",
         "streaming",
         "interim_assistant_messages",
         "long_running_notifications",

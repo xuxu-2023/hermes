@@ -1141,6 +1141,75 @@ async def test_run_agent_matrix_suppresses_thinking_by_default(monkeypatch, tmp_
 
 
 @pytest.mark.asyncio
+async def test_run_agent_matrix_requires_platform_opt_in_for_thinking(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ThinkingAgent,
+        session_id="sess-matrix-global-thinking-disabled",
+        config_data={
+            "display": {
+                "thinking_progress": True,
+                "platforms": {"matrix": {"tool_progress": "all"}},
+            }
+        },
+        platform=Platform.MATRIX,
+        chat_id="!room:matrix.example.org",
+        chat_type="group",
+        thread_id="$thread",
+    )
+
+    assert result["final_response"] == "done"
+    all_contents = [call["content"] for call in adapter.sent + adapter.edits]
+    assert not any("Thinking" in text for text in all_contents)
+    assert not any("Need view minimax ref" in text for text in all_contents)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_matrix_thinking_progress_uses_collapsible_pane(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ThinkingAgent,
+        session_id="sess-matrix-thinking-pane",
+        config_data={
+            "display": {
+                "platforms": {
+                    "matrix": {
+                        "tool_progress": "all",
+                        "thinking_progress": True,
+                    }
+                }
+            }
+        },
+        platform=Platform.MATRIX,
+        chat_id="!room:matrix.example.org",
+        chat_type="group",
+        thread_id="$thread",
+        adapter_cls=MetadataEditProgressCaptureAdapter,
+    )
+
+    assert result["final_response"] == "done"
+    all_calls = adapter.sent + adapter.edits
+    matrix_metadata = [
+        call.get("metadata") or {}
+        for call in all_calls
+        if call.get("metadata")
+    ]
+    formatted_bodies = [
+        meta.get("matrix_formatted_body", "")
+        for meta in matrix_metadata
+    ]
+    assert any("<details><summary>💭 Thinking</summary>" in body for body in formatted_bodies)
+    assert any("Need view minimax ref." in body for body in formatted_bodies)
+    assert any(
+        "💭 Thinking" in (meta.get("matrix_body") or "")
+        and "Need view minimax ref." in (meta.get("matrix_body") or "")
+        for meta in matrix_metadata
+    )
+
+
+@pytest.mark.asyncio
 async def test_run_agent_queued_message_does_not_treat_commentary_as_final(monkeypatch, tmp_path):
     QueuedCommentaryAgent.calls = 0
     adapter, result = await _run_with_agent(
