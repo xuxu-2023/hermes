@@ -394,7 +394,8 @@ class EventBridge:
 
             try:
                 messages = db.get_messages(session_id)
-            except Exception:
+            except Exception as e:
+                logger.warning("EventBridge: failed to poll session %s: %s", session_key, e)
                 continue
 
             if not messages:
