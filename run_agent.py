@@ -4312,20 +4312,29 @@ class AIAgent:
         )
         return bool(streamed) and streamed == visible_content
 
-    def _emit_interim_assistant_message(self, assistant_msg: Dict[str, Any]) -> None:
-        """Surface a real mid-turn assistant commentary message to the UI layer."""
-        cb = getattr(self, "interim_assistant_callback", None)
-        if cb is None or not isinstance(assistant_msg, dict):
-            return
+    def _emit_interim_assistant_message(self, assistant_msg: Dict[str, Any]) -> bool:
+        """Surface a real mid-turn assistant commentary message to the UI layer.
+
+        Returns whether the visible content was already delivered or accepted by
+        the callback. Messaging gateways can disable interim messages entirely,
+        so callers that care about user-visible delivery need this distinction.
+        """
+        if not isinstance(assistant_msg, dict):
+            return False
         content = assistant_msg.get("content")
         visible = self._strip_think_blocks(content or "").strip()
         if not visible or visible == "(empty)":
-            return
+            return False
         already_streamed = self._interim_content_was_streamed(visible)
+        cb = getattr(self, "interim_assistant_callback", None)
+        if cb is None:
+            return already_streamed
         try:
             cb(visible, already_streamed=already_streamed)
+            return True
         except Exception:
             logger.debug("interim_assistant_callback error", exc_info=True)
+            return already_streamed
 
     def _fire_stream_delta(self, text: str) -> None:
         """Fire all registered stream delta callbacks (display + TTS)."""
