@@ -1236,3 +1236,63 @@ class TestEventBridgePollE2E:
         """Verify the poll interval constant."""
         from mcp_serve import POLL_INTERVAL
         assert POLL_INTERVAL == 0.2
+
+    def test_poll_logs_exception_instead_of_silent_swallow(self, tmp_path, monkeypatch, caplog):
+        """Regression: _poll_once must log a warning when db.get_messages() raises.
+
+        Before the fix, the except block silently swallowed exceptions, making
+        it impossible to diagnose EventBridge polling failures.  Now it emits
+        a logger.warning that includes both the session key and the exception text.
+        """
+        import logging
+        import mcp_serve
+
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: sessions_dir)
+
+        session_key = "agent:main:telegram:dm:exc_test"
+        session_id = "20260329_150000_exc_test"
+        db_path = tmp_path / "state.db"
+
+        sessions_data = {
+            session_key: {
+                "session_key": session_key,
+                "session_id": session_id,
+                "platform": "telegram",
+                "updated_at": "2026-03-29T15:00:05",
+                "origin": {"platform": "telegram", "chat_id": "exc_test"},
+            }
+        }
+        (sessions_dir / "sessions.json").write_text(json.dumps(sessions_data))
+
+        # Create a minimal state.db so the mtime guard in _poll_once doesn't
+        # short-circuit (both mtimes must differ from their initial 0.0 values).
+        db_path = tmp_path / "state.db"
+        _create_test_db(db_path, session_id, [
+            {"role": "user", "content": "seed", "timestamp": "2026-03-29T15:00:01"},
+        ])
+
+        # Create a DB whose get_messages raises
+        class BrokenDB:
+            def get_messages(self, sid):
+                raise RuntimeError("simulated DB failure")
+
+        bridge = mcp_serve.EventBridge()
+
+        with caplog.at_level(logging.WARNING, logger="hermes.mcp_serve"):
+            bridge._poll_once(BrokenDB())
+
+        # Must log the warning with session key and exception text
+        assert any(
+            "failed to poll session" in rec.message and session_key in rec.message
+            for rec in caplog.records
+        ), f"Expected warning with session key {session_key!r}, got: {[r.message for r in caplog.records]}"
+
+        assert any(
+            "simulated DB failure" in rec.message
+            for rec in caplog.records
+        ), f"Expected warning with exception text, got: {[r.message for r in caplog.records]}"
+
+        # Polling must continue cleanly — no exception propagated
+        # (we already reached here, so that's verified)
