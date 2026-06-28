@@ -837,17 +837,21 @@ export interface MoaConfigResponse {
     {
       aggregator: MoaModelSlot
       aggregator_temperature: number
+      aggregator_reasoning_effort: string
       enabled: boolean
       max_tokens: number
       reference_models: MoaModelSlot[]
+      reference_reasoning_effort: string
       reference_temperature: number
     }
   >
   aggregator: MoaModelSlot
   aggregator_temperature: number
+  aggregator_reasoning_effort: string
   enabled: boolean
   max_tokens: number
   reference_models: MoaModelSlot[]
+  reference_reasoning_effort: string
   reference_temperature: number
 }
 
