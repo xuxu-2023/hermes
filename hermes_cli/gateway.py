@@ -5146,6 +5146,16 @@ def _setup_standard_platform(platform: dict):
             save_env_value(home_var, first_id)
             print_success(f"  Home channel set to {first_id}")
 
+    # Surface any config.yaml-only behavioral toggles this platform supports.
+    # These are NOT env vars (they live under platforms.<key> in config.yaml),
+    # so they aren't prompted above — just point the user at them.
+    config_notes = platform.get("config_yaml_notes")
+    if config_notes:
+        print()
+        print_info("  Optional behavioral settings (edit config.yaml):")
+        for line in config_notes:
+            print_info(f"    {line}")
+
     print()
     print_success(f"{emoji} {label} configured!")
 
