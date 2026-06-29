@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import mimetypes
 import os
@@ -53,6 +54,7 @@ DEFAULT_ASPECT_RATIO = "16:9"
 DEFAULT_RESOLUTION = "720p"
 DEFAULT_TIMEOUT_SECONDS = 240
 DEFAULT_POLL_INTERVAL_SECONDS = 5
+_XAI_VIDEO_RESPONSE_MAX_BYTES = 16 * 1024 * 1024
 
 VALID_ASPECT_RATIOS = {"1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"}
 VALID_RESOLUTIONS = {"480p", "720p"}
@@ -81,6 +83,13 @@ _MODELS: Dict[str, Dict[str, Any]] = {
 # ---------------------------------------------------------------------------
 # HTTP helpers
 # ---------------------------------------------------------------------------
+
+
+class _XAIVideoHTTPError(RuntimeError):
+    def __init__(self, status_code: int, detail: str):
+        self.status_code = status_code
+        self.detail = detail
+        super().__init__(f"xAI video HTTP {status_code}: {detail}")
 
 
 def _resolve_xai_credentials() -> Tuple[str, str]:
@@ -122,6 +131,40 @@ def _xai_headers(api_key: str) -> Dict[str, str]:
         "Content-Type": "application/json",
         "User-Agent": _xai_user_agent(),
     }
+
+
+async def _read_xai_video_response_text(response: httpx.Response) -> str:
+    content_length = response.headers.get("content-length")
+    if content_length:
+        try:
+            declared_size = int(content_length)
+        except ValueError:
+            declared_size = None
+        if declared_size is not None and declared_size > _XAI_VIDEO_RESPONSE_MAX_BYTES:
+            raise ValueError(
+                f"xAI video response exceeds {_XAI_VIDEO_RESPONSE_MAX_BYTES} bytes"
+            )
+
+    body = bytearray()
+    async for chunk in response.aiter_bytes(chunk_size=64 * 1024):
+        if not chunk:
+            continue
+        if len(body) + len(chunk) > _XAI_VIDEO_RESPONSE_MAX_BYTES:
+            raise ValueError(
+                f"xAI video response exceeds {_XAI_VIDEO_RESPONSE_MAX_BYTES} bytes"
+            )
+        body.extend(chunk)
+    return bytes(body).decode("utf-8", "replace")
+
+
+async def _read_xai_video_response_json(response: httpx.Response) -> Dict[str, Any]:
+    text = await _read_xai_video_response_text(response)
+    if not text.strip():
+        return {}
+    payload = json.loads(text)
+    if not isinstance(payload, dict):
+        raise ValueError("xAI video response JSON was not an object")
+    return payload
 
 
 def _image_ref_to_xai_url(value: str) -> str:
@@ -196,14 +239,17 @@ async def _submit(
 ) -> str:
     """POST to /videos/generations — xAI's only public endpoint for our
     text-to-video and image-to-video surface."""
-    response = await client.post(
+    async with client.stream(
+        "POST",
         f"{base_url}/videos/generations",
         headers={**_xai_headers(api_key), "x-idempotency-key": str(uuid.uuid4())},
         json=payload,
         timeout=60,
-    )
-    response.raise_for_status()
-    body = response.json()
+    ) as response:
+        if response.status_code >= 400:
+            detail = await _read_xai_video_response_text(response)
+            raise _XAIVideoHTTPError(response.status_code, detail[:500])
+        body = await _read_xai_video_response_json(response)
     request_id = body.get("request_id")
     if not request_id:
         raise RuntimeError("xAI video response did not include request_id")
@@ -222,13 +268,16 @@ async def _poll(
     elapsed = 0.0
     last_status = "queued"
     while elapsed < timeout_seconds:
-        response = await client.get(
+        async with client.stream(
+            "GET",
             f"{base_url}/videos/{request_id}",
             headers=_xai_headers(api_key),
             timeout=30,
-        )
-        response.raise_for_status()
-        body = response.json()
+        ) as response:
+            if response.status_code >= 400:
+                detail = await _read_xai_video_response_text(response)
+                raise _XAIVideoHTTPError(response.status_code, detail[:500])
+            body = await _read_xai_video_response_json(response)
         last_status = (body.get("status") or "").lower()
 
         if last_status == "done":
@@ -419,6 +468,14 @@ class XAIVideoGenProvider(VideoGenProvider):
                 request_id = await _submit(
                     client, payload, api_key=api_key, base_url=base_url
                 )
+            except _XAIVideoHTTPError as exc:
+                return error_response(
+                    error=f"xAI submit failed ({exc.status_code}): {exc.detail or exc}",
+                    error_type="api_error",
+                    provider="xai",
+                    model=resolved_model,
+                    prompt=prompt,
+                )
             except httpx.HTTPStatusError as exc:
                 detail = ""
                 try:
@@ -432,13 +489,38 @@ class XAIVideoGenProvider(VideoGenProvider):
                     model=resolved_model,
                     prompt=prompt,
                 )
+            except ValueError as exc:
+                return error_response(
+                    error=f"xAI submit failed: {exc}",
+                    error_type="api_error",
+                    provider="xai",
+                    model=resolved_model,
+                    prompt=prompt,
+                )
 
-            poll_result = await _poll(
-                client, request_id,
-                api_key=api_key, base_url=base_url,
-                timeout_seconds=DEFAULT_TIMEOUT_SECONDS,
-                poll_interval=DEFAULT_POLL_INTERVAL_SECONDS,
-            )
+            try:
+                poll_result = await _poll(
+                    client, request_id,
+                    api_key=api_key, base_url=base_url,
+                    timeout_seconds=DEFAULT_TIMEOUT_SECONDS,
+                    poll_interval=DEFAULT_POLL_INTERVAL_SECONDS,
+                )
+            except _XAIVideoHTTPError as exc:
+                return error_response(
+                    error=f"xAI poll failed ({exc.status_code}): {exc.detail or exc}",
+                    error_type="api_error",
+                    provider="xai",
+                    model=resolved_model,
+                    prompt=prompt,
+                )
+            except ValueError as exc:
+                return error_response(
+                    error=f"xAI poll failed: {exc}",
+                    error_type="api_error",
+                    provider="xai",
+                    model=resolved_model,
+                    prompt=prompt,
+                )
 
         status = poll_result["status"]
         body = poll_result["body"]
