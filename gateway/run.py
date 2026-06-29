@@ -9581,6 +9581,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
         return source
 
+    def _cache_session_source_if_absent(self, session_key: str, source) -> None:
+        if self._get_cached_session_source(session_key) is None:
+            self._cache_session_source(session_key, source)
+
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
@@ -9612,7 +9616,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
-        self._cache_session_source(session_key, source)
+        self._cache_session_source_if_absent(session_key, source)
         if self._is_telegram_topic_lane(source):
             try:
                 binding = self._session_db.get_telegram_topic_binding(
@@ -12906,6 +12910,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             reply_to_message_id=reply_to_message_id or getattr(source, "message_id", None),
         )
 
+    def _thread_metadata_for_session_source(
+        self,
+        session_key: Optional[str],
+        source,
+        reply_to_message_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        metadata = self._thread_metadata_for_source(source, reply_to_message_id)
+        if metadata is not None:
+            return metadata
+
+        cached_source = self._get_cached_session_source(session_key or "")
+        if cached_source is None:
+            return None
+
+        return self._thread_metadata_for_source(cached_source, reply_to_message_id)
+
     def _thread_metadata_for_target(
         self,
         platform: Optional[Platform],
@@ -15021,7 +15041,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             else bool(_plat_streaming)
         )
 
-        _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
+        _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_session_source(
+            session_key,
+            source,
+            event_message_id,
+        )
 
         if _streaming_enabled:
             try:
@@ -16079,7 +16103,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "reply_to_message_id": event_message_id,
             }
         else:
-            _status_thread_metadata = self._thread_metadata_for_source(source, event_message_id) if _progress_thread_id else None
+            _status_thread_metadata = self._thread_metadata_for_session_source(
+                session_key,
+                source,
+                event_message_id,
+            )
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():
