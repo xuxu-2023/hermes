@@ -2120,6 +2120,24 @@ def _strip_media_directives(text: str) -> str:
     return MEDIA_TAG_CLEANUP_RE.sub("", text)
 
 
+_INTERNAL_TOOL_TRACE_LINE_RE = re.compile(
+    r"(?im)^[ \t]*(?:\u26a0\ufe0f?\s*)?\U0001f6e0\ufe0f?\s*"
+    r"`[^`\r\n]*(?:\(|\b)agent(?:\)|\b)[^`\r\n]*`\s+"
+    r"(?:failed|errored|timed\s+out|cancelled|canceled|blocked)\b[^\r\n]*(?:\r?\n|$)"
+)
+
+
+def strip_internal_tool_trace_lines(text: str) -> str:
+    """Strip internal assistant tool-trace lines from user-visible chat text."""
+    if not text:
+        return text
+    if "\U0001f6e0" not in text and "agent" not in str(text).lower():
+        return text
+    cleaned = _INTERNAL_TOOL_TRACE_LINE_RE.sub("", str(text))
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.rstrip()
+
+
 class BasePlatformAdapter(ABC):
     """
     Base class for platform adapters.
