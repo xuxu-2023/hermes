@@ -104,6 +104,7 @@ XAI_OAUTH_SCOPE = "openid profile email offline_access grok-cli:access api:acces
 XAI_OAUTH_REDIRECT_HOST = "127.0.0.1"
 XAI_OAUTH_REDIRECT_PORT = 56121
 XAI_OAUTH_REDIRECT_PATH = "/callback"
+XAI_OAUTH_RESPONSE_MAX_BYTES = 16 * 1024 * 1024
 # xAI/Grok OAuth access tokens are intentionally short-lived (about 6h in
 # current SuperGrok flows). A two-minute refresh window is too narrow for
 # gateway/cron workloads that may only touch the provider every 30 minutes,
@@ -4323,6 +4324,44 @@ def _xai_validate_inference_base_url(value: str, *, fallback: str) -> str:
     return candidate
 
 
+def _read_xai_oauth_response_text(
+    response: httpx.Response,
+    *,
+    operation: str,
+    code: str,
+) -> str:
+    headers = getattr(response, "headers", {}) or {}
+    content_length = None
+    try:
+        content_length = int(str(headers.get("content-length", "")).strip())
+    except (TypeError, ValueError):
+        content_length = None
+    if content_length is not None and content_length > XAI_OAUTH_RESPONSE_MAX_BYTES:
+        raise AuthError(
+            f"{operation} response exceeds {XAI_OAUTH_RESPONSE_MAX_BYTES} bytes.",
+            provider="xai-oauth",
+            code=code,
+        )
+
+    try:
+        chunks = response.iter_bytes(chunk_size=64 * 1024)
+    except TypeError:
+        chunks = response.iter_bytes()
+
+    body = bytearray()
+    for chunk in chunks:
+        if not chunk:
+            continue
+        if len(body) + len(chunk) > XAI_OAUTH_RESPONSE_MAX_BYTES:
+            raise AuthError(
+                f"{operation} response exceeds {XAI_OAUTH_RESPONSE_MAX_BYTES} bytes.",
+                provider="xai-oauth",
+                code=code,
+            )
+        body.extend(chunk)
+    return bytes(body).decode("utf-8", "replace")
+
+
 def _xai_oauth_discovery(timeout_seconds: float = 15.0) -> Dict[str, str]:
     try:
         response = httpx.get(
@@ -4396,7 +4435,8 @@ def refresh_xai_oauth_pure(
     _xai_validate_oauth_endpoint(endpoint, field="token_endpoint")
     timeout = httpx.Timeout(max(5.0, float(timeout_seconds)))
     with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}) as client:
-        response = client.post(
+        with client.stream(
+            "POST",
             endpoint,
             headers={"Content-Type": "application/x-www-form-urlencoded"},
             data={
@@ -4404,9 +4444,15 @@ def refresh_xai_oauth_pure(
                 "client_id": XAI_OAUTH_CLIENT_ID,
                 "refresh_token": refresh_token,
             },
-        )
-    if response.status_code != 200:
-        detail = response.text.strip()
+        ) as response:
+            status_code = response.status_code
+            response_text = _read_xai_oauth_response_text(
+                response,
+                operation="xAI token refresh",
+                code="xai_refresh_failed",
+            )
+    if status_code != 200:
+        detail = response_text.strip()
         # ``403`` from xAI's token endpoint is almost always a tier /
         # entitlement gate (the OAuth grant exists but the account isn't
         # on the allowlist for API access).  Re-running ``hermes model``
@@ -4414,7 +4460,7 @@ def refresh_xai_oauth_pure(
         # ``format_auth_error`` doesn't append a misleading
         # re-authenticate hint, and point users at the ``XAI_API_KEY``
         # fallback.  See #26847.
-        if response.status_code == 403:
+        if status_code == 403:
             raise AuthError(
                 "xAI token refresh failed with HTTP 403."
                 + (f" Response: {detail}" if detail else "")
@@ -4434,10 +4480,10 @@ def refresh_xai_oauth_pure(
             + (f" Response: {detail}" if detail else ""),
             provider="xai-oauth",
             code="xai_refresh_failed",
-            relogin_required=(response.status_code in {400, 401}),
+            relogin_required=(status_code in {400, 401}),
         )
     try:
-        payload = response.json()
+        payload = json.loads(response_text)
     except Exception as exc:
         raise AuthError(
             f"xAI token refresh returned invalid JSON: {exc}",
@@ -7023,7 +7069,8 @@ def _xai_oauth_exchange_code_for_tokens(
         data["code_challenge_method"] = "S256"
 
     try:
-        response = httpx.post(
+        with httpx.stream(
+            "POST",
             token_endpoint,
             headers={
                 "Content-Type": "application/x-www-form-urlencoded",
@@ -7031,21 +7078,29 @@ def _xai_oauth_exchange_code_for_tokens(
             },
             data=data,
             timeout=max(20.0, timeout_seconds),
-        )
+        ) as response:
+            status_code = response.status_code
+            response_text = _read_xai_oauth_response_text(
+                response,
+                operation="xAI token exchange",
+                code="xai_token_exchange_failed",
+            )
     except Exception as exc:
+        if isinstance(exc, AuthError):
+            raise
         raise AuthError(
             f"xAI token exchange failed: {exc}",
             provider="xai-oauth",
             code="xai_token_exchange_failed",
         ) from exc
 
-    if response.status_code != 200:
-        body = response.text.strip()
+    if status_code != 200:
+        body = response_text.strip()
         # See ``refresh_xai_oauth_pure`` — token-exchange 403 also
         # surfaces tier/entitlement gating from xAI's backend.  Avoid
         # the misleading "re-authenticate" hint and point at the API
         # key fallback.  See #26847.
-        if response.status_code == 403:
+        if status_code == 403:
             raise AuthError(
                 f"xAI token exchange failed (HTTP 403)."
                 + (f" Response: {body}" if body else "")
@@ -7061,14 +7116,14 @@ def _xai_oauth_exchange_code_for_tokens(
                 relogin_required=False,
             )
         raise AuthError(
-            f"xAI token exchange failed (HTTP {response.status_code})."
+            f"xAI token exchange failed (HTTP {status_code})."
             + (f" Response: {body}" if body else ""),
             provider="xai-oauth",
             code="xai_token_exchange_failed",
         )
 
     try:
-        payload = response.json()
+        payload = json.loads(response_text)
     except Exception as exc:
         raise AuthError(
             f"xAI token exchange returned invalid JSON: {exc}",
