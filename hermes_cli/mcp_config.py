@@ -116,7 +116,6 @@ def _remove_mcp_server(name: str) -> bool:
     save_config(config)
     return True
 
-
 def _env_key_for_server(name: str) -> str:
     """Convert server name to an env-var key like ``MCP_MYSERVER_API_KEY``."""
     return f"MCP_{name.upper().replace('-', '_')}_API_KEY"

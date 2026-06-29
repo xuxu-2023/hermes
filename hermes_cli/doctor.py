@@ -579,10 +579,16 @@ def run_doctor(args):
 
     _section("MCP Server Security")
     try:
-        from hermes_cli.config import load_config
+        import yaml as _yaml_mcp
         from hermes_cli.mcp_security import validate_mcp_server_entry
 
-        servers = load_config().get("mcp_servers") or {}
+        _mcp_cfg_path = HERMES_HOME / "config.yaml"
+        _mcp_raw = (
+            _yaml_mcp.safe_load(_mcp_cfg_path.read_text(encoding="utf-8")) or {}
+            if _mcp_cfg_path.exists()
+            else {}
+        )
+        servers = _mcp_raw.get("mcp_servers") or {}
         suspicious = 0
         if isinstance(servers, dict):
             for name, entry in sorted(servers.items()):
