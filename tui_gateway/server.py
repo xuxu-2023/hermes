@@ -3,6 +3,8 @@ import concurrent.futures
 import contextlib
 import contextvars
 import copy
+import errno
+import hashlib
 import inspect
 import json
 import logging
@@ -8462,6 +8464,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     prompt,
                     cwd=cwd,
                     allowed_root=cwd,
+                    extra_allowed_file_roots=_desktop_attachment_allowed_file_roots(session),
                     context_length=ctx_len,
                 )
                 if ctx.blocked:
@@ -9278,9 +9281,53 @@ def _attachment_ref_path(session: dict, target: Path) -> str:
 
 
 def _desktop_attachment_dir(session: dict) -> Path:
-    root = Path(_session_cwd(session)).resolve() / ".hermes" / "desktop-attachments"
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+    workspace = Path(_session_cwd(session)).resolve()
+    root = workspace / ".hermes" / "desktop-attachments"
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+    except OSError as exc:
+        if not _should_fallback_attachment_path(exc):
+            raise
+        fallback = _desktop_attachment_fallback_dir(session, workspace=workspace)
+        fallback.mkdir(parents=True, exist_ok=True)
+        _remember_desktop_attachment_fallback_dir(session, fallback)
+        return fallback
+
+
+def _desktop_attachment_fallback_dir(session: dict, *, workspace: Path | None = None) -> Path:
+    workspace = (workspace or Path(_session_cwd(session))).resolve()
+    profile_home = Path(str(session.get("profile_home") or _hermes_home)).resolve()
+    workspace_digest = hashlib.sha256(str(workspace).encode("utf-8")).hexdigest()[:12]
+    session_digest = hashlib.sha256(
+        str(session.get("session_key") or "").encode("utf-8")
+    ).hexdigest()[:12]
+    name = workspace.name or "workspace"
+    return profile_home / "desktop-attachments" / f"{name}-{workspace_digest}-{session_digest}"
+
+
+def _remember_desktop_attachment_fallback_dir(session: dict, root: Path) -> None:
+    roots = session.setdefault("desktop_attachment_fallback_roots", [])
+    root_str = str(root.resolve())
+    if root_str not in roots:
+        roots.append(root_str)
+
+
+def _desktop_attachment_allowed_file_roots(session: dict) -> list[Path]:
+    return [
+        Path(root).resolve()
+        for root in session.get("desktop_attachment_fallback_roots", [])
+    ]
+
+
+def _should_fallback_attachment_path(exc: OSError) -> bool:
+    return isinstance(exc, PermissionError) or exc.errno in {
+        errno.EACCES,
+        errno.EPERM,
+        errno.EROFS,
+        errno.ENOTDIR,
+        errno.EEXIST,
+    }
 
 
 def _sanitize_attachment_name(name: str) -> str:
@@ -9358,10 +9405,10 @@ def _stage_session_file_attachment(
       1. The path resolves to a file already INSIDE the session workspace — use
          it as-is (no copy, ``uploaded=False``).
       2. The path resolves to a gateway-visible file OUTSIDE the workspace — copy
-         it into ``.hermes/desktop-attachments/`` so the ``@file:`` ref resolves.
+         it into session attachment storage so the ``@file:`` ref resolves.
       3. The path doesn't exist on the gateway (the common remote case: it's a
          path on the CLIENT's disk) — decode the uploaded ``data_url`` bytes and
-         write them into ``.hermes/desktop-attachments/``.
+         write them into session attachment storage.
 
     Returns ``(stored_path, uploaded)``.
     """
@@ -9380,22 +9427,37 @@ def _stage_session_file_attachment(
         payload = _decode_attachment_data_url(data_url)
         filename = _sanitize_attachment_name(name or Path(str(raw_path or "")).name)
 
+    filename = _sanitize_attachment_name(filename)
     upload_dir = _desktop_attachment_dir(session)
-    target = _unique_attachment_path(upload_dir, _sanitize_attachment_name(filename))
-    target.write_bytes(payload)
+    target = _unique_attachment_path(upload_dir, filename)
+    try:
+        target.write_bytes(payload)
+    except OSError as exc:
+        fallback_dir = _desktop_attachment_fallback_dir(session, workspace=workspace)
+        if (
+            upload_dir.resolve() == fallback_dir.resolve()
+            or not _should_fallback_attachment_path(exc)
+        ):
+            raise
+        fallback_dir.mkdir(parents=True, exist_ok=True)
+        _remember_desktop_attachment_fallback_dir(session, fallback_dir)
+        target = _unique_attachment_path(fallback_dir, filename)
+        target.write_bytes(payload)
     return target.resolve(), True
 
 
 @method("file.attach")
 def _(rid, params: dict) -> dict:
-    """Stage a non-image file attachment into the session workspace.
+    """Stage a non-image file attachment for the session.
 
     The image/PDF path renders to vision tiles; this one keeps the file as a
-    readable artifact and returns a workspace-relative ``@file:`` ref so the
-    agent's file tools (and ``agent.context_references``) can read it. Solves the
-    remote-gateway case where the desktop passes a path that only exists on the
-    CLIENT's disk: the client uploads ``data_url`` bytes and we materialize the
-    file on the gateway.
+    readable artifact and returns an ``@file:`` ref the agent can read. The ref
+    is normally workspace-relative; read-only workspaces fall back to a
+    profile-scoped absolute path that ``agent.context_references`` allows only
+    for this session's generated attachment directory. Solves the remote-gateway
+    case where the desktop passes a path that only exists on the CLIENT's disk:
+    the client uploads ``data_url`` bytes and we materialize the file on the
+    gateway.
 
     Params:
       session_id (str, required)
