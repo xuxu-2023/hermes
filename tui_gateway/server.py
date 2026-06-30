@@ -2659,6 +2659,7 @@ def _apply_model_switch(
     )
     if not result.success:
         raise ValueError(result.error_message or "model switch failed")
+    default_headers = getattr(result, "default_headers", None)
 
     if agent:
         try:
@@ -2711,6 +2712,7 @@ def _apply_model_switch(
                 api_key=result.api_key,
                 base_url=result.base_url,
                 api_mode=result.api_mode,
+                default_headers=default_headers,
             )
         except Exception as exc:
             # The in-place swap rolled the agent back to the old working
@@ -2753,6 +2755,7 @@ def _apply_model_switch(
             "base_url": result.base_url,
             "api_key": result.api_key,
             "api_mode": result.api_mode,
+            "default_headers": default_headers,
         }
     if persist_global:
         _persist_model_switch(result)
@@ -3889,6 +3892,7 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "platform": "tui",
         "session_db": _get_db(),
+        "default_headers": getattr(agent, "_default_headers", None),
         "fallback_model": _agent_fallback_model(agent),
     }
 
@@ -4228,6 +4232,7 @@ def _make_agent(
         override_base_url = model_override.get("base_url")
         override_api_key = model_override.get("api_key")
         override_api_mode = model_override.get("api_mode")
+        override_default_headers = model_override.get("default_headers")
         resolve_kwargs = {}
         if str(requested_provider or "").strip().lower() == "custom":
             # Session rows persisted before the custom-provider identity fix
@@ -4262,6 +4267,8 @@ def _make_agent(
             runtime["api_key"] = override_api_key
         if override_api_mode:
             runtime["api_mode"] = override_api_mode
+        if override_default_headers:
+            runtime["default_headers"] = override_default_headers
     else:
         model, requested_provider = _resolve_startup_runtime()
         if isinstance(model_override, str) and model_override:
@@ -4272,6 +4279,8 @@ def _make_agent(
             "requested": requested_provider,
             "target_model": model or None,
         })
+    # Resolve provider-level default_headers (e.g. custom_providers[].custom_headers)
+    _default_headers = runtime.get("default_headers")
     _pr = _load_provider_routing()
     return AIAgent(
         model=model,
@@ -4313,6 +4322,7 @@ def _make_agent(
         session_id=session_id or key,
         session_db=session_db if session_db is not None else _get_db(),
         ephemeral_system_prompt=system_prompt or None,
+        default_headers=_default_headers,
         checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
@@ -8748,6 +8758,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             ):
                 try:
                     from agent.title_generator import maybe_auto_title
+                    title_agent = session.get("agent")
 
                     _title_key = session.get("session_key") or sid
                     maybe_auto_title(
@@ -8756,6 +8767,14 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                         text,
                         raw,
                         session.get("history", []),
+                        main_runtime={
+                            "model": getattr(title_agent, "model", None),
+                            "provider": getattr(title_agent, "provider", None),
+                            "base_url": getattr(title_agent, "base_url", None),
+                            "api_key": getattr(title_agent, "api_key", None),
+                            "api_mode": getattr(title_agent, "api_mode", None),
+                            "default_headers": getattr(title_agent, "_default_headers", None),
+                        } if title_agent else None,
                         # Push the generated title live so the sidebar renames
                         # without waiting for the next list refresh (the titler
                         # runs async, after this turn's refresh already fired).
@@ -13014,9 +13033,12 @@ def _normalize_cdp_url(parsed) -> str:
 
 
 def _failure_messages(url: str, port: int, system: str) -> list[str]:
-    from hermes_cli.browser_connect import manual_chrome_debug_command
+    from hermes_cli.browser_connect import (
+        get_chrome_debug_candidates,
+        manual_chrome_debug_command,
+    )
 
-    command = manual_chrome_debug_command(port, system)
+    command = manual_chrome_debug_command(port, system) if get_chrome_debug_candidates(system) else None
     hint = (
         ["Start a Chromium-family browser with remote debugging, then retry /browser connect:", command]
         if command

@@ -563,6 +563,7 @@ class TestNonStringContent:
                 base_url="https://chatgpt.com/backend-api/codex",
                 api_key="codex-token",
                 api_mode="codex_responses",
+                default_headers={"X-Relay-Key": "relay-secret"},
                 quiet_mode=True,
             )
 
@@ -580,6 +581,7 @@ class TestNonStringContent:
             "base_url": "https://chatgpt.com/backend-api/codex",
             "api_key": "codex-token",
             "api_mode": "codex_responses",
+            "default_headers": {"X-Relay-Key": "relay-secret"},
         }
 
 

@@ -210,7 +210,18 @@ from agent.tool_dispatch_helpers import (
     _extract_error_preview,
     _trajectory_normalize_msg,  # noqa: F401  # re-exported for tests that `from run_agent import _trajectory_normalize_msg`
 )
-from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_float, is_truthy_value, model_forces_max_completion_tokens
+from utils import (
+    atomic_json_write,
+    base_url_host_matches,
+    base_url_hostname,
+    env_float,
+    env_var_enabled,
+    is_truthy_value,
+    model_forces_max_completion_tokens,
+    normalize_proxy_url,
+)
+from hermes_cli.config import cfg_get
+from agent.client_headers import get_model_custom_headers, merge_default_headers
 
 
 
@@ -451,6 +462,7 @@ class AIAgent:
         checkpoint_max_total_size_mb: int = 500,
         checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
+        default_headers: Dict[str, str] = None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent``."""
         from agent.agent_init import init_agent
@@ -526,6 +538,7 @@ class AIAgent:
             checkpoint_max_total_size_mb=checkpoint_max_total_size_mb,
             checkpoint_max_file_size_mb=checkpoint_max_file_size_mb,
             pass_session_id=pass_session_id,
+            default_headers=default_headers,
         )
 
     def _get_session_db_for_recall(self):
@@ -725,10 +738,12 @@ class AIAgent:
         except Exception as err:
             logger.debug("LM Studio preload skipped: %s", err)
 
-    def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode=''):
+    def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode='', default_headers=None):
         """Forwarder — see ``agent.agent_runtime_helpers.switch_model``."""
         from agent.agent_runtime_helpers import switch_model
-        return switch_model(self, new_model, new_provider, api_key, base_url, api_mode)
+        if default_headers is None:
+            return switch_model(self, new_model, new_provider, api_key, base_url, api_mode)
+        return switch_model(self, new_model, new_provider, api_key, base_url, api_mode, default_headers)
 
     def _safe_print(self, *args, **kwargs):
         """Print that silently handles broken pipes / closed stdout.
@@ -1063,13 +1078,26 @@ class AIAgent:
 
     def _current_main_runtime(self) -> Dict[str, str]:
         """Return the live main runtime for session-scoped auxiliary routing."""
-        return {
+        headers = None
+        try:
+            from agent.client_headers import merge_default_headers
+
+            headers = merge_default_headers(
+                (getattr(self, "_client_kwargs", {}) or {}).get("default_headers"),
+                getattr(self, "_default_headers", None),
+            )
+        except Exception:
+            headers = getattr(self, "_default_headers", None)
+        runtime = {
             "model": getattr(self, "model", "") or "",
             "provider": getattr(self, "provider", "") or "",
             "base_url": getattr(self, "base_url", "") or "",
             "api_key": getattr(self, "api_key", "") or "",
             "api_mode": getattr(self, "api_mode", "") or "",
         }
+        if isinstance(headers, dict) and headers:
+            runtime["default_headers"] = headers
+        return runtime
 
     def _check_compression_model_feasibility(self) -> None:
         """Forwarder — see ``agent.conversation_compression.check_compression_model_feasibility``."""
@@ -4055,6 +4083,7 @@ class AIAgent:
                 new_token,
                 getattr(self, "_anthropic_base_url", None),
                 timeout=get_provider_request_timeout(self.provider, self.model),
+                default_headers=getattr(self, "_default_headers", None),
             )
         except Exception as exc:
             logger.warning("Failed to rebuild Anthropic client after credential refresh: %s", exc)
@@ -4070,6 +4099,7 @@ class AIAgent:
         return True
 
     def _apply_client_headers_for_base_url(self, base_url: str) -> None:
+        from agent.client_headers import merge_default_headers
         from agent.auxiliary_client import (
             build_nvidia_nim_headers,
             build_or_headers,
@@ -4108,6 +4138,11 @@ class AIAgent:
                 self._client_kwargs["default_headers"] = _ph_headers
             else:
                 self._client_kwargs.pop("default_headers", None)
+        if getattr(self, "_default_headers", None):
+            self._client_kwargs["default_headers"] = merge_default_headers(
+                self._client_kwargs.get("default_headers"),
+                self._default_headers,
+            )
 
         # User-configured overrides win over URL/profile defaults — keep them
         # applied across credential swaps and client rebuilds, not just at
@@ -4161,6 +4196,7 @@ class AIAgent:
             self._anthropic_client = build_anthropic_client(
                 runtime_key, runtime_base,
                 timeout=get_provider_request_timeout(self.provider, self.model),
+                default_headers=getattr(self, "_default_headers", None),
             )
             self._is_anthropic_oauth = _is_oauth_token(runtime_key) if self.provider == "anthropic" else False
             self.api_key = runtime_key
