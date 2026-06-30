@@ -1638,7 +1638,7 @@ class ProcessingOutcome(Enum):
 class MessageEvent:
     """
     Incoming message from a platform.
-    
+
     Normalized representation that all adapters produce.
     """
     # Message content
@@ -2187,6 +2187,7 @@ class BasePlatformAdapter(ABC):
     def __init__(self, config: PlatformConfig, platform: Platform):
         self.config = config
         self.platform = platform
+        self.adapter_id: Optional[str] = None
         self._message_handler: Optional[MessageHandler] = None
         # Optional hook (e.g. Telegram DM topic recovery) that rewrites
         # ``event.source.thread_id`` before session keying. Returns the
@@ -4780,7 +4781,13 @@ class BasePlatformAdapter(ABC):
 
                 # Send the text portion
                 if text_content and not _tts_caption_delivered:
-                    logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
+                    logger.info(
+                        "[%s] Sending response (%d chars) via adapter_id=%s to %s",
+                        self.name,
+                        len(text_content),
+                        getattr(event.source, "adapter_id", None) or getattr(self, "adapter_id", None) or "default",
+                        event.source.chat_id,
+                    )
                     _reply_anchor = _reply_anchor_for_event(event)
                     result = await self._send_with_retry(
                         chat_id=event.source.chat_id,
@@ -5124,7 +5131,7 @@ class BasePlatformAdapter(ABC):
                 current_task = asyncio.current_task()
                 if current_task is not None and self._session_tasks.get(session_key) is current_task:
                     self._cleanup_finished_session_task(session_key, interrupt_event)
-    
+
     def _cleanup_finished_session_task(
         self, session_key: str, interrupt_event: Optional[asyncio.Event]
     ) -> None:
@@ -5223,6 +5230,7 @@ class BasePlatformAdapter(ABC):
         guild_id: Optional[str] = None,
         parent_chat_id: Optional[str] = None,
         message_id: Optional[str] = None,
+        adapter_id: Optional[str] = None,
         role_authorized: bool = False,
     ) -> SessionSource:
         """Helper to build a SessionSource for this platform."""
@@ -5244,6 +5252,7 @@ class BasePlatformAdapter(ABC):
             guild_id=str(guild_id) if guild_id else None,
             parent_chat_id=str(parent_chat_id) if parent_chat_id else None,
             message_id=str(message_id) if message_id else None,
+            adapter_id=str(adapter_id or self.adapter_id) if (adapter_id or self.adapter_id) else None,
             role_authorized=role_authorized,
         )
     
