@@ -441,6 +441,8 @@ class AIAgent:
         skip_context_files: bool = False,
         load_soul_identity: bool = False,
         skip_memory: bool = False,
+        profile_home: str = None,
+        profile_memory_readonly: bool = False,
         session_db=None,
         parent_session_id: str = None,
         iteration_budget: "IterationBudget" = None,
@@ -516,6 +518,8 @@ class AIAgent:
             skip_context_files=skip_context_files,
             load_soul_identity=load_soul_identity,
             skip_memory=skip_memory,
+            profile_home=profile_home,
+            profile_memory_readonly=profile_memory_readonly,
             session_db=session_db,
             parent_session_id=parent_session_id,
             iteration_budget=iteration_budget,
@@ -5371,6 +5375,8 @@ class AIAgent:
             acp_args=function_args.get("acp_args"),
             role=function_args.get("role"),
             background=(not _is_subagent),
+            profile=function_args.get("profile"),
+            profile_memory=function_args.get("profile_memory"),
             parent_agent=self,
         )
 
