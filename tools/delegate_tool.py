@@ -1251,10 +1251,24 @@ def _build_child_agent(
     # so an ordinary subagent can't write the PARENT's shared MEMORY.md; here
     # the child's store is bound to the TARGET profile's own memories dir (see
     # agent_init), so granting the memory tool lets it update that profile's
-    # long-term memory — and nothing else. Like the orchestrator 'delegation'
-    # re-add, this is granted by capability (write-back + profile), not
-    # inherited from the parent's toolset, so it's unconditional on membership.
+    # long-term memory — and nothing else.
     profile_memory_writeback = bool(profile_home) and profile_memory_writeback
+    # Privilege boundary (NorethSea, PR #48644 review): a parent may only
+    # DELEGATE a long-term-memory write if it holds that capability itself.
+    # Otherwise delegation becomes a privilege-amplification path — a parent with
+    # no `memory` toolset could mint a child that writes a profile's memory,
+    # which it could never do directly. So gate the re-add on the parent's own
+    # memory capability (expanded to see `memory` inside composite toolsets like
+    # hermes-cli); if the parent lacks it, downgrade to read-only rather than
+    # fail, so the delegation still runs — it just can't write back.
+    if profile_memory_writeback and "memory" not in _expand_parent_toolsets(parent_toolsets):
+        logger.info(
+            "Profile '%s' requested profile_memory='write' but the parent agent "
+            "lacks the 'memory' toolset; downgrading to read-only (no "
+            "privilege amplification via delegation).",
+            profile_name,
+        )
+        profile_memory_writeback = False
     if profile_memory_writeback and "memory" not in child_toolsets:
         child_toolsets.append("memory")
 
@@ -1342,6 +1356,24 @@ def _build_child_agent(
     if not override_base_url:
         effective_base_url = _inherit_parent_base_url(parent_agent, effective_base_url)
     effective_api_key = override_api_key or parent_api_key
+    # Fail-closed for profile-backed children (NorethSea, PR #48644 review): a
+    # profile-backed subagent must authenticate as ITS OWN identity. If the
+    # target profile resolved no runtime secret of its own (override_api_key is
+    # the bundle's key, empty when the profile's .env carries none), refuse to
+    # silently fall back to the parent's key — that would bill/audit the run to
+    # the parent and make the profile identity misleading. Better an explicit
+    # error than a child masquerading as the parent. (Key-optional providers
+    # that legitimately need no key must still carry an explicit key in the
+    # profile's .env under this contract.)
+    if profile_home is not None and not override_api_key:
+        raise ValueError(
+            f"Profile '{profile_name}' resolved no runtime secret of its own "
+            f"(its .env carries no usable provider key), so a profile-backed "
+            f"subagent cannot authenticate as that profile. Refusing to inherit "
+            f"the parent agent's key — that would misattribute billing and audit "
+            f"to the parent identity. Add the provider key to the profile's "
+            f".env, or verify it with `hermes -p {profile_name} doctor`."
+        )
     # Bug #20558 / PR #20563: api_mode must NOT be inherited when the child uses a
     # different provider than the parent — each provider has its own API surface
     # (e.g. MiniMax uses anthropic_messages, DeepSeek uses chat_completions).
@@ -1417,6 +1449,16 @@ def _build_child_agent(
     # agent does.  _fallback_chain is a list accepted by AIAgent's
     # fallback_model parameter (which handles both list and dict forms).
     parent_fallback = getattr(parent_agent, "_fallback_chain", None) or None
+    # ...but NOT for a profile-backed child (NorethSea, PR #48644 review).
+    # Inheriting the parent's fallback chain would let a profile run silently
+    # fall back to the PARENT's provider/model/credentials when the profile's
+    # own runtime fails — defeating the profile's identity, billing attribution,
+    # and audit semantics (the same misattribution the per-profile credential
+    # scoping exists to prevent). A profile-backed child gets no fallback by
+    # default; if the profile's runtime fails it fails explicitly as that
+    # profile rather than masquerading as the parent.
+    if profile_home is not None:
+        parent_fallback = None
 
     # Inherit the parent's OpenRouter provider-preference filters by default
     # (so subagents routed to the same provider honour the same routing
@@ -2051,6 +2093,33 @@ def _resolve_profile_bundle(profile_name: str) -> Dict[str, Any]:
         # Absolute profile dir → child's HERMES_HOME for profile memory load.
         "profile_home": str(profile_dir),
     }
+
+
+def _profile_fields_from_child(child: Any) -> Dict[str, Any]:
+    """Profile metadata (profile, profile_memory, dropped toolsets) for a result
+    entry, read off a child agent with the same mock-safe guards the normal
+    finalize path uses.
+
+    Interrupted / errored batch children are *fabricated* entries — the future
+    never returned a result dict — so without this they silently lose the
+    profile fields completed children carry, making it impossible to tell WHICH
+    profile was interrupted (NorethSea, PR #48644 review). Returns keys matching
+    the normal entry exactly; ``profile_toolsets_dropped`` is only present for a
+    profile run that actually had toolsets dropped.
+    """
+    _profile = getattr(child, "_delegate_profile", None)
+    _profile = _profile if isinstance(_profile, str) else None
+    _writeback = getattr(child, "_delegate_profile_writeback", False)
+    _writeback = _writeback if isinstance(_writeback, bool) else False
+    _dropped = getattr(child, "_delegate_profile_dropped_toolsets", None)
+    _dropped = _dropped if isinstance(_dropped, list) else []
+    fields: Dict[str, Any] = {
+        "profile": _profile,
+        "profile_memory": (("write" if _writeback else "read") if _profile else None),
+    }
+    if _profile and _dropped:
+        fields["profile_toolsets_dropped"] = _dropped
+    return fields
 
 
 def _run_single_child(
@@ -2927,6 +2996,13 @@ def delegate_task(
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
             children.append((i, t, child))
+    except ValueError as exc:
+        # A build-time validation error — e.g. the fail-closed profile guard in
+        # _build_child_agent rejecting a profile-backed child that resolved no
+        # runtime secret of its own — surfaces as a clean tool error instead of
+        # crashing the parent's turn. Mirrors the bundle-resolution handler
+        # above. The finally below still restores the global tool-name registry.
+        return tool_error(str(exc))
     finally:
         # Authoritative restore: reset global to parent's tool names after all children built
         _model_tools._last_resolved_tool_names = _parent_tool_names
@@ -2994,6 +3070,7 @@ def delegate_task(
                                         "_child_role": getattr(
                                             _child_by_index.get(idx), "_delegate_role", None
                                         ),
+                                        **_profile_fields_from_child(_child_by_index.get(idx)),
                                     }
                             else:
                                 entry = {
@@ -3006,6 +3083,7 @@ def delegate_task(
                                     "_child_role": getattr(
                                         _child_by_index.get(idx), "_delegate_role", None
                                     ),
+                                    **_profile_fields_from_child(_child_by_index.get(idx)),
                                 }
                             results.append(entry)
                             completed_count += 1
@@ -3031,6 +3109,7 @@ def delegate_task(
                                 "_child_role": getattr(
                                     _child_by_index.get(idx), "_delegate_role", None
                                 ),
+                                **_profile_fields_from_child(_child_by_index.get(idx)),
                             }
                         results.append(entry)
                         completed_count += 1

@@ -485,6 +485,7 @@ class TestProfileMemoryWiring(unittest.TestCase):
                 model="m", max_iterations=3, task_count=1,
                 parent_agent=self._parent(), profile_soul="persona",
                 profile_name="reader", profile_home="/home/x/.hermes/profiles/reader",
+                override_api_key="profile-key",
             )
         kw = MA.call_args.kwargs
         self.assertFalse(kw["skip_memory"])
@@ -625,6 +626,7 @@ class TestProfileMemoryWriteback(unittest.TestCase):
             model="m", max_iterations=3, task_count=1,
             parent_agent=self._parent(), profile_soul="persona",
             profile_name="reader", profile_home="/h/.hermes/profiles/reader",
+            override_api_key="profile-key",
         )
         kwargs.update(over)
         with patch("run_agent.AIAgent", return_value=MagicMock()) as MA:
@@ -725,6 +727,172 @@ class TestDelegateTaskWritebackResolution(unittest.TestCase):
             mrun.return_value = {"task_index": 0, "status": "completed", "summary": "ok"}
             delegate_task(goal="g", profile="reader", parent_agent=self.parent)
         self.assertTrue(mbuild.call_args.kwargs["profile_memory_writeback"])
+
+
+class TestProfileBoundaryHardening(unittest.TestCase):
+    """Profile-boundary semantics raised in PR #48644 review (NorethSea):
+
+    - write-back is a privilege the parent can only delegate if it holds it;
+    - a profile-backed child must not silently fall back to the parent's runtime;
+    - interrupted/errored batch children must keep their profile identity.
+    """
+
+    def _parent(self, enabled, fallback=None):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            enabled_toolsets=list(enabled),
+            api_key="k", base_url="u", provider="p", api_mode="chat_completions",
+            model="m", platform="cli", providers_allowed=None,
+            providers_ignored=None, providers_order=None, provider_sort=None,
+            _session_db=None, _delegate_depth=0, _active_children=[],
+            _active_children_lock=threading.Lock(), _print_fn=None,
+            tool_progress_callback=None, thinking_callback=None,
+            _delegate_spinner=None, _memory_manager=None, session_id="s",
+            _current_turn_id="", session_estimated_cost_usd=0.0,
+            valid_tool_names=[], _fallback_chain=fallback,
+        )
+
+    # --- point 2: write-back gated on the parent's own memory capability ---
+
+    def test_writeback_granted_when_parent_has_memory(self):
+        from tools.delegate_tool import _build_child_agent
+
+        with patch("run_agent.AIAgent", return_value=MagicMock()) as MA:
+            child = _build_child_agent(
+                task_index=0, goal="g", context=None, toolsets=["file"],
+                model="m", max_iterations=3, task_count=1,
+                parent_agent=self._parent(["file", "memory"]),
+                profile_soul="persona", profile_name="reader",
+                profile_home="/h/p/reader", profile_memory_writeback=True,
+                override_api_key="profile-key",
+            )
+        self.assertTrue(getattr(child, "_delegate_profile_writeback"))
+        self.assertIn("memory", MA.call_args.kwargs["enabled_toolsets"])
+
+    def test_writeback_downgraded_when_parent_lacks_memory(self):
+        # Parent has no 'memory' toolset → it cannot delegate a memory write, so
+        # profile_memory='write' is downgraded to read-only (no amplification).
+        from tools.delegate_tool import _build_child_agent
+
+        with patch("run_agent.AIAgent", return_value=MagicMock()) as MA:
+            child = _build_child_agent(
+                task_index=0, goal="g", context=None, toolsets=["file"],
+                model="m", max_iterations=3, task_count=1,
+                parent_agent=self._parent(["file", "web"]),
+                profile_soul="persona", profile_name="reader",
+                profile_home="/h/p/reader", profile_memory_writeback=True,
+                override_api_key="profile-key",
+            )
+        self.assertFalse(getattr(child, "_delegate_profile_writeback"))
+        self.assertNotIn("memory", MA.call_args.kwargs["enabled_toolsets"])
+
+    # --- point 3: profile child does not inherit the parent's fallback chain ---
+
+    def test_profile_child_gets_no_parent_fallback(self):
+        from tools.delegate_tool import _build_child_agent
+
+        with patch("run_agent.AIAgent", return_value=MagicMock()) as MA:
+            _build_child_agent(
+                task_index=0, goal="g", context=None, toolsets=["file"],
+                model="m", max_iterations=3, task_count=1,
+                parent_agent=self._parent(["file"], fallback=["fb/model"]),
+                profile_soul="persona", profile_name="reader",
+                profile_home="/h/p/reader", override_api_key="profile-key",
+            )
+        self.assertIsNone(MA.call_args.kwargs["fallback_model"])
+
+    def test_ordinary_child_still_inherits_parent_fallback(self):
+        from tools.delegate_tool import _build_child_agent
+
+        with patch("run_agent.AIAgent", return_value=MagicMock()) as MA:
+            _build_child_agent(
+                task_index=0, goal="g", context=None, toolsets=["file"],
+                model="m", max_iterations=3, task_count=1,
+                parent_agent=self._parent(["file"], fallback=["fb/model"]),
+            )
+        self.assertEqual(MA.call_args.kwargs["fallback_model"], ["fb/model"])
+
+    # --- point 1: profile child with no key of its own fails closed -----------
+
+    def test_profile_child_without_key_fails_closed(self):
+        # A profile-backed child whose profile resolved NO runtime secret must
+        # NOT inherit the parent's key (billing/audit misattribution). It raises.
+        from tools.delegate_tool import _build_child_agent
+
+        with patch("run_agent.AIAgent", return_value=MagicMock()):
+            with self.assertRaises(ValueError) as ctx:
+                _build_child_agent(
+                    task_index=0, goal="g", context=None, toolsets=["file"],
+                    model="m", max_iterations=3, task_count=1,
+                    parent_agent=self._parent(["file"]),
+                    profile_soul="persona", profile_name="reader",
+                    profile_home="/h/p/reader",  # no override_api_key
+                )
+        self.assertIn("reader", str(ctx.exception))
+        self.assertIn("no runtime secret", str(ctx.exception))
+
+    def test_failclosed_surfaces_as_tool_error_not_crash(self):
+        # Through the real delegate_task path, a keyless profile must return a
+        # clean tool error (not raise out of the turn). Mirrors the bundle-error
+        # contract in test_invalid_profile_returns_tool_error.
+        import json
+        from tools.delegate_tool import delegate_task
+
+        bundle = {
+            "name": "reader", "soul": "persona", "model": "m", "provider": "p",
+            "base_url": "u", "api_key": None, "api_mode": "chat_completions",
+            "toolsets": ["file"], "profile_home": "/h/p/reader",
+        }
+        with patch(
+            "tools.delegate_tool._resolve_profile_bundle", return_value=bundle
+        ), patch("run_agent.AIAgent", return_value=MagicMock()):
+            out = delegate_task(
+                goal="g", profile="reader",
+                parent_agent=self._parent(["file"]),
+            )
+        data = json.loads(out)
+        self.assertIn("error", data)
+        self.assertIn("no runtime secret", data["error"])
+
+    def test_ordinary_child_without_override_key_still_inherits(self):
+        # The fail-closed rule is scoped to PROFILE children only: an ordinary
+        # (non-profile) subagent still inherits the parent's key as before.
+        from tools.delegate_tool import _build_child_agent
+
+        with patch("run_agent.AIAgent", return_value=MagicMock()) as MA:
+            _build_child_agent(
+                task_index=0, goal="g", context=None, toolsets=["file"],
+                model="m", max_iterations=3, task_count=1,
+                parent_agent=self._parent(["file"]),  # parent api_key="k"
+            )
+        self.assertEqual(MA.call_args.kwargs["api_key"], "k")
+
+    # --- point 5: fabricated interrupted/errored entries keep profile identity --
+
+    def test_profile_fields_from_child_reads_identity(self):
+        from types import SimpleNamespace
+        from tools.delegate_tool import _profile_fields_from_child
+
+        child = SimpleNamespace(
+            _delegate_profile="reader",
+            _delegate_profile_writeback=False,
+            _delegate_profile_dropped_toolsets=["web"],
+        )
+        fields = _profile_fields_from_child(child)
+        self.assertEqual(fields["profile"], "reader")
+        self.assertEqual(fields["profile_memory"], "read")
+        self.assertEqual(fields["profile_toolsets_dropped"], ["web"])
+
+    def test_profile_fields_from_child_is_mock_safe(self):
+        # An ordinary (non-profile) or mock child must not leak MagicMock attrs
+        # into the JSON entry: profile None, profile_memory None, no dropped key.
+        from tools.delegate_tool import _profile_fields_from_child
+
+        fields = _profile_fields_from_child(MagicMock())
+        self.assertIsNone(fields["profile"])
+        self.assertIsNone(fields["profile_memory"])
+        self.assertNotIn("profile_toolsets_dropped", fields)
 
 
 if __name__ == "__main__":
