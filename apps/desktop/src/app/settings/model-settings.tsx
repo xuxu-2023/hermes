@@ -84,6 +84,42 @@ const NO_PROVIDERS: readonly ModelOptionProvider[] = [{ name: '—', slug: '', m
 export const withActive = (models: readonly string[], active: string): readonly string[] =>
   active && !models.includes(active) ? [active, ...models] : models
 
+const normalizeEndpointUrl = (value: unknown): string =>
+  String(value ?? '')
+    .trim()
+    .replace(/\/+$/, '')
+    .toLowerCase()
+
+export function resolveModelSettingsProvider(
+  providers: readonly ModelOptionProvider[],
+  provider: string,
+  configuredBaseUrl: unknown
+): string {
+  const slug = provider.trim()
+
+  if (slug.toLowerCase() !== 'custom') {
+    return slug
+  }
+
+  const baseUrl = normalizeEndpointUrl(configuredBaseUrl)
+
+  if (!baseUrl) {
+    return slug
+  }
+
+  const matchingCustomProvider = providers.find(row => {
+    if (row.slug === 'custom') {
+      return false
+    }
+
+    const customEndpoint = row.slug.toLowerCase().startsWith('custom:') || row.is_user_defined
+
+    return customEndpoint && normalizeEndpointUrl(row.api_url) === baseUrl
+  })
+
+  return matchingCustomProvider?.slug ?? slug
+}
+
 interface StaleAuxWarningProps {
   applying: boolean
   onReset: () => void
@@ -163,9 +199,12 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
         getHermesConfigRecord()
       ])
 
-      setMainModel({ model: modelInfo.model, provider: modelInfo.provider })
-      setProviders(modelOptions.providers || [])
-      setSelectedProvider(prev => prev || modelInfo.provider)
+      const optionProviders = modelOptions.providers || []
+      const provider = resolveModelSettingsProvider(optionProviders, modelInfo.provider, getNested(cfg, 'model.base_url'))
+
+      setMainModel({ model: modelInfo.model, provider })
+      setProviders(optionProviders)
+      setSelectedProvider(prev => prev || provider)
       setSelectedModel(prev => prev || modelInfo.model)
       setAuxiliary(auxiliaryModels)
       setMoa(moaModels)
