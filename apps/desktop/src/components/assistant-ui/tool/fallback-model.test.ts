@@ -75,6 +75,41 @@ describe('buildToolView terminal exit-code status', () => {
       'error'
     )
   })
+
+  // Backend-tagged benign nonzero exits (exit_code_meaning) are not failures
+  // even with empty output — grep prints nothing when it finds nothing.
+  it('treats backend-tagged benign nonzero exit (grep no-match) as success', () => {
+    expect(
+      terminal({ exit_code: 1, exit_code_meaning: 'No matches found (not an error)', output: '' }).status
+    ).toBe('success')
+  })
+
+  // A user interrupt returns 130 with no tag — render it neutral, not red.
+  it('treats user interrupt (exit 130) with no output as success', () => {
+    expect(terminal({ exit_code: 130, output: '' }).status).toBe('success')
+  })
+
+  // SIGPIPE (141) — a downstream reader closed the pipe (`… | head` under
+  // pipefail). Benign signal death, rendered neutral.
+  it('treats SIGPIPE (exit 141) as success', () => {
+    expect(terminal({ exit_code: 141, output: 'first lines...' }).status).toBe('success')
+    expect(terminal({ exit_code: 141, output: '' }).status).toBe('success')
+  })
+
+  // curl genuine failures (DNS/connect/timeout) no longer carry exit_code_meaning
+  // (the backend stopped tagging them benign), so an empty-output curl failure
+  // is flagged red instead of the prior false-green.
+  it('treats a curl connect failure with no output as error', () => {
+    expect(terminal({ exit_code: 7, output: '' }).status).toBe('error')
+  })
+
+  // The benign tag never overrides a populated error field (error wins).
+  it('keeps a populated error field red even when exit_code_meaning is set', () => {
+    expect(
+      terminal({ error: 'grep: invalid option', exit_code: 1, exit_code_meaning: 'No matches found', output: '' })
+        .status
+    ).toBe('error')
+  })
 })
 
 describe('buildToolView browser_navigate title', () => {
