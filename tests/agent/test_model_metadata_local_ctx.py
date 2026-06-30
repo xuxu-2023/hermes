@@ -4,12 +4,7 @@ get_model_context_length.
 All tests use synthetic inputs — no filesystem or live server required.
 """
 
-import sys
-import os
 from unittest.mock import MagicMock, patch
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
 
 
 # ---------------------------------------------------------------------------

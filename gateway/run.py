@@ -1256,9 +1256,6 @@ os.environ["_HERMES_GATEWAY"] = "1"
 
 _ensure_ssl_certs()
 
-# Add parent directory to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 # Resolve Hermes home directory (respects HERMES_HOME override)
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, is_truthy_value
