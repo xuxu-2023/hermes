@@ -35,6 +35,36 @@ from hermes_constants import (
 
 logger = logging.getLogger(__name__)
 
+_WHATSAPP_ERROR_BODY_LIMIT_BYTES = 8 * 1024
+
+
+async def _read_error_text_limited(
+    response: Any,
+    *,
+    limit: int = _WHATSAPP_ERROR_BODY_LIMIT_BYTES,
+) -> str:
+    content = getattr(response, "content", None)
+    read = getattr(content, "read", None)
+    if callable(read):
+        chunks: list[bytes] = []
+        total = 0
+        while total <= limit:
+            size = min(4096, limit + 1 - total)
+            chunk = await read(size)
+            if not chunk:
+                break
+            data = bytes(chunk)
+            chunks.append(data)
+            total += len(data)
+        if total > limit:
+            release = getattr(response, "release", None)
+            if callable(release):
+                release()
+        return b"".join(chunks)[:limit].decode("utf-8", errors="replace")
+
+    text = await response.text()
+    return str(text)[:limit]
+
 
 def _listener_pids_on_port(port: int) -> list:
     """PIDs of processes *listening* on ``port`` (POSIX) — never clients.
@@ -862,7 +892,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         data = await resp.json()
                         last_message_id = data.get("messageId")
                     else:
-                        error = await resp.text()
+                        error = await _read_error_text_limited(resp)
                         return SendResult(success=False, error=error)
 
                 # Small delay between chunks to avoid rate limiting
@@ -904,7 +934,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 if resp.status == 200:
                     return SendResult(success=True, message_id=message_id)
                 else:
-                    error = await resp.text()
+                    error = await _read_error_text_limited(resp)
                     return SendResult(success=False, error=error)
         except Exception as e:
             return SendResult(success=False, error=str(e))
@@ -952,7 +982,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         raw_response=data,
                     )
                 else:
-                    error = await resp.text()
+                    error = await _read_error_text_limited(resp)
                     return SendResult(success=False, error=error)
 
         except Exception as e:
@@ -1398,7 +1428,7 @@ async def _standalone_send(
                     timeout=aiohttp.ClientTimeout(total=30),
                 ) as resp:
                     if resp.status != 200:
-                        body = await resp.text()
+                        body = await _read_error_text_limited(resp)
                         return {"error": f"WhatsApp bridge error ({resp.status}): {body}"}
                     data = await resp.json()
                     last_message_id = data.get("messageId")
@@ -1424,7 +1454,7 @@ async def _standalone_send(
                     timeout=aiohttp.ClientTimeout(total=120),
                 ) as resp:
                     if resp.status != 200:
-                        body = await resp.text()
+                        body = await _read_error_text_limited(resp)
                         return {"error": f"WhatsApp media error ({resp.status}): {body}"}
                     data = await resp.json()
                     last_message_id = data.get("messageId") or last_message_id
