@@ -1551,8 +1551,33 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         )
 
     # API Server
-    api_server_enabled = os.getenv("API_SERVER_ENABLED", "").lower() in {"true", "1", "yes"}
-    api_server_key = os.getenv("API_SERVER_KEY", "")
+    #
+    # Read the enable flag + key through the profile-scoped secret store rather
+    # than os.getenv().  Under multiplexing the default profile's .env is loaded
+    # into the global os.environ at import time, so a raw os.getenv("API_SERVER_KEY")
+    # here would find the DEFAULT profile's key while resolving a SECONDARY
+    # profile, falsely enabling api_server on it and aborting startup with a
+    # MultiplexConfigError (#52307).  get_secret() honors the active scope
+    # installed by _profile_runtime_scope and falls back to os.environ verbatim
+    # when no scope is active (single-profile deployments are unchanged).
+    def _scoped_env(name: str) -> str:
+        """Profile-scoped credential read with safe fallback to os.environ.
+
+        Honors the active secret scope under multiplexing.  If multiplexing
+        is on but no scope is installed yet (e.g. default-profile bootstrap),
+        get_secret() fails closed with UnscopedSecretError — in that case we
+        intentionally fall back to os.environ so config load never crashes,
+        matching the historical os.getenv behavior.
+        """
+        try:
+            from agent.secret_scope import get_secret as _get_secret
+            val = _get_secret(name, "")
+        except Exception:
+            val = os.getenv(name, "")
+        return val or ""
+
+    api_server_enabled = _scoped_env("API_SERVER_ENABLED").lower() in {"true", "1", "yes"}
+    api_server_key = _scoped_env("API_SERVER_KEY")
     api_server_cors_origins = os.getenv("API_SERVER_CORS_ORIGINS", "")
     api_server_port = os.getenv("API_SERVER_PORT")
     api_server_host = os.getenv("API_SERVER_HOST")

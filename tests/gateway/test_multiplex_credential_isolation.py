@@ -86,3 +86,53 @@ class TestMcpInterpolationUsesScope:
         monkeypatch.setenv("MY_MCP_TOKEN", "env-token")
         # multiplex off: legacy os.environ resolution
         assert _interpolate_env_vars("${MY_MCP_TOKEN}") == "env-token"
+
+
+class TestApiServerEnvIsScoped:
+    """_apply_env_overrides must read API_SERVER_* through the profile scope,
+    not the global os.environ, so a secondary profile is not falsely enabled
+    by the default profile's key loaded into os.environ (#52307)."""
+
+    def test_secondary_profile_scope_without_key_does_not_enable(self, monkeypatch):
+        from gateway.config import _apply_env_overrides, GatewayConfig, Platform
+
+        # Default profile's key is in the global process env (loaded at import).
+        monkeypatch.setenv("API_SERVER_KEY", "global-default-key")
+        ss.set_multiplex_active(True)
+
+        # Secondary profile scope has NO api_server credential.
+        tok = ss.set_secret_scope({"OPENAI_API_KEY": "sk-secondary"})
+        try:
+            config = GatewayConfig()
+            _apply_env_overrides(config)
+            api = config.platforms.get(Platform.API_SERVER)
+            assert api is None or api.enabled is False
+        finally:
+            ss.reset_secret_scope(tok)
+
+    def test_profile_scope_with_key_enables(self, monkeypatch):
+        from gateway.config import _apply_env_overrides, GatewayConfig, Platform
+
+        monkeypatch.delenv("API_SERVER_KEY", raising=False)
+        ss.set_multiplex_active(True)
+        tok = ss.set_secret_scope({"API_SERVER_KEY": "profile-scoped-key"})
+        try:
+            config = GatewayConfig()
+            _apply_env_overrides(config)
+            api = config.platforms.get(Platform.API_SERVER)
+            assert api is not None and api.enabled is True
+            assert api.extra.get("key") == "profile-scoped-key"
+        finally:
+            ss.reset_secret_scope(tok)
+
+    def test_single_profile_still_reads_os_environ(self, monkeypatch):
+        """No multiplex, no scope: behaves like the legacy os.getenv path."""
+        from gateway.config import _apply_env_overrides, GatewayConfig, Platform
+
+        ss.set_multiplex_active(False)
+        monkeypatch.setenv("API_SERVER_KEY", "legacy-env-key")
+        config = GatewayConfig()
+        _apply_env_overrides(config)
+        api = config.platforms.get(Platform.API_SERVER)
+        assert api is not None and api.enabled is True
+        assert api.extra.get("key") == "legacy-env-key"
