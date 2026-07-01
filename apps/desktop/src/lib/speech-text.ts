@@ -21,7 +21,7 @@ function normalizeLineBreaks(text: string): string {
 
 export function sanitizeTextForSpeech(text: string): string {
   return normalizeLineBreaks(text)
-    .replace(FENCED_CODE_RE, ' ')
+    .replace(FENCED_CODE_RE, ' code. ')
     .replace(THINKING_PREFIX_RE, ' ')
     .replace(MARKDOWN_LINK_RE, '$1')
     .replace(INLINE_CODE_RE, '$1')
