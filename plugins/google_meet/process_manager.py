@@ -2,8 +2,8 @@
 
 Single active meeting at a time. Stores the running pid + out_dir in a
 session-scoped state file under ``$HERMES_HOME/workspace/meetings/.active.json``
-so tool calls across turns can find the bot, and ``on_session_end`` can clean
-it up.
+so tool calls across turns can find the bot, and session-finalize cleanup can
+leave calls owned by the ending session.
 
 The bot runs as a detached subprocess — we don't hold file descriptors open,
 so the parent agent loop can't block on it. We communicate via files only.
@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -21,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from hermes_constants import get_hermes_home
+from plugins.google_meet.queue_io import append_jsonl
 
 # File + directory layout (under $HERMES_HOME):
 #
@@ -33,7 +35,7 @@ from hermes_constants import get_hermes_home
 # .active.json holds:
 #   {"pid": 12345, "meeting_id": "abc-defg-hij", "out_dir": "...",
 #    "url": "https://meet.google.com/...", "started_at": 1714159200.0,
-#    "session_id": "optional"}
+#    "duration": "30m", "session_id": "optional"}
 
 
 def _root() -> Path:
@@ -42,6 +44,10 @@ def _root() -> Path:
 
 def _active_file() -> Path:
     return _root() / ".active.json"
+
+
+def _last_file() -> Path:
+    return _root() / ".last.json"
 
 
 def _read_active() -> Optional[Dict[str, Any]]:
@@ -54,12 +60,47 @@ def _read_active() -> Optional[Dict[str, Any]]:
         return None
 
 
+def _read_last() -> Optional[Dict[str, Any]]:
+    p = _last_file()
+    if not p.is_file():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _clean_session_id(value: Any) -> Optional[str]:
+    session_id = str(value or "").strip()
+    return session_id or None
+
+
+def _read_status(out_dir: Path) -> Dict[str, Any]:
+    status_path = out_dir / "status.json"
+    if not status_path.is_file():
+        return {}
+    try:
+        data = json.loads(status_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_last(data: Dict[str, Any]) -> None:
+    p = _last_file()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    tmp.replace(p)
+
+
 def _write_active(data: Dict[str, Any]) -> None:
     p = _active_file()
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
     tmp.replace(p)
+    _write_last(data)
 
 
 def _clear_active() -> None:
@@ -77,6 +118,60 @@ def _pid_alive(pid: int) -> bool:
     return _pid_exists(pid)
 
 
+def _record_stop_reason(active: Dict[str, Any], reason: str) -> None:
+    out_dir = active.get("out_dir")
+    if not out_dir:
+        return
+    status_path = Path(out_dir) / "status.json"
+    status: Dict[str, Any] = {}
+    if status_path.is_file():
+        try:
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+        except Exception:
+            status = {}
+    status.update({
+        "meetingId": active.get("meeting_id"),
+        "url": active.get("url"),
+        "exited": True,
+        "leaveReason": (reason or "requested").strip() or "requested",
+    })
+    status_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = status_path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(status, indent=2), encoding="utf-8")
+    tmp.replace(status_path)
+
+
+def _headed_launch_prefix() -> tuple[list[str], bool, Optional[str]]:
+    """Return an argv prefix for headed browser runs in service contexts."""
+    policy = os.environ.get("HERMES_MEET_XVFB", "auto").strip().lower()
+    display = os.environ.get("DISPLAY", "").strip()
+    disabled = {"0", "false", "no", "off", "disable", "disabled"}
+    forced = {"1", "true", "yes", "on", "force", "forced"}
+
+    if policy in disabled:
+        if display:
+            return [], False, None
+        return [], False, (
+            "headed Meet launch requested, but DISPLAY is unset and "
+            "HERMES_MEET_XVFB disables xvfb-run"
+        )
+
+    if display and policy not in forced:
+        return [], False, None
+
+    xvfb_run = shutil.which("xvfb-run")
+    if xvfb_run:
+        return [xvfb_run, "-a"], True, None
+
+    if display:
+        return [], False, None
+
+    return [], False, (
+        "headed Meet launch requested, but DISPLAY is unset and xvfb-run "
+        "is unavailable; set headed=false or install xvfb-run"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Public API — used by tool handlers + CLI
 # ---------------------------------------------------------------------------
@@ -89,6 +184,7 @@ def start(
     auth_state: Optional[str] = None,
     guest_name: str = "Hermes Agent",
     duration: Optional[str] = None,
+    persist_after_session: bool = False,
     session_id: Optional[str] = None,
     mode: str = "transcribe",
     realtime_model: Optional[str] = None,
@@ -155,13 +251,21 @@ def start(
     if realtime_api_key:
         env["HERMES_MEET_REALTIME_KEY"] = realtime_api_key
 
+    xvfb = False
+    cmd = [sys.executable, "-m", "plugins.google_meet.meet_bot"]
+    if headed:
+        prefix, xvfb, error = _headed_launch_prefix()
+        if error:
+            return {"ok": False, "error": error}
+        cmd = [*prefix, *cmd]
+
     log_path = out / "bot.log"
     # Detach: stdin=devnull, stdout/stderr → log file, new session so parent
     # signals don't propagate.
     log_fh = open(log_path, "ab", buffering=0)
     try:
         proc = subprocess.Popen(
-            [sys.executable, "-m", "plugins.google_meet.meet_bot"],
+            cmd,
             stdin=subprocess.DEVNULL,
             stdout=log_fh,
             stderr=subprocess.STDOUT,
@@ -179,9 +283,13 @@ def start(
         "out_dir": str(out),
         "url": url,
         "started_at": time.time(),
+        "duration": duration,
+        "persist_after_session": bool(persist_after_session),
         "session_id": session_id,
         "log_path": str(log_path),
         "mode": mode,
+        "headed": bool(headed),
+        "xvfb": bool(xvfb),
     }
     _write_active(record)
     return {"ok": True, **record}
@@ -204,6 +312,18 @@ def status() -> Dict[str, Any]:
         except Exception:
             pass
 
+    if pid and not alive:
+        _clear_active()
+        return {
+            "ok": False,
+            "reason": "no active meeting",
+            "lastStatus": bot_status,
+            "meetingId": active.get("meeting_id"),
+            "url": active.get("url"),
+            "outDir": active.get("out_dir"),
+            "sessionId": active.get("session_id"),
+        }
+
     return {
         "ok": True,
         "alive": alive,
@@ -211,25 +331,67 @@ def status() -> Dict[str, Any]:
         "meetingId": active.get("meeting_id"),
         "url": active.get("url"),
         "startedAt": active.get("started_at"),
+        "duration": active.get("duration"),
+        "persistAfterSession": bool(active.get("persist_after_session")),
         "outDir": active.get("out_dir"),
+        "sessionId": active.get("session_id"),
         **bot_status,
     }
 
 
-def transcript(last: Optional[int] = None) -> Dict[str, Any]:
-    """Read the current transcript file. Returns ok=False if none exists."""
+def transcript(
+    last: Optional[int] = None,
+    *,
+    include_finished: bool = False,
+    session_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Read the active transcript file.
+
+    Finished meeting transcripts require an explicit ``include_finished`` opt-in
+    so a fresh session cannot accidentally receive a stale previous transcript.
+    """
     active = _read_active()
+    from_last = False
+    if active:
+        pid = int(active.get("pid", 0) or 0)
+        if not pid or not _pid_alive(pid):
+            _clear_active()
+            active = None
+    if not active and include_finished:
+        active = _read_last()
+        from_last = bool(active)
+        if active:
+            requested_session_id = _clean_session_id(session_id)
+            active_session_id = _clean_session_id(active.get("session_id"))
+            if not requested_session_id:
+                return {
+                    "ok": False,
+                    "reason": "finished transcript requires session id",
+                }
+            if not active_session_id or active_session_id != requested_session_id:
+                return {
+                    "ok": False,
+                    "reason": "no finished meeting for this session",
+                }
     if not active:
         return {"ok": False, "reason": "no active meeting"}
 
     tp = Path(active.get("out_dir", "")) / "transcript.txt"
+    bot_status = _read_status(Path(active.get("out_dir", "")))
+    active_response = not from_last
     if not tp.is_file():
         return {
             "ok": True,
             "meetingId": active.get("meeting_id"),
+            "sessionId": active.get("session_id"),
             "lines": [],
             "total": 0,
             "path": str(tp),
+            "active": active_response,
+            "fromLast": from_last,
+            "stale": from_last,
+            "leaveReason": bot_status.get("leaveReason"),
+            "error": bot_status.get("error"),
         }
     text = tp.read_text(encoding="utf-8", errors="replace")
     all_lines = [ln for ln in text.splitlines() if ln.strip()]
@@ -237,9 +399,15 @@ def transcript(last: Optional[int] = None) -> Dict[str, Any]:
     return {
         "ok": True,
         "meetingId": active.get("meeting_id"),
+        "sessionId": active.get("session_id"),
         "lines": lines,
         "total": len(all_lines),
         "path": str(tp),
+        "active": active_response,
+        "fromLast": from_last,
+        "stale": from_last,
+        "leaveReason": bot_status.get("leaveReason"),
+        "error": bot_status.get("error"),
     }
 
 
@@ -269,14 +437,35 @@ def enqueue_say(text: str) -> Dict[str, Any]:
             ),
         }
 
+    pid = int(active.get("pid", 0) or 0)
+    if not pid or not _pid_alive(pid):
+        _clear_active()
+        return {"ok": False, "reason": "no active meeting"}
+
     out_dir = Path(active.get("out_dir", ""))
     if not out_dir.is_dir():
         return {"ok": False, "reason": f"out_dir missing: {out_dir}"}
 
+    bot_status = _read_status(out_dir)
+    if bot_status.get("exited"):
+        return {"ok": False, "reason": "active realtime meeting has exited"}
+    if bot_status.get("error") or bot_status.get("leaveReason"):
+        return {
+            "ok": False,
+            "reason": f"active realtime meeting is not usable: {bot_status.get('error') or bot_status.get('leaveReason')}",
+        }
+    if not bot_status.get("inCall"):
+        return {"ok": False, "reason": "active realtime meeting is not in call yet"}
+    if not (bot_status.get("realtime") and bot_status.get("realtimeReady")):
+        return {"ok": False, "reason": "realtime is not ready"}
+    if bot_status.get("realtimeAudioPumpStatus") != "ready":
+        return {"ok": False, "reason": "realtime audio pump is not ready"}
+    if bot_status.get("localMicrophoneOn") is not True:
+        return {"ok": False, "reason": "realtime microphone is not enabled"}
+
     queue_path = out_dir / "say_queue.jsonl"
     entry = {"id": uuid.uuid4().hex[:12], "text": text}
-    with queue_path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(entry) + "\n")
+    append_jsonl(queue_path, entry)
     return {
         "ok": True,
         "meetingId": active.get("meeting_id"),
@@ -314,6 +503,7 @@ def stop(*, reason: str = "requested") -> Dict[str, Any]:
             except ProcessLookupError:
                 pass
 
+    _record_stop_reason(active, reason)
     _clear_active()
     return {
         "ok": True,
