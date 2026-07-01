@@ -530,11 +530,15 @@ class PluginContext:
         handler: Callable,
         description: str = "",
         args_hint: str = "",
+        interactive: bool = False,
     ) -> None:
-        """Register a slash command (e.g. ``/lcm``) available in CLI and gateway sessions.
+        """Register a slash command (e.g. ``/lcm``) available in sessions.
 
-        The handler signature is ``fn(raw_args: str) -> str | None``.
+        The default handler signature is ``fn(raw_args: str) -> str | None``.
         It may also be an async callable — the gateway dispatch handles both.
+        Interactive gateway handlers opt in with ``interactive=True`` and
+        receive ``fn(raw_args: str, ui)``, where ``ui`` exposes no-agent
+        prompt helpers such as ``clarify(question, choices=None)``.
 
         Unlike ``register_cli_command()`` (which creates ``hermes <subcommand>``
         terminal commands), this registers in-session slash commands that users
@@ -575,6 +579,7 @@ class PluginContext:
             "description": description or "Plugin command",
             "plugin": self.manifest.name,
             "args_hint": (args_hint or "").strip(),
+            "interactive": bool(interactive),
         }
         logger.debug("Plugin %s registered command: /%s", self.manifest.name, clean)
 
@@ -2163,9 +2168,24 @@ def get_plugin_context_engine():
 
 
 def get_plugin_command_handler(name: str) -> Optional[Callable]:
-    """Return the handler for a plugin-registered slash command, or ``None``."""
+    """Return a directly callable plugin slash handler, or ``None``.
+
+    Interactive handlers need a gateway-provided UI object.  Non-gateway
+    callers receive a small fallback handler instead of the raw two-argument
+    callable so existing slash execution paths do not raise ``TypeError``.
+    """
     entry = _ensure_plugins_discovered()._plugin_commands.get(name)
-    return entry["handler"] if entry else None
+    if not entry:
+        return None
+    if not entry.get("interactive"):
+        return entry["handler"]
+
+    def _interactive_gateway_only(_raw_args: str) -> str:
+        return (
+            f"Plugin command '/{name}' requires an interactive gateway session."
+        )
+
+    return _interactive_gateway_only
 
 
 _PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0

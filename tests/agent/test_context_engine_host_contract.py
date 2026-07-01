@@ -308,9 +308,31 @@ def test_engine_collector_forwards_register_command_to_plugin_manager():
         assert entry["handler"] is handler
         assert entry["args_hint"] == "<msg>"
         assert entry["plugin"] == "context-engine:my-lcm"
+        assert entry["interactive"] is False
     finally:
         # Clean up so we don't leak the registration across tests.
         manager._plugin_commands.pop("my-lcm-test-cmd", None)
+
+
+def test_engine_collector_forwards_interactive_register_command_flag():
+    """Context-engine slash commands preserve the interactive flag."""
+    from plugins.context_engine import _EngineCollector
+    from hermes_cli.plugins import get_plugin_manager
+
+    collector = _EngineCollector(engine_name="my-lcm")
+    collector.register_command(
+        "my-lcm-interactive-cmd",
+        lambda raw_args, ui: "ok",
+        interactive=True,
+    )
+
+    manager = get_plugin_manager()
+    try:
+        entry = manager._plugin_commands["my-lcm-interactive-cmd"]
+        assert entry["interactive"] is True
+    finally:
+        # Clean up so we don't leak the registration across tests.
+        manager._plugin_commands.pop("my-lcm-interactive-cmd", None)
 
 
 def test_engine_collector_rejects_builtin_command_conflicts():

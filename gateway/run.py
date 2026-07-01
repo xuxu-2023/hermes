@@ -9553,14 +9553,100 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Plugin-registered slash commands
         if command:
             try:
-                from hermes_cli.plugins import get_plugin_command_handler
+                from hermes_cli import plugins as _plugins_mod
+
                 # Normalize underscores to hyphens so Telegram's underscored
                 # autocomplete form matches plugin commands registered with
                 # hyphens. See hermes_cli/commands.py:_build_telegram_menu.
-                plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
+                plugin_command_key = command.replace("_", "-")
+                plugin_command = _plugins_mod.get_plugin_commands().get(plugin_command_key)
+                plugin_handler = (
+                    plugin_command.get("handler") if plugin_command else None
+                )
+                if not plugin_handler and plugin_command:
+                    plugin_handler = _plugins_mod.get_plugin_command_handler(plugin_command_key)
                 if plugin_handler:
                     user_args = event.get_command_args().strip()
-                    result = plugin_handler(user_args)
+                    if plugin_command.get("interactive"):
+                        class _PluginCommandUI:
+                            def __init__(self, runner, source, session_key):
+                                self._runner = runner
+                                self._source = source
+                                self._session_key = session_key
+
+                            async def clarify(self, question: str, choices=None) -> str:
+                                from tools import clarify_gateway as _clarify_mod
+                                import uuid as _uuid
+
+                                adapter = self._runner.adapters.get(self._source.platform)
+                                chat_id = getattr(self._source, "chat_id", None)
+                                if not adapter or not chat_id:
+                                    return "[clarify prompt could not be delivered]"
+
+                                clarify_id = _uuid.uuid4().hex[:10]
+                                choices_list = list(choices) if choices else None
+                                _clarify_mod.register(
+                                    clarify_id=clarify_id,
+                                    session_key=self._session_key or "",
+                                    question=question,
+                                    choices=choices_list,
+                                )
+                                thread_id = getattr(self._source, "thread_id", None)
+                                metadata = {"thread_id": str(thread_id)} if thread_id is not None else None
+                                send_result = await adapter.send_clarify(
+                                    chat_id=str(chat_id),
+                                    question=question,
+                                    choices=choices_list,
+                                    clarify_id=clarify_id,
+                                    session_key=self._session_key or "",
+                                    metadata=metadata,
+                                )
+                                if not getattr(send_result, "success", False):
+                                    _clarify_mod.clear_session(self._session_key or "")
+                                    return "[clarify prompt could not be delivered]"
+                                timeout = _clarify_mod.get_clarify_timeout()
+                                loop = asyncio.get_running_loop()
+                                response_future = loop.create_future()
+
+                                def _finish_response_future(method_name: str, value) -> None:
+                                    if loop.is_closed():
+                                        return
+
+                                    def _finish() -> None:
+                                        if not response_future.done():
+                                            getattr(response_future, method_name)(value)
+
+                                    loop.call_soon_threadsafe(_finish)
+
+                                def _wait_for_clarify_response() -> None:
+                                    try:
+                                        response_value = _clarify_mod.wait_for_response(
+                                            clarify_id,
+                                            float(timeout),
+                                        )
+                                    except Exception as exc:
+                                        _finish_response_future("set_exception", exc)
+                                    else:
+                                        _finish_response_future("set_result", response_value)
+
+                                import threading as _threading
+
+                                _threading.Thread(
+                                    target=_wait_for_clarify_response,
+                                    name="hermes-plugin-clarify-wait",
+                                    daemon=True,
+                                ).start()
+                                response = await response_future
+                                if response is None or response == "":
+                                    return f"[user did not respond within {int(timeout / 60)}m]"
+                                return response
+
+                        result = plugin_handler(
+                            user_args,
+                            _PluginCommandUI(self, source, _quick_key),
+                        )
+                    else:
+                        result = plugin_handler(user_args)
                     if asyncio.iscoroutine(result):
                         result = await result
                     return str(result) if result else None

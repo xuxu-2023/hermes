@@ -1714,6 +1714,16 @@ class TestPluginCommands:
 
         ctx.register_command("status-cmd", lambda a: a)
         assert mgr._plugin_commands["status-cmd"]["description"] == "Plugin command"
+        assert mgr._plugin_commands["status-cmd"]["interactive"] is False
+
+    def test_register_command_interactive_flag(self):
+        """Plugin slash commands may opt into gateway interactive UI."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        ctx.register_command("choose-cmd", lambda a, ui: a, interactive=True)
+        assert mgr._plugin_commands["choose-cmd"]["interactive"] is True
 
     def test_get_plugin_command_handler_found(self):
         """get_plugin_command_handler() returns the handler for a registered command."""
@@ -1727,6 +1737,19 @@ class TestPluginCommands:
         with patch("hermes_cli.plugins._plugin_manager", mgr):
             result = get_plugin_command_handler("mycmd")
             assert result is handler
+
+    def test_get_plugin_command_handler_interactive_gateway_only(self):
+        """Interactive plugin commands return a non-gateway fallback handler."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        ctx.register_command("choose-cmd", lambda args, ui: "ok", interactive=True)
+
+        with patch("hermes_cli.plugins._plugin_manager", mgr):
+            result = get_plugin_command_handler("choose-cmd")
+            assert result is not None
+            assert "interactive gateway session" in result("")
 
     def test_get_plugin_command_handler_not_found(self):
         """get_plugin_command_handler() returns None for unregistered commands."""

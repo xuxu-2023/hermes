@@ -17,7 +17,7 @@ import pytest
 
 from gateway.config import Platform
 from gateway.platforms.base import SendResult
-from tests.e2e.conftest import make_event, send_and_capture
+from tests.e2e.conftest import make_event, make_runner, send_and_capture
 
 
 class TestSlashCommands:
@@ -158,6 +158,88 @@ class TestSlashCommands:
         response_text = send.call_args[1].get("content") or send.call_args[0][1]
         assert response_text == "status via alias"
         runner._handle_status_command.assert_awaited_once()
+        runner._handle_message_with_agent.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_interactive_plugin_command_can_clarify_without_agent(
+        self, adapter, runner, platform, monkeypatch
+    ):
+        """Interactive plugin commands can prompt without entering an agent turn."""
+        if platform == Platform.SLACK:
+            pytest.skip("Slack uses the base text fallback; this test covers rich gateway adapters")
+
+        async def _handler(raw_args, ui):
+            choice = await ui.clarify("Choose one", ["alpha", "beta"])
+            return f"{raw_args}:{choice}"
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_plugin_commands",
+            lambda: {
+                "pick": {
+                    "handler": _handler,
+                    "description": "pick",
+                    "plugin": "test",
+                    "args_hint": "",
+                    "interactive": True,
+                }
+            },
+        )
+
+        async def _send_clarify(**kwargs):
+            from tools.clarify_gateway import resolve_gateway_clarify
+
+            resolve_gateway_clarify(kwargs["clarify_id"], "beta")
+            return SendResult(success=True, message_id="clarify-1")
+
+        adapter.send_clarify = AsyncMock(side_effect=_send_clarify)
+
+        send = await send_and_capture(adapter, "/pick value", platform)
+
+        adapter.send_clarify.assert_awaited_once()
+        send.assert_called_once()
+        response_text = send.call_args[1].get("content") or send.call_args[0][1]
+        assert response_text == "value:beta"
+        runner._handle_message_with_agent.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_interactive_plugin_command_can_clarify_on_whatsapp_cloud(
+        self, monkeypatch
+    ):
+        """Interactive plugin commands use the adapter clarify contract on WhatsApp Cloud."""
+        platform = Platform.WHATSAPP_CLOUD
+        runner = make_runner(platform)
+
+        async def _handler(raw_args, ui):
+            choice = await ui.clarify("Choose one", ["alpha", "beta"])
+            return f"{raw_args}:{choice}"
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_plugin_commands",
+            lambda: {
+                "pick": {
+                    "handler": _handler,
+                    "description": "pick",
+                    "plugin": "test",
+                    "args_hint": "",
+                    "interactive": True,
+                }
+            },
+        )
+
+        async def _send_clarify(**kwargs):
+            from tools.clarify_gateway import resolve_gateway_clarify
+
+            resolve_gateway_clarify(kwargs["clarify_id"], "beta")
+            return SendResult(success=True, message_id="clarify-1")
+
+        adapter = MagicMock()
+        adapter.send_clarify = AsyncMock(side_effect=_send_clarify)
+        runner.adapters[platform] = adapter
+
+        result = await runner._handle_message(make_event(platform, "/pick value"))
+
+        adapter.send_clarify.assert_awaited_once()
+        assert result == "value:beta"
         runner._handle_message_with_agent.assert_not_awaited()
 
 
