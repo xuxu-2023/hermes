@@ -776,15 +776,28 @@ def content_hash(skill_path: Path) -> str:
     """
     h = hashlib.sha256()
     if skill_path.is_dir():
-        for f in sorted(skill_path.rglob("*")):
+        # Collect (relative_posix, path) pairs and sort by the string key that
+        # is fed into the hash. Sorting Path objects is platform-dependent and
+        # differs from relative-posix string ordering for layouts like
+        # "lib/helper.py" vs "lib-helper.py" (the directory separator sorts
+        # differently inside a flat string than across Path parts). That broke
+        # symmetry with bundle_content_hash, which already sorts its string
+        # keys. See #53404.
+        pairs = []
+        for f in skill_path.rglob("*"):
             if f.is_file():
                 try:
                     rel = f.relative_to(skill_path).as_posix()
-                    h.update(rel.encode("utf-8"))
-                    h.update(b"\x00")
-                    h.update(f.read_bytes())
-                except OSError:
+                except (ValueError, OSError):
                     continue
+                pairs.append((rel, f))
+        for rel, f in sorted(pairs, key=lambda pair: pair[0]):
+            try:
+                h.update(rel.encode("utf-8"))
+                h.update(b"\x00")
+                h.update(f.read_bytes())
+            except OSError:
+                continue
     elif skill_path.is_file():
         h.update(skill_path.read_bytes())
     return f"sha256:{h.hexdigest()[:16]}"

@@ -1231,6 +1231,55 @@ class TestCheckForSkillUpdates:
 
         assert bundle_content_hash(bundle) == content_hash(skill_dir)
 
+    def test_content_hash_symmetric_when_path_and_posix_order_diverge(self, tmp_path):
+        """On-disk content_hash must equal in-memory bundle_content_hash even
+        when ``Path`` sort order differs from relative-posix string order.
+
+        ``content_hash`` (on disk) historically sorted ``Path`` objects while
+        ``bundle_content_hash`` (in memory) sorts the relative-posix string
+        keys. For filenames where these orderings disagree — e.g. a file in a
+        sub-directory ``lib/helper.py`` vs a top-level file ``lib-helper.py``
+        whose name shares the directory prefix — the two functions produced
+        different digests for identical content, breaking integrity tracking
+        and update detection (#53404).
+
+        This asserts the symmetry invariant documented in both functions'
+        docstrings using a layout that provably triggers the divergence.
+        """
+        from tools.skills_guard import content_hash
+
+        files = {
+            "SKILL.md": "# demo\n",
+            "lib/helper.py": "def help(): pass\n",
+            "lib-helper.py": "HELPER = True\n",
+        }
+        bundle = SkillBundle(
+            name="divergence-skill",
+            files=dict(files),
+            source="github",
+            identifier="owner/repo/divergence-skill",
+            trust_level="community",
+        )
+        skill_dir = tmp_path / "divergence-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(files["SKILL.md"])
+        (skill_dir / "lib").mkdir()
+        (skill_dir / "lib" / "helper.py").write_text(files["lib/helper.py"])
+        (skill_dir / "lib-helper.py").write_text(files["lib-helper.py"])
+
+        # Sanity: the chosen layout provably diverges between Path and posix
+        # ordering — otherwise this test would not exercise the bug.
+        import pathlib
+        on_disk = [p for p in skill_dir.rglob("*") if p.is_file()]
+        path_sorted = [p.relative_to(skill_dir).as_posix() for p in sorted(on_disk)]
+        posix_sorted = sorted(p.relative_to(skill_dir).as_posix() for p in on_disk)
+        assert path_sorted != posix_sorted, (
+            "test layout must trigger Path-vs-posix ordering divergence; "
+            f"got path={path_sorted} posix={posix_sorted}"
+        )
+
+        assert content_hash(skill_dir) == bundle_content_hash(bundle)
+
     def test_reports_update_when_remote_hash_differs(self):
         lock = MagicMock()
         lock.list_installed.return_value = [{
