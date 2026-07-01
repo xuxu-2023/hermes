@@ -2147,6 +2147,34 @@ async function releaseBackendLock(updateRoot, tag) {
   stopAllPoolBackends()
   for (const pid of pids) forceKillProcessTree(pid)
 
+  // Also kill any OTHER hermes.exe processes not owned by this Desktop
+  // instance (e.g. a gateway started from CLI, or a second Desktop).
+  // Without this, their file locks on the venv shim survive and the
+  // updater's `uv pip install` fails with "Access is denied" (#43268).
+  try {
+    const ownPid = process.pid
+    const { execFileSync } = require('child_process')
+    const out = execFileSync('wmic', [
+      'process', 'where',
+      "name='hermes.exe' or name='hermes-gateway.exe'",
+      'get', 'ProcessId', '/format:csv'
+    ], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] })
+    const pidSet = new Set(pids)
+    for (const line of out.split('\n')) {
+      const m = line.match(/,(\d+)\s*$/)
+      if (m) {
+        const pid = parseInt(m[1], 10)
+        if (pid && pid !== ownPid && !pidSet.has(pid)) {
+          forceKillProcessTree(pid)
+          pidSet.add(pid)
+        }
+      }
+    }
+  } catch {
+    // wmic not available or errored — best effort; the shim-lock
+    // poll below is the final safety net.
+  }
+
   const shim = venvHermesShimPath(updateRoot)
   const deadlineMs = Date.now() + 15000
   while (Date.now() < deadlineMs) {
