@@ -4694,18 +4694,20 @@ def run_conversation(
                         break
 
                     # ── Post-tool-call empty response nudge ───────────
-                    # The model returned empty after executing tool calls.
-                    # This covers two cases:
+                    # The model returned empty or a short progress/status-only
+                    # message after executing tool calls.  This covers:
                     #  (a) No prior-turn content at all — model went silent
                     #  (b) Prior turn had content + SUBSTANTIVE tools (the
-                    #      fallback above was skipped because the content
-                    #      was mid-task narration, not a final answer)
+                    #      fallback above was skipped because the content was
+                    #      mid-task narration, not a final answer)
+                    #  (c) Short progress placeholders like "working on it",
+                    #      "writing...", "let me check" — the model returned
+                    #      a status message instead of processing tool results
                     # Instead of giving up, nudge the model to continue by
-                    # appending a user-level hint.  This is the #9400 case:
-                    # weaker models (mimo-v2-pro, GLM-5, etc.) sometimes
-                    # return empty after tool results instead of continuing
-                    # to the next step.  One retry with a nudge usually
-                    # fixes it.
+                    # appending a user-level hint.  This is the #9400/#42503
+                    # case: weaker models (mimo-v2-pro, GLM-5, etc.) sometimes
+                    # return empty or progress-only after tool results instead
+                    # of continuing to the next step.
                     _prior_was_tool = any(
                         m.get("role") == "tool"
                         for m in messages[-5:]  # check recent messages
@@ -4722,10 +4724,46 @@ def run_conversation(
                             re.IGNORECASE,
                         )
                     )
+                    # Detect short progress/status-only messages that are NOT
+                    # substantive answers.  These are placeholders the model
+                    # returns instead of processing tool results.
+                    _is_progress_placeholder = False
+                    if _prior_was_tool and final_response:
+                        _stripped = final_response.strip()
+                        if len(_stripped) < 60:
+                            _progress_re = re.compile(
+                                r'^(working\s+on\s+it|'
+                                r'writing[\.\.\.\s]*|'
+                                r'let\s+me\s+(check|see|look|find|search|verify)|'
+                                r"I[\'']?ll\s+(check|see|look|find|search|verify|get|fetch|analyze)|"
+                                r'processing[\.\.\.\s]*|'
+                                r'analyzing[\.\.\.\s]*|'
+                                r'checking[\.\.\.\s]*|'
+                                r'loading[\.\.\.\s]*|'
+                                r'generating[\.\.\.\s]*|'
+                                r'searching[\.\.\.\s]*|'
+                                r'fetching[\.\.\.\s]*|'
+                                r'reading[\.\.\.\s]*|'
+                                r'scanning[\.\.\.\s]*|'
+                                r'one\s+moment[\.\.\.\s]*|'
+                                r'just\s+a[\.\.\.\s]*|'
+                                r'hold\s+on[\.\.\.\s]*|'
+                                r'okay[\.\.\.\s]*|'
+                                r'ok[\.\.\.\s]*|'
+                                r'sure[\.\.\.\s]*|'
+                                r'right[\.\.\.\s]*|'
+                                r'got\s+it[\.\.\.\s]*|'
+                                r'hmm[\.\.\.\s]*|'
+                                r'\.{3,}|'
+                                r'…+)\s*$',
+                                re.IGNORECASE,
+                            )
+                            _is_progress_placeholder = bool(_progress_re.match(_stripped))
                     if (
                         _prior_was_tool
                         and not getattr(agent, "_post_tool_empty_retried", False)
                         and not _has_inline_thinking  # thinking model still working — let prefill handle
+                        and (not final_response or not agent._strip_think_blocks(final_response).strip() or _is_progress_placeholder)
                     ):
                         agent._post_tool_empty_retried = True
                         # Clear stale narration so it doesn't resurface
