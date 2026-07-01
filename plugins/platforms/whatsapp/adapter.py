@@ -262,7 +262,10 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
+from gateway.platforms.whatsapp_common import (
+    WhatsAppBehaviorMixin,
+    is_whatsapp_runtime_advisory,
+)
 from gateway.whatsapp_identity import to_whatsapp_jid
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -848,6 +851,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return SendResult(success=False, error=bridge_exit)
 
         if not content or not content.strip():
+            return SendResult(success=True, message_id=None)
+        if is_whatsapp_runtime_advisory(content):
+            logger.info("[%s] Suppressed WhatsApp runtime advisory", self.name)
             return SendResult(success=True, message_id=None)
 
         chat_id = to_whatsapp_jid(chat_id)
