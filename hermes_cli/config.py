@@ -7650,15 +7650,33 @@ def set_config_value(key: str, value: str):
     # _set_nested which preserves list-typed nodes; before #17876 the
     # inline navigation here silently overwrote lists with dicts.
 
-    # Convert value to appropriate type
-    if value.lower() in {'true', 'yes', 'on'}:
-        value = True
-    elif value.lower() in {'false', 'no', 'off'}:
-        value = False
-    elif value.isdigit():
-        value = int(value)
-    elif value.replace('.', '', 1).isdigit():
-        value = float(value)
+    # Convert value to appropriate type.
+    # Skip bool/int/float coercion when the target key's default value in
+    # DEFAULT_CONFIG is a string — otherwise tokens like ``off``/``on`` that
+    # are valid string enum members get silently rewritten as Python booleans.
+    # See: https://github.com/NousResearch/hermes-agent/issues/47515
+    _default_is_str = False
+    try:
+        _dk = DEFAULT_CONFIG
+        for _seg in key.split("."):
+            if isinstance(_dk, dict):
+                _dk = _dk.get(_seg)
+            else:
+                _dk = None
+                break
+        _default_is_str = isinstance(_dk, str)
+    except Exception:
+        pass
+
+    if not _default_is_str:
+        if value.lower() in {'true', 'yes', 'on'}:
+            value = True
+        elif value.lower() in {'false', 'no', 'off'}:
+            value = False
+        elif value.isdigit():
+            value = int(value)
+        elif value.replace('.', '', 1).isdigit():
+            value = float(value)
 
     _set_nested(user_config, key, value)
     # Normalize the api_base → base_url alias at set-time too (issue #8919),
