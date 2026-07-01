@@ -346,6 +346,17 @@ def main():
         global _mcp_discovery_thread
         _mcp_discovery_thread = _mcp_thread
 
+    # Register shell hooks (pre_llm_call / post_llm_call) so the desktop/TUI
+    # process fires them just like the CLI and gateway do.
+    try:
+        from hermes_cli.config import load_config
+        from agent.shell_hooks import register_from_config
+        _hooks_cfg = load_config() or {}
+        _auto = bool(_hooks_cfg.get("hooks_auto_accept", False))
+        register_from_config(_hooks_cfg, accept_hooks=_auto)
+    except Exception:
+        logger.debug("shell-hook registration failed at TUI startup", exc_info=True)
+
     if not write_json({
         "jsonrpc": "2.0",
         "method": "event",

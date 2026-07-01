@@ -11820,6 +11820,18 @@ def cmd_dashboard(args):
             exc_info=True,
         )
 
+    # Register shell hooks (pre_llm_call / post_llm_call) so the dashboard
+    # backend and desktop sessions fire them like the CLI and TUI do.
+    try:
+        from hermes_cli.config import load_config
+        from agent.shell_hooks import register_from_config
+        register_from_config(load_config(), accept_hooks=False)
+    except Exception:
+        logger.debug(
+            "shell-hook registration failed at dashboard startup",
+            exc_info=True,
+        )
+
     from hermes_cli.web_server import start_server
 
     # Interactive auth setup: if this bind will engage the auth gate but no
