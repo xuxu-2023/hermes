@@ -865,3 +865,71 @@ class TestProbeApiModelsUserAgent:
         assert ua and ua.startswith("hermes-cli/")
         # No Authorization was set, but UA must still be present.
         assert req.get_header("Authorization") is None
+
+
+# ---------------------------------------------------------------------------
+# fetch_api_models — TTL cache (issue #44560)
+# ---------------------------------------------------------------------------
+
+
+class TestFetchApiModelsCache:
+    """fetch_api_models must cache results per (base_url, api_mode) with TTL."""
+
+    def _clear_cache(self):
+        from hermes_cli import models as m
+        m._fetch_api_models_cache.clear()
+
+    def test_first_call_hits_network(self):
+        """First call always calls probe_api_models (live fetch)."""
+        self._clear_cache()
+        with patch("hermes_cli.models.probe_api_models", return_value={"models": ["m1"]}) as mock_probe:
+            result = fetch_api_models("key", "https://api.example.com/v1")
+        assert result == ["m1"]
+        mock_probe.assert_called_once()
+
+    def test_second_call_uses_cache(self):
+        """Repeated call within TTL must NOT call probe_api_models again."""
+        self._clear_cache()
+        with patch("hermes_cli.models.probe_api_models", return_value={"models": ["m1", "m2"]}) as mock_probe:
+            fetch_api_models("key", "https://api.example.com/v1")
+            result = fetch_api_models("key", "https://api.example.com/v1")
+        assert result == ["m1", "m2"]
+        assert mock_probe.call_count == 1, "probe_api_models must only be called once within TTL"
+
+    def test_expired_cache_refetches(self):
+        """After TTL expires the cache entry is ignored and a live call is made."""
+        import time as _time
+        self._clear_cache()
+        with patch("hermes_cli.models.probe_api_models", return_value={"models": ["m1"]}) as mock_probe:
+            fetch_api_models("key", "https://api.example.com/v1")
+            # Manually back-date the cache entry to simulate expiry.
+            from hermes_cli import models as m
+            url_key = ("https://api.example.com/v1", None)
+            old_ts, old_val = m._fetch_api_models_cache[url_key]
+            m._fetch_api_models_cache[url_key] = (old_ts - m._FETCH_API_MODELS_CACHE_TTL - 1, old_val)
+            # Second call should go live.
+            fetch_api_models("key", "https://api.example.com/v1")
+        assert mock_probe.call_count == 2, "probe_api_models must be called again after TTL expiry"
+
+    def test_cache_is_per_url(self):
+        """Different base URLs must have independent cache entries."""
+        self._clear_cache()
+        with patch("hermes_cli.models.probe_api_models", return_value={"models": ["m1"]}) as mock_probe:
+            fetch_api_models("key", "https://api.a.com/v1")
+            fetch_api_models("key", "https://api.b.com/v1")
+        assert mock_probe.call_count == 2, "Different URLs must each trigger a live fetch"
+
+    def test_none_result_not_cached(self):
+        """Failed fetches (None) must not be cached — retry is allowed next call."""
+        self._clear_cache()
+        with patch("hermes_cli.models.probe_api_models", return_value={"models": None}) as mock_probe:
+            fetch_api_models("key", "https://api.example.com/v1")
+            fetch_api_models("key", "https://api.example.com/v1")
+        assert mock_probe.call_count == 2, "Failed fetches must not be cached"
+
+    def test_default_timeout_is_at_most_3s(self):
+        """fetch_api_models default timeout must be ≤ 3 s to prevent WS block."""
+        import inspect
+        sig = inspect.signature(fetch_api_models)
+        default_timeout = sig.parameters["timeout"].default
+        assert default_timeout <= 3.0, f"Default timeout {default_timeout}s exceeds 3s cap"

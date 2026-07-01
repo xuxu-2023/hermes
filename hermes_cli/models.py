@@ -3527,18 +3527,42 @@ def probe_api_models(
     }
 
 
+# ---------------------------------------------------------------------------
+# fetch_api_models — per-provider TTL cache to avoid blocking the WebSocket
+# handler with sequential synchronous HTTP calls (issue #44560).
+# ---------------------------------------------------------------------------
+
+_FETCH_API_MODELS_CACHE_TTL: float = 300.0  # 5 minutes
+# { (base_url, api_mode) -> (monotonic_timestamp, result) }
+_fetch_api_models_cache: dict[tuple, tuple[float, Optional[list[str]]]] = {}
+
+
 def fetch_api_models(
     api_key: Optional[str],
     base_url: Optional[str],
-    timeout: float = 5.0,
+    timeout: float = 3.0,
     api_mode: Optional[str] = None,
 ) -> Optional[list[str]]:
     """Fetch the list of available model IDs from the provider's ``/models`` endpoint.
 
+    Results are cached per ``(base_url, api_mode)`` for
+    :data:`_FETCH_API_MODELS_CACHE_TTL` seconds (default 5 min) to prevent the
+    ``model.options`` WebSocket handler from blocking on repeated sequential
+    HTTP round-trips.  The first call is always live.
+
     Returns a list of model ID strings, or ``None`` if the endpoint could not
     be reached (network error, timeout, auth failure, etc.).
     """
-    return probe_api_models(api_key, base_url, timeout=timeout, api_mode=api_mode).get("models")
+    cache_key = (base_url, api_mode)
+    now = time.monotonic()
+    cached_at, cached_result = _fetch_api_models_cache.get(cache_key, (0.0, None))
+    if cached_result is not None and (now - cached_at) < _FETCH_API_MODELS_CACHE_TTL:
+        return cached_result
+
+    result = probe_api_models(api_key, base_url, timeout=timeout, api_mode=api_mode).get("models")
+    if result is not None:
+        _fetch_api_models_cache[cache_key] = (now, result)
+    return result
 
 
 # ---------------------------------------------------------------------------
