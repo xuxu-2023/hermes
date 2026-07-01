@@ -1272,22 +1272,20 @@ class AIAgent:
         return stale_base
 
     def _codex_silent_hang_hint(self, model: Optional[str] = None) -> Optional[str]:
-        """Return an actionable hint when this request matches a known
-        Codex silent-reject configuration, else ``None``.
+        """Return an actionable hint for Codex no-first-byte stalls.
 
         The ChatGPT Codex backend (``chatgpt.com/backend-api/codex``) has
-        historically silently dropped certain model requests: the connection
-        is accepted but no stream events are emitted and no error is raised.
-        The stale-call detector ends the hang, but a generic "timed out"
-        message gives the user no path forward.
+        historically accepted some streaming requests but emitted no stream
+        events and no explicit error.  That does not prove the model is
+        permanently unsupported: a later request for the same model may work,
+        and entitlement/backend behavior has come and gone.  The stale-call
+        detector ends the hang, but a generic "timed out" message gives the
+        user no path forward.
 
         This helper substitutes an actionable hint into the stale-timeout
-        warning when the request matches a known silent-reject pattern.
-        Currently flagged: ``gpt-5.5`` family on the Codex backend.  See
-        hermes-agent #21444 for the symptom history.  The upstream backend
-        behavior has historically come and gone with ChatGPT entitlement
-        changes — the heuristic stays in place as future-proofing even when
-        the symptom is dormant.
+        warning when the request matches a known high-risk pattern.  Currently
+        flagged: ``gpt-5.5`` family on the Codex backend.  See hermes-agent
+        #21444 for the symptom history.
 
         Does NOT fix the backend issue.  Only converts an opaque stale-timeout
         into actionable text so users learn the workaround in seconds rather
@@ -1313,12 +1311,12 @@ class AIAgent:
         if not re.search(r"(?:^|[/\-_])gpt-5\.5(?:$|[\-_])", model_lower):
             return None
         return (
-            f"Codex backend appears to be silently rejecting {eff_model!r} "
-            "on chatgpt.com/backend-api/codex (no stream events, no error). "
-            "This is a known backend-side pattern that has affected ChatGPT "
-            "Plus accounts intermittently. "
-            "Workaround: try `gpt-5.4` on the same OAuth profile, or `gpt-5.3-codex`, "
-            "or switch to a different model/provider in your fallback chain. "
+            f"Codex backend produced no first byte for {eff_model!r} "
+            "on chatgpt.com/backend-api/codex (no stream events, no explicit error). "
+            "This is a known intermittent backend-side pattern for ChatGPT "
+            "Codex; it can happen even when the same model succeeds on a later retry. "
+            "If retries keep stalling, try `gpt-5.4` on the same OAuth profile, "
+            "`gpt-5.3-codex`, or a different model/provider in the fallback chain. "
             "Some ChatGPT Codex accounts do not support `gpt-5.4-codex`. "
             "See hermes-agent#21444 for symptom history."
         )

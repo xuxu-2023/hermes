@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from agent.codex_runtime import _consume_codex_event_stream
 from agent.codex_responses_adapter import (
     _format_responses_error,
     _normalize_codex_response,
@@ -284,3 +285,34 @@ def test_normalize_codex_response_failed_with_message_only():
     )
     with pytest.raises(RuntimeError, match=r"^model error$"):
         _normalize_codex_response(response)
+
+
+def test_codex_event_stream_ignores_terminal_output_null():
+    """Codex may send response.completed.response.output=None.
+
+    The low-level stream consumer must reconstruct output from streamed deltas
+    instead of iterating over the terminal response.output field.
+    """
+    response = _consume_codex_event_stream(
+        [
+            {"type": "response.output_text.delta", "delta": "hel"},
+            {"type": "response.output_text.delta", "delta": "lo"},
+            {
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_123",
+                    "status": "completed",
+                    "output": None,
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                },
+            },
+        ],
+        model="gpt-5.5",
+    )
+
+    assert response.id == "resp_123"
+    assert response.status == "completed"
+    assert response.output_text == "hello"
+    assert response.usage == {"input_tokens": 1, "output_tokens": 1}
+    assert response.output[0].type == "message"
+    assert response.output[0].content[0].text == "hello"
