@@ -226,6 +226,10 @@ class TestBackendSelection:
         self._managed_patchers = [
             patch("tools.web_tools.managed_nous_tools_enabled", return_value=True),
             patch("tools.managed_tool_gateway.managed_nous_tools_enabled", return_value=True),
+            # Mock Hermes config layer so CI runner's real keys don't
+            # contaminate tests. _env_value() calls get_env_value first;
+            # returning None falls through to os.getenv / os.environ.
+            patch("hermes_cli.config.get_env_value", return_value=None),
         ]
         for p in self._managed_patchers:
             p.start()
@@ -548,6 +552,10 @@ class TestCheckWebApiKey:
         self._managed_patchers = [
             patch("tools.web_tools.managed_nous_tools_enabled", return_value=True),
             patch("tools.managed_tool_gateway.managed_nous_tools_enabled", return_value=True),
+            # Mock Hermes config layer so CI runner's real keys don't
+            # contaminate tests. _env_value() calls get_env_value first;
+            # returning None falls through to os.getenv / os.environ.
+            patch("hermes_cli.config.get_env_value", return_value=None),
         ]
         for p in self._managed_patchers:
             p.start()
