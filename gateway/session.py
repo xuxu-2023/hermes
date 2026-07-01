@@ -1789,6 +1789,11 @@ class SessionStore:
                      _flush_messages_to_session_db(), preventing the
                      duplicate-write bug (#860).
         """
+        if not self._db and not skip_db:
+            logger.warning(
+                "append_to_transcript: no DB configured, message will not be persisted (role=%s)",
+                message.get("role"),
+            )
         if self._db and not skip_db:
             try:
                 self._db.append_message(
@@ -1813,7 +1818,7 @@ class SessionStore:
                     timestamp=message.get("timestamp"),
                 )
             except Exception as e:
-                logger.debug("Session DB operation failed: %s", e)
+                logger.warning("Session DB operation failed: %s", e)
     
     def has_platform_message_id(
         self, session_id: str, platform_message_id: str
