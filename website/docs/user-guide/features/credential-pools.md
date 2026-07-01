@@ -86,9 +86,10 @@ This shows your full pool status and offers a menu:
 What would you like to do?
   1. Add a credential
   2. Remove a credential
-  3. Reset cooldowns for a provider
-  4. Set rotation strategy for a provider
-  5. Exit
+  3. Switch active credential for a provider
+  4. Reset cooldowns for a provider
+  5. Set rotation strategy for a provider
+  6. Exit
 ```
 
 For providers that support both API keys and OAuth (Anthropic, Nous, Codex), the add flow asks which type:
@@ -111,6 +112,7 @@ Type [1/2]:
 | `hermes auth add <provider> --type api-key --api-key <key>` | Add an API key non-interactively |
 | `hermes auth add <provider> --type oauth` | Add an OAuth credential via browser login |
 | `hermes auth remove <provider> <index>` | Remove credential by 1-based index |
+| `hermes auth switch <provider> <target>` | Move an index, id, or exact-label credential to #1 (the next choice under `fill_first`) |
 | `hermes auth reset <provider>` | Clear all cooldowns/exhaustion status |
 
 ## Rotation Strategies
