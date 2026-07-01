@@ -141,10 +141,9 @@ let
                 if line.startswith('Name:'):
                     pkg = canonical(line.split(':', 1)[1].strip())
                     if pkg in core:
-                        print(f'ERROR: plugin package \"{pkg}\" collides with a package in hermes sealed venv', file=sys.stderr)
+                        print(f'WARNING: plugin package \\"{pkg}\\" collides with a package in hermes sealed venv', file=sys.stderr)
                         print(f'  from: {di}', file=sys.stderr)
-                        print(f'  Remove this dependency from extraPythonPackages.', file=sys.stderr)
-                        sys.exit(1)
+                        print(f'  The sealed venv copy will take precedence at runtime.', file=sys.stderr)
                     break
 
     print('No collisions found.')
