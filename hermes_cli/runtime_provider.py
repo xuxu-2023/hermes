@@ -303,7 +303,7 @@ def _provider_supports_explicit_api_mode(provider: Optional[str], configured_pro
     if not normalized_configured:
         return True
     if normalized_provider == "custom":
-        return normalized_configured == "custom" or normalized_configured.startswith("custom:")
+        return True
     return normalized_configured == normalized_provider
 
 
