@@ -11763,7 +11763,18 @@ def cmd_dashboard(args):
     # skills picker / agent skill discovery sees the bundled library.
     # cmd_chat does this in its own pre-dispatch block; the dashboard
     # backend is the desktop's primary entrypoint and needs the same.
-    _sync_bundled_skills_quietly()
+    #
+    # Run in a background thread: on NAS-mounted HERMES_HOME (Synology,
+    # NFS, CIFS) the skills sync performs synchronous file I/O that can
+    # put the Python process into D state (kernel uninterruptible sleep),
+    # blocking dashboard startup indefinitely.  Running it in the
+    # background lets the uvicorn server start accepting requests while
+    # the sync completes.
+    threading.Thread(
+        target=_sync_bundled_skills_quietly,
+        daemon=True,
+        name="dashboard-skills-sync",
+    ).start()
 
     if "HERMES_WEB_DIST" not in os.environ and not getattr(args, "skip_build", False):
         if not _build_web_ui(PROJECT_ROOT / "web", fatal=True):
