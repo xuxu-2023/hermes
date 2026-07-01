@@ -808,8 +808,16 @@ def normalize_usage(
         # missed when the proxy only surfaces them at the top level.
         # Port of cline/cline#10266.
         cache_read_tokens = _to_int(getattr(details, "cached_tokens", 0) if details else 0)
+        if not cache_read_tokens and details:
+            # Some OpenAI-compatible providers (e.g. MiMo/xiaomi) expose
+            # cache hit counts under non-standard field names.
+            cache_read_tokens = _to_int(getattr(details, "cache_hit_tokens", 0))
+        if not cache_read_tokens and details:
+            cache_read_tokens = _to_int(getattr(details, "hit_tokens", 0))
         if not cache_read_tokens:
             cache_read_tokens = _to_int(getattr(response_usage, "cache_read_input_tokens", 0))
+        if not cache_read_tokens:
+            cache_read_tokens = _to_int(getattr(response_usage, "cache_tokens", 0))
         cache_write_tokens = _to_int(
             getattr(details, "cache_write_tokens", 0) if details else 0
         )
