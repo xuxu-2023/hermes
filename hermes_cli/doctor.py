@@ -99,8 +99,8 @@ def _termux_install_all_fallback_notes() -> list[str]:
 
 
 def _has_provider_env_config(content: str) -> bool:
-    """Return True when ~/.hermes/.env contains provider auth/base URL settings."""
-    return any(key in content for key in _PROVIDER_ENV_HINTS)
+    """Return True when ~/.hermes/.env or os.environ contains provider auth/base URL settings."""
+    return any(key in content for key in _PROVIDER_ENV_HINTS) or any(key in os.environ for key in _PROVIDER_ENV_HINTS)
 
 
 def _honcho_is_configured_for_doctor() -> bool:
@@ -1821,7 +1821,12 @@ def run_doctor(args):
         from hermes_cli.auth import get_anthropic_key
         key = get_anthropic_key()
         if not key:
-            return _ConnectivityResult("Anthropic API", [], [])
+            return _ConnectivityResult(
+                "Anthropic API",
+                [(color("⚠", Colors.YELLOW), "Anthropic API",
+                  color("(not configured)", Colors.DIM))],
+                [],
+            )
         try:
             import httpx
             from agent.anthropic_adapter import (
@@ -1979,9 +1984,19 @@ def run_doctor(args):
                 resolve_bedrock_region,
             )
         except ImportError:
-            return _ConnectivityResult("AWS Bedrock", [], [])
+            return _ConnectivityResult(
+                "AWS Bedrock",
+                [(color("⚠", Colors.YELLOW), "AWS Bedrock",
+                  color("(boto3 not installed)", Colors.DIM))],
+                [],
+            )
         if not has_aws_credentials():
-            return _ConnectivityResult("AWS Bedrock", [], [])
+            return _ConnectivityResult(
+                "AWS Bedrock",
+                [(color("⚠", Colors.YELLOW), "AWS Bedrock",
+                  color("(not configured)", Colors.DIM))],
+                [],
+            )
         auth_var = resolve_aws_auth_env_var()
         region = resolve_bedrock_region()
         label = "AWS Bedrock".ljust(20)
@@ -2039,13 +2054,28 @@ def run_doctor(args):
             cfg = load_config()
             model_cfg = cfg.get("model") if isinstance(cfg, dict) else {}
             if not isinstance(model_cfg, dict):
-                return _ConnectivityResult("Azure Foundry (Entra ID)", [], [])
+                return _ConnectivityResult(
+                    "Azure Foundry (Entra ID)",
+                    [(color("⚠", Colors.YELLOW), "Azure Foundry (Entra ID)",
+                      color("(not configured)", Colors.DIM))],
+                    [],
+                )
             cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
             auth_mode = str(model_cfg.get("auth_mode") or "").strip().lower()
             if cfg_provider != "azure-foundry" or auth_mode != "entra_id":
-                return _ConnectivityResult("Azure Foundry (Entra ID)", [], [])
+                return _ConnectivityResult(
+                    "Azure Foundry (Entra ID)",
+                    [(color("⚠", Colors.YELLOW), "Azure Foundry (Entra ID)",
+                      color("(not configured)", Colors.DIM))],
+                    [],
+                )
         except Exception:
-            return _ConnectivityResult("Azure Foundry (Entra ID)", [], [])
+            return _ConnectivityResult(
+                "Azure Foundry (Entra ID)",
+                [(color("⚠", Colors.YELLOW), "Azure Foundry (Entra ID)",
+                      color("(not configured)", Colors.DIM))],
+                [],
+            )
 
         try:
             from agent.azure_identity_adapter import (
