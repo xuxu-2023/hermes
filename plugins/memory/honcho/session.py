@@ -21,6 +21,15 @@ logger = logging.getLogger(__name__)
 # Sentinel to signal the async writer thread to shut down
 _ASYNC_SHUTDOWN = object()
 _PEER_ID_HASH_LEN = 8
+
+# Prefixes for framework-injected user messages that should NOT be synced to
+# Honcho as user speech.  Skill activations contain multi-KB instruction dumps
+# that pollute the deriver with fake "facts" about the user.
+_FRAMEWORK_INJECTED_PREFIXES: tuple[str, ...] = (
+    "[IMPORTANT: The user has invoked the ",
+    "[IMPORTANT: The user launched this CLI session with the ",
+    "[IMPORTANT: The following skill(s) were listed for this job but could not be found",
+)
 _PEER_ID_HASH_ESCALATION_LENGTHS = (_PEER_ID_HASH_LEN, 12, 16, 24, 32, 64)
 
 
@@ -437,21 +446,36 @@ class HonchoSessionManager:
         if not new_messages:
             return True
 
-        honcho_messages = []
+        # Mark framework-injected skill activation messages as synced.
+        # They are not user speech and would pollute Honcho's deriver
+        # with fake "facts" derived from multi-KB instruction dumps.
         for msg in new_messages:
+            if msg["role"] == "user" and any(
+                msg["content"].startswith(p) for p in _FRAMEWORK_INJECTED_PREFIXES
+            ):
+                msg["_synced"] = True
+
+        syncable = [m for m in new_messages if not m.get("_synced")]
+        if not syncable:
+            with self._cache_lock:
+                self._cache[session.key] = session
+            return True
+
+        honcho_messages = []
+        for msg in syncable:
             peer = user_peer if msg["role"] == "user" else assistant_peer
             honcho_messages.append(peer.message(msg["content"]))
 
         try:
             honcho_session.add_messages(honcho_messages)
-            for msg in new_messages:
+            for msg in syncable:
                 msg["_synced"] = True
             logger.debug("Synced %d messages to Honcho for %s", len(honcho_messages), session.key)
             with self._cache_lock:
                 self._cache[session.key] = session
             return True
         except Exception as e:
-            for msg in new_messages:
+            for msg in syncable:
                 msg["_synced"] = False
             logger.error("Failed to sync messages to Honcho: %s", e)
             with self._cache_lock:
