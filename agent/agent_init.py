@@ -163,6 +163,62 @@ def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, An
     agent.request_overrides = overrides
 
 
+def _config_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
+def _platform_config_key(platform: Any) -> str:
+    value = getattr(platform, "value", platform)
+    return str(value or "").strip()
+
+
+def _resolve_memory_auto_inject_recall(cfg: Dict[str, Any], platform: Any) -> bool:
+    enabled = _config_bool(
+        cfg_get(cfg, "memory", "auto_inject_recall", default=True),
+        True,
+    )
+    platform_key = _platform_config_key(platform)
+    if not platform_key:
+        return enabled
+
+    missing = object()
+    flattened_override = cfg_get(
+        cfg,
+        "platforms",
+        platform_key,
+        "memory",
+        "auto_inject_recall",
+        default=missing,
+    )
+    if flattened_override is not missing:
+        return _config_bool(flattened_override, enabled)
+
+    gateway_override = cfg_get(
+        cfg,
+        "gateway",
+        "platforms",
+        platform_key,
+        "memory",
+        "auto_inject_recall",
+        default=missing,
+    )
+    if gateway_override is not missing:
+        return _config_bool(gateway_override, enabled)
+    return enabled
+
+
 def init_agent(
     agent,
     base_url: str = None,
@@ -1220,6 +1276,10 @@ def init_agent(
     agent._memory_store = None
     agent._memory_enabled = False
     agent._user_profile_enabled = False
+    agent._memory_auto_inject_recall = _resolve_memory_auto_inject_recall(
+        _agent_cfg,
+        platform,
+    )
     agent._memory_nudge_interval = 10
     agent._turns_since_memory = 0
     agent._iters_since_skill = 0
@@ -1256,6 +1316,9 @@ def init_agent(
                 if _mp and _mp.is_available():
                     agent._memory_manager.add_provider(_mp)
                 if agent._memory_manager.providers:
+                    agent._memory_manager._auto_inject_recall_enabled = (
+                        agent._memory_auto_inject_recall
+                    )
                     _init_kwargs = {
                         "session_id": agent.session_id,
                         "platform": platform or "cli",
