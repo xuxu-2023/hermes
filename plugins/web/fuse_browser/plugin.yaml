@@ -1,0 +1,7 @@
+name: web-fuse-browser
+version: 1.0.0
+description: "Fuse Browser MCP/CLI as a native Hermes web_search and web_extract backend. Uses Google SERP + browser fetch evidence path."
+author: Fusengine
+kind: backend
+provides_web_providers:
+  - fuse-browser
