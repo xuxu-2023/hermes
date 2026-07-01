@@ -511,7 +511,14 @@ def resolve_skill_command_key(command: str) -> Optional[str]:
     if not command:
         return None
     cmd_key = f"/{command.replace('_', '-')}"
-    return cmd_key if cmd_key in get_skill_commands() else None
+    cmds = get_skill_commands()
+    if cmd_key in cmds:
+        return cmd_key
+    # Cache miss — skills may have been added/removed on disk since the last
+    # scan.  Rescan once so newly added skill commands appear without a full
+    # gateway restart.
+    cmds = scan_skill_commands()
+    return cmd_key if cmd_key in cmds else None
 
 
 def build_skill_invocation_message(
