@@ -235,6 +235,48 @@ class TestSystemdServiceRefresh:
         assert unit_path.read_text(encoding="utf-8") == "new unit\n"
         assert ["systemctl", "--user", "daemon-reload"] in calls
 
+    def test_systemd_unit_current_ignores_path_drift_but_detects_real_unit_changes(
+        self, tmp_path, monkeypatch
+    ):
+        """PATH is intentionally environment-sensitive service payload.
+
+        A shell/profile-specific PATH must not make the installed unit look
+        stale forever, but real service semantics still need strict comparison.
+        """
+        unit_path = tmp_path / "hermes-gateway.service"
+        installed = (
+            "[Unit]\n"
+            "Description=Hermes Agent Gateway - Messaging Platform Integration\n"
+            "[Service]\n"
+            "ExecStart=/venv/bin/python -m hermes_cli.main gateway run --replace\n"
+            'Environment="PATH=/stable/bin:/usr/bin"\n'
+            'Environment="HERMES_HOME=/home/hermes/.hermes"\n'
+            "Restart=always\n"
+        )
+        expected = installed.replace(
+            'Environment="PATH=/stable/bin:/usr/bin"',
+            'Environment="PATH=/transient/profile/node/bin:/stable/bin:/usr/bin"',
+        )
+        unit_path.write_text(installed, encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        monkeypatch.setattr(
+            gateway_cli,
+            "generate_systemd_unit",
+            lambda system=False, run_as_user=None: expected,
+        )
+
+        assert gateway_cli.systemd_unit_is_current(system=False) is True
+
+        monkeypatch.setattr(
+            gateway_cli,
+            "generate_systemd_unit",
+            lambda system=False, run_as_user=None: expected.replace(
+                "Restart=always", "Restart=on-failure"
+            ),
+        )
+        assert gateway_cli.systemd_unit_is_current(system=False) is False
+
     def test_refresh_refuses_to_bake_pytest_tmpdir_into_real_user_unit(
         self, tmp_path, monkeypatch
     ):

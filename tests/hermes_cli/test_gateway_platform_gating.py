@@ -19,7 +19,7 @@ class TestMatrixHiddenOnWindows:
         """Sanity: matrix is still in the picker on Linux/macOS."""
         import hermes_cli.gateway as gateway_mod
 
-        monkeypatch.setattr(gateway_mod.sys, "platform", "linux")
+        monkeypatch.setattr(gateway_mod, "_platform_picker_host_platform", lambda: "linux")
         platforms = gateway_mod._all_platforms()
         keys = {p["key"] for p in platforms}
         assert "matrix" in keys, "matrix must be available on Linux"
@@ -27,7 +27,7 @@ class TestMatrixHiddenOnWindows:
     def test_matrix_present_on_macos(self, monkeypatch):
         import hermes_cli.gateway as gateway_mod
 
-        monkeypatch.setattr(gateway_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(gateway_mod, "_platform_picker_host_platform", lambda: "darwin")
         platforms = gateway_mod._all_platforms()
         keys = {p["key"] for p in platforms}
         assert "matrix" in keys, "matrix must be available on macOS"
@@ -36,7 +36,7 @@ class TestMatrixHiddenOnWindows:
         """The actual gate: matrix must NOT appear on Windows."""
         import hermes_cli.gateway as gateway_mod
 
-        monkeypatch.setattr(gateway_mod.sys, "platform", "win32")
+        monkeypatch.setattr(gateway_mod, "_platform_picker_host_platform", lambda: "win32")
         platforms = gateway_mod._all_platforms()
         keys = {p["key"] for p in platforms}
         assert "matrix" not in keys, (
@@ -48,7 +48,7 @@ class TestMatrixHiddenOnWindows:
         """Gating must only drop matrix, not collateral damage."""
         import hermes_cli.gateway as gateway_mod
 
-        monkeypatch.setattr(gateway_mod.sys, "platform", "win32")
+        monkeypatch.setattr(gateway_mod, "_platform_picker_host_platform", lambda: "win32")
         platforms = gateway_mod._all_platforms()
         keys = {p["key"] for p in platforms}
         # A representative sample of platforms that have no Windows
