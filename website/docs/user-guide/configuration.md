@@ -106,6 +106,27 @@ For git installs, Hermes auto-stashes dirty tracked files and untracked files be
 
 Before that stash step, Hermes also restores tracked `package-lock.json` diffs left by npm install/build churn. Commit or manually stash intentional lockfile edits before updating.
 
+## Kanban
+
+Create-time kanban notifications are controlled under `kanban:` in `config.yaml`:
+
+```yaml
+kanban:
+  notify_on_create: true
+  notify_default_targets:
+    - telegram:-1001234567890:17585
+    - platform: discord
+      chat_id: "999888777"
+      thread_id: "555444333"
+  notify_inherit_depth: 1
+```
+
+- `notify_on_create` defaults to `true`. Set it to `false` to disable automatic notification subscriptions for new kanban tasks globally.
+- `notify_default_targets` is used only when a CLI create has no `--notify` targets and no gateway-origin chat. Worker-created parentless cards intentionally do not use these defaults.
+- `notify_inherit_depth` controls how far child cards inherit parent subscribers: `1` = immediate parents, `0` = no inheritance, `null` = all ancestors.
+
+See the [Kanban notification subscriptions guide](/user-guide/features/kanban#create-time-notification-subscriptions) for CLI flags, gateway behavior, and inheritance edge cases.
+
 ## Terminal Backend Configuration
 
 Hermes supports six terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, or a Singularity/Apptainer container.

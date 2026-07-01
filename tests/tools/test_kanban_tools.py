@@ -979,6 +979,89 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_create_inherits_parent_notify_subscriptions_exactly(worker_env):
+    """Worker-created children copy subscriptions from explicit parents.
+
+    Re-running an idempotent create must not duplicate those subscriptions.
+    """
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        kb.add_notify_sub(
+            conn,
+            task_id=worker_env,
+            platform="telegram",
+            chat_id="chat-parent",
+            thread_id="topic-1",
+            user_id="user-1",
+            notifier_profile="lumi",
+        )
+    finally:
+        conn.close()
+
+    args = {
+        "title": "child with subscribers",
+        "assignee": "peer",
+        "parents": [worker_env],
+        "idempotency_key": "same-child",
+    }
+    first = json.loads(kt._handle_create(args))
+    second = json.loads(kt._handle_create(args))
+    assert first["ok"] is True
+    assert second["ok"] is True
+    assert second["task_id"] == first["task_id"]
+
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, first["task_id"])
+    finally:
+        conn.close()
+
+    assert subs == [
+        {
+            "task_id": first["task_id"],
+            "platform": "telegram",
+            "chat_id": "chat-parent",
+            "thread_id": "topic-1",
+            "user_id": "user-1",
+            "notifier_profile": "lumi",
+            "created_at": subs[0]["created_at"],
+            "last_event_id": subs[0]["last_event_id"],
+        }
+    ]
+
+
+def test_create_without_parents_gets_no_notify_subscriptions(worker_env, monkeypatch):
+    """Headless/root creates do not fall back to default notify targets."""
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "kanban": {
+                "notify_on_create": True,
+                "notify_default_targets": [
+                    {"platform": "telegram", "chat_id": "default-chat"},
+                ],
+            }
+        },
+    )
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    d = json.loads(kt._handle_create({
+        "title": "root-like task",
+        "assignee": "peer",
+    }))
+    assert d["ok"] is True
+
+    conn = kb.connect()
+    try:
+        assert kb.list_notify_subs(conn, d["task_id"]) == []
+    finally:
+        conn.close()
+
+
 def test_create_inherits_worker_dir_workspace(monkeypatch, worker_env):
     """A worker scoped to a dir: task that spawns a child without a
     workspace arg inherits the dir, not scratch (so follow-up code-gen

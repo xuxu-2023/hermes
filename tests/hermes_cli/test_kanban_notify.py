@@ -1,4 +1,5 @@
 import asyncio
+import json
 import pytest
 
 from pathlib import Path
@@ -455,6 +456,7 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
     kb.create_board("projx")
 
     runner = object.__new__(GatewayRunner)
+    runner._kanban_notifier_profile = "gateway-prof"
     source = SimpleNamespace(
         platform=Platform.TELEGRAM,
         chat_id="chat1",
@@ -481,8 +483,41 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
     assert len(subs) == 1
     assert subs[0]["chat_id"] == "chat1"
     assert subs[0]["thread_id"] == "th1"
+    assert subs[0]["user_id"] == "u1"
+    assert subs[0]["notifier_profile"] == "gateway-prof"
 
     conn = kb.connect(board="default")
+    try:
+        assert kb.list_notify_subs(conn) == []
+    finally:
+        conn.close()
+
+
+@pytest.mark.asyncio
+async def test_gateway_create_json_output_does_not_autosubscribe(kanban_home):
+    """`/kanban create --json` stays machine-parseable and skips gateway suffix."""
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    runner = object.__new__(GatewayRunner)
+    runner._kanban_notifier_profile = "gateway-prof"
+    source = SimpleNamespace(
+        platform=Platform.TELEGRAM,
+        chat_id="chat1",
+        thread_id="th1",
+        user_id="u1",
+    )
+    event = SimpleNamespace(
+        text='/kanban create "json hello" --assignee alice --json',
+        source=source,
+    )
+
+    out = await GatewayRunner._handle_kanban_command(runner, event)
+
+    data = json.loads(out)
+    assert data["title"] == "json hello"
+    assert "subscribed" not in out.lower()
+    conn = kb.connect()
     try:
         assert kb.list_notify_subs(conn) == []
     finally:

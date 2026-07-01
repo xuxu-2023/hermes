@@ -576,7 +576,7 @@ Multi-profile, multi-project collaboration board. Each install can host many boa
 | `boards show` / `boards current` | Print the currently-active board's name, DB path, and task counts. |
 | `boards rename <slug> "<name>"` | Change a board's display name. Slug is immutable. |
 | `boards rm <slug>` | Archive (default) or hard-delete a board. `--delete` skips the archive step. Archived boards move to `boards/_archived/<slug>-<ts>/`. Refused for `default`. |
-| `create "<title>"` | Create a new task on the active board. Flags: `--body`, `--assignee`, `--parent` (repeatable), `--workspace scratch\|worktree\|dir:<path>`, `--tenant`, `--priority`, `--triage`, `--idempotency-key`, `--max-runtime`, `--max-retries`, `--skill` (repeatable). |
+| `create "<title>"` | Create a new task on the active board. Flags: `--body`, `--assignee`, `--parent` (repeatable), `--workspace scratch\|worktree\|dir:<path>`, `--tenant`, `--priority`, `--triage`, `--idempotency-key`, `--max-runtime`, `--max-retries`, `--skill` (repeatable), `--notify PLATFORM:CHAT_ID[:THREAD_ID]` (repeatable), `--no-subscribe`. `--json` changes output only; it still performs create-time notification subscriptions unless `--no-subscribe` is present. |
 | `list` / `ls` | List tasks on the active board. Filter with `--mine`, `--assignee`, `--status`, `--tenant`, `--archived`, `--json`. |
 | `show <id>` | Show a task with comments and events. `--json` for machine output. |
 | `assign <id> <profile>` | Assign or reassign. Use `none` to unassign. Refused while task is running. |
@@ -599,6 +599,14 @@ Multi-profile, multi-project collaboration board. Each install can host many boa
 Examples:
 
 ```bash
+# Subscribe a CLI-created task to a chat/topic. Repeat --notify for more targets.
+hermes kanban create "write weekly ops brief" \
+    --assignee ops \
+    --notify telegram:-1001234567890:17585
+
+# Suppress subscription for one create, even if config defaults exist.
+hermes kanban create "quiet backfill" --assignee ops --no-subscribe
+
 # Create a second board and put a task on it without switching away.
 hermes kanban boards create atm10-server --name "ATM10 Server" --icon 🎮
 hermes kanban --board atm10-server create "Restart server" --assignee ops

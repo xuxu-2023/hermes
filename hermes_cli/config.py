@@ -2607,6 +2607,21 @@ DEFAULT_CONFIG = {
         # worker process (if still running host-locally) is terminated
         # before the reclaim.  0 disables stale detection entirely.
         "dispatch_stale_timeout_seconds": 14400,
+        # When true, create-time kanban notification subscriptions are
+        # attempted for gateway origins, explicit CLI --notify targets,
+        # CLI notify_default_targets, and parent/subscriber inheritance.
+        # Set notify_on_create=false to opt out globally.
+        "notify_on_create": True,
+        # Fallback notify targets for CLI-created tasks when the create
+        # call has no explicit --notify targets and no ambient gateway
+        # origin.  Entries may be PLATFORM:CHAT_ID[:THREAD_ID] strings or
+        # dicts with platform / chat_id / optional thread_id / user_id /
+        # notifier_profile keys. Empty list = no CLI fallback targets.
+        "notify_default_targets": [],
+        # Max levels of ancestor-task notification subscriptions to
+        # inherit when a child task is created.  1 = immediate parents
+        # only.  null / None = unlimited ancestry walk.  0 = no inherit.
+        "notify_inherit_depth": 1,
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.

@@ -381,7 +381,7 @@ class GatewaySlashCommandsMixin:
         import asyncio
         import re
         import shlex
-        from hermes_cli.kanban import run_slash
+        from hermes_cli.kanban import _auto_subscribe_on_create, run_slash
 
         text = (event.text or "").strip()
         # Strip the leading "/kanban" (with or without slash), leaving args.
@@ -438,21 +438,27 @@ class GatewaySlashCommandsMixin:
                             from hermes_cli import kanban_db as _kb
                             conn = _kb.connect(board=requested_board)
                             try:
-                                _kb.add_notify_sub(
-                                    conn, task_id=task_id,
-                                    platform=platform_str, chat_id=chat_id,
-                                    thread_id=thread_id or None,
-                                    user_id=user_id,
-                                    notifier_profile=getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
+                                return _auto_subscribe_on_create(
+                                    conn,
+                                    task_id,
+                                    origin_platform=platform_str,
+                                    origin_chat_id=chat_id,
+                                    origin_thread_id=thread_id or None,
+                                    origin_user_id=user_id,
+                                    notifier_profile=(
+                                        getattr(self, "_kanban_notifier_profile", None)
+                                        or self._active_profile_name()
+                                    ),
                                 )
                             finally:
                                 conn.close()
-                        await asyncio.to_thread(_sub)
-                        output = (
-                            output.rstrip()
-                            + "\n"
-                            + t("gateway.kanban.subscribed_suffix", task_id=task_id)
-                        )
+                        subscribed = await asyncio.to_thread(_sub)
+                        if subscribed:
+                            output = (
+                                output.rstrip()
+                                + "\n"
+                                + t("gateway.kanban.subscribed_suffix", task_id=task_id)
+                            )
                 except Exception as exc:
                     logger.warning("kanban create auto-subscribe failed: %s", exc)
 

@@ -19,6 +19,10 @@ The board has two front doors, both backed by the same `~/.hermes/kanban.db`:
 
 Both surfaces route through the same `kanban_db` layer, so reads see a consistent view and writes can't drift. The rest of this page shows CLI examples because they're easy to copy-paste, but every CLI verb has a tool-call equivalent the model uses.
 
+:::warning Release note: create now subscribes even with `--json`
+`hermes kanban create --json` now performs the same notification-subscription side effects as the human-readable create command. This is a breaking behavior change for scripts that used `--json` as a "machine-only, no subscription" path. Add `--no-subscribe` to suppress subscriptions for a single create, or set `kanban.notify_on_create: false` to disable create-time auto-subscription globally.
+:::
+
 This is the shape that covers the workloads `delegate_task` can't:
 
 - **Research triage** — parallel researchers + analyst + writer, human-in-the-loop.
@@ -246,6 +250,48 @@ hermes kanban create "nightly ops review" \
     --idempotency-key "nightly-ops-$(date -u +%Y-%m-%d)" \
     --json
 ```
+
+Notification subscriptions are also idempotent: if a duplicate idempotency key returns an existing task, Hermes still runs the same subscription pass, but duplicate `(task_id, platform, chat_id, thread_id)` rows are ignored instead of creating extra notifications.
+
+### Create-time notification subscriptions
+
+Kanban can subscribe a chat or channel to a task when the task is created. Subscribed targets receive terminal-state updates from the gateway notifier, such as completion, block, crash, and circuit-breaker/gave-up events, so the requester sees how the worker run ended without polling the board.
+
+CLI-created tasks have two explicit controls:
+
+```bash
+# Subscribe one or more gateway targets to this task.
+hermes kanban create "write weekly ops brief" \
+    --assignee ops \
+    --notify telegram:-1001234567890:17585 \
+    --notify discord:999888777:555444333
+
+# Create the task but do not subscribe anything for this one call.
+hermes kanban create "quiet backfill" \
+    --assignee ops \
+    --no-subscribe
+```
+
+`--notify` is repeatable and accepts `PLATFORM:CHAT_ID[:THREAD_ID]`. Omit `THREAD_ID` for platforms/chats that do not have thread or topic ids. `--no-subscribe` wins over every other source for that create, including `--notify`, gateway origin, and config defaults.
+
+The global config lives under `kanban:` in `~/.hermes/config.yaml`:
+
+```yaml
+kanban:
+  notify_on_create: true
+  notify_default_targets:
+    - telegram:-1001234567890:17585
+    - platform: discord
+      chat_id: "999888777"
+      thread_id: "555444333"
+  notify_inherit_depth: 1
+```
+
+- `notify_on_create` (default `true`) gates all create-time auto-subscription. Set it to `false` to turn the feature off globally. When it is false, even explicit `--notify` targets are skipped.
+- `notify_default_targets` is the fallback target list for plain CLI creates that have no `--notify` targets and no gateway-origin chat. Entries may be `PLATFORM:CHAT_ID[:THREAD_ID]` strings or maps with `platform`, `chat_id`, optional `thread_id`, optional `user_id`, and optional `notifier_profile`.
+- `notify_inherit_depth` controls how far child tasks inherit existing subscriptions from parent tasks. `1` means immediate parents only (the default), `0` disables inheritance, and `null` means walk all reachable ancestors.
+
+Gateway-created tasks (`/kanban create ...` from Telegram, Discord, Slack, etc.) use the incoming message as the ambient origin. The gateway subscribes that same platform/chat/thread/user so replies go back to the requester; it only appends a "subscribed" suffix when a new subscription row was actually created. Because the gateway has an origin, `notify_default_targets` are not used for gateway-created tasks unless the caller supplies no ambient origin.
 
 ### Bulk CLI verbs
 

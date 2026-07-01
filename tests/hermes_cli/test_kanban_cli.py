@@ -167,6 +167,167 @@ def test_run_slash_json_output(kanban_home):
     assert payload["status"] == "ready"
 
 
+def test_run_slash_create_notify_subscribes_explicit_targets(kanban_home, monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "kanban": {
+                "notify_on_create": True,
+                "notify_default_targets": [
+                    {"platform": "telegram", "chat_id": "default-chat"},
+                ],
+            }
+        },
+    )
+
+    out = kc.run_slash(
+        "create 'notify me' --notify telegram:chat-1:topic-1 --notify discord:chan-2"
+    )
+    import re
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+
+    with kb.connect() as conn:
+        subs = kb.list_notify_subs(conn, tid)
+
+    assert [
+        (s["platform"], s["chat_id"], s["thread_id"])
+        for s in sorted(subs, key=lambda s: (s["platform"], s["chat_id"]))
+    ] == [
+        ("discord", "chan-2", ""),
+        ("telegram", "chat-1", "topic-1"),
+    ]
+
+
+def test_run_slash_create_no_subscribe_suppresses_all_targets(kanban_home, monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "kanban": {
+                "notify_on_create": True,
+                "notify_default_targets": [
+                    {"platform": "telegram", "chat_id": "default-chat"},
+                ],
+            }
+        },
+    )
+
+    out = kc.run_slash(
+        "create 'quiet' --notify telegram:chat-1 --no-subscribe --json"
+    )
+    tid = json.loads(out)["id"]
+
+    with kb.connect() as conn:
+        assert kb.list_notify_subs(conn, tid) == []
+
+
+def test_run_slash_create_uses_defaults_only_without_explicit_or_ambient(kanban_home, monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "kanban": {
+                "notify_on_create": True,
+                "notify_default_targets": [
+                    {"platform": "telegram", "chat_id": "default-chat", "thread_id": "topic"},
+                ],
+            }
+        },
+    )
+
+    default_out = kc.run_slash("create 'default notify' --json")
+    explicit_out = kc.run_slash("create 'explicit notify' --notify discord:chan --json")
+
+    with kb.connect() as conn:
+        default_subs = kb.list_notify_subs(conn, json.loads(default_out)["id"])
+        explicit_subs = kb.list_notify_subs(conn, json.loads(explicit_out)["id"])
+
+    assert [(s["platform"], s["chat_id"], s["thread_id"]) for s in default_subs] == [
+        ("telegram", "default-chat", "topic"),
+    ]
+    assert [(s["platform"], s["chat_id"], s["thread_id"]) for s in explicit_subs] == [
+        ("discord", "chan", ""),
+    ]
+
+
+def test_run_slash_create_dedupes_duplicate_notify_targets(kanban_home, monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"notify_on_create": True}},
+    )
+
+    out = kc.run_slash(
+        "create 'duplicate notify' "
+        "--notify telegram:chat-1:topic "
+        "--notify telegram:chat-1:topic "
+        "--json"
+    )
+    tid = json.loads(out)["id"]
+
+    with kb.connect() as conn:
+        subs = kb.list_notify_subs(conn, tid)
+
+    assert [(s["platform"], s["chat_id"], s["thread_id"]) for s in subs] == [
+        ("telegram", "chat-1", "topic"),
+    ]
+
+
+def test_auto_subscribe_helper_adds_ambient_instead_of_defaults(kanban_home, monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "kanban": {
+                "notify_on_create": True,
+                "notify_default_targets": [
+                    {"platform": "telegram", "chat_id": "default-chat"},
+                ],
+            }
+        },
+    )
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="ambient", assignee="alice")
+        added = kc._auto_subscribe_on_create(
+            conn,
+            tid,
+            origin_platform="telegram",
+            origin_chat_id="origin-chat",
+            origin_thread_id="topic-9",
+            origin_user_id="user-9",
+            notifier_profile="lumi",
+        )
+        assert added == 1
+        subs = kb.list_notify_subs(conn, tid)
+
+    assert [(s["platform"], s["chat_id"], s["thread_id"], s["user_id"], s["notifier_profile"]) for s in subs] == [
+        ("telegram", "origin-chat", "topic-9", "user-9", "lumi"),
+    ]
+
+
+def test_auto_subscribe_helper_honors_notify_on_create_false(kanban_home, monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "kanban": {
+                "notify_on_create": False,
+                "notify_default_targets": [
+                    {"platform": "telegram", "chat_id": "default-chat"},
+                ],
+            }
+        },
+    )
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="disabled", assignee="alice")
+        added = kc._auto_subscribe_on_create(
+            conn,
+            tid,
+            explicit_targets=["telegram:chat-1"],
+            origin_platform="discord",
+            origin_chat_id="chan",
+        )
+        assert added == 0
+        assert kb.list_notify_subs(conn, tid) == []
+
+
 def test_run_slash_dispatch_dry_run_counts(kanban_home):
     kc.run_slash("create 'a' --assignee alice")
     kc.run_slash("create 'b' --assignee bob")

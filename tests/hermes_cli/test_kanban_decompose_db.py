@@ -168,6 +168,91 @@ def test_decompose_records_audit_comment_and_event(kanban_home):
     assert any(ev.kind == "decomposed" for ev in events)
 
 
+def test_decompose_children_inherit_root_notify_subscriptions_only(kanban_home):
+    """Decomposed children inherit root subscriptions, not sibling parents'."""
+    with kb.connect() as conn:
+        grandparent = kb.create_task(conn, title="grandparent")
+        root = _create_triage(conn, title="root to fan out")
+        kb.link_tasks(conn, parent_id=grandparent, child_id=root)
+        kb.add_notify_sub(
+            conn,
+            task_id=grandparent,
+            platform="telegram",
+            chat_id="grandparent-chat",
+            thread_id="",
+            user_id="user-grandparent",
+            notifier_profile="lumi",
+        )
+        kb.add_notify_sub(
+            conn,
+            task_id=root,
+            platform="discord",
+            chat_id="root-chat",
+            thread_id="thread-1",
+            user_id="user-root",
+            notifier_profile="lumi",
+        )
+
+        child_ids = kb.decompose_triage_task(
+            conn,
+            root,
+            root_assignee="orch",
+            children=[
+                {"title": "first", "assignee": "a"},
+                {"title": "second", "assignee": "b", "parents": [0]},
+            ],
+            author="decomposer",
+        )
+        assert child_ids is not None
+        # Duplicate inheritance should be idempotent and add nothing.
+        assert kb.inherit_parent_subscribers(
+            conn,
+            child_task_id=child_ids[0],
+            parent_task_ids=[root],
+            inherit_depth=1,
+        ) == 0
+
+        for child_id in child_ids:
+            subs = kb.list_notify_subs(conn, child_id)
+            assert subs == [
+                {
+                    "task_id": child_id,
+                    "platform": "discord",
+                    "chat_id": "root-chat",
+                    "thread_id": "thread-1",
+                    "user_id": "user-root",
+                    "notifier_profile": "lumi",
+                    "created_at": subs[0]["created_at"],
+                    "last_event_id": subs[0]["last_event_id"],
+                }
+            ]
+
+
+def test_inherit_parent_subscribers_depth_zero_disables_inheritance(kanban_home):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        child = kb.create_task(conn, title="child", parents=[parent])
+        kb.add_notify_sub(
+            conn,
+            task_id=parent,
+            platform="telegram",
+            chat_id="parent-chat",
+            thread_id="topic-1",
+            user_id="user-parent",
+            notifier_profile="lumi",
+        )
+
+        added = kb.inherit_parent_subscribers(
+            conn,
+            child_task_id=child,
+            parent_task_ids=[parent],
+            inherit_depth=0,
+        )
+
+        assert added == 0
+        assert kb.list_notify_subs(conn, child) == []
+
+
 def test_decompose_children_inherit_dir_workspace(kanban_home):
     """Fan-out children inherit the root's dir workspace, not scratch."""
     proj = "/home/teknium/myproject"

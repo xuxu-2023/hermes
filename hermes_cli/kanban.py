@@ -22,7 +22,7 @@ import shlex
 import sys
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_swarm as ks
@@ -130,6 +130,115 @@ def _parse_branch_flag(value: Optional[str]) -> Optional[str]:
     if any(ch.isspace() for ch in branch):
         raise argparse.ArgumentTypeError("--branch must not contain whitespace")
     return branch
+
+
+def _parse_notify_target(value: str) -> dict[str, Optional[str]]:
+    """Parse ``PLATFORM:CHAT_ID[:THREAD_ID]`` notify target strings."""
+    raw = (value or "").strip()
+    parts = raw.split(":", 2)
+    if len(parts) < 2 or not parts[0].strip() or not parts[1].strip():
+        raise argparse.ArgumentTypeError(
+            "--notify must be PLATFORM:CHAT_ID[:THREAD_ID]"
+        )
+    return {
+        "platform": parts[0].strip(),
+        "chat_id": parts[1].strip(),
+        "thread_id": parts[2].strip() if len(parts) > 2 and parts[2].strip() else None,
+    }
+
+
+def _auto_subscribe_on_create(
+    conn,
+    task_id: str,
+    explicit_targets: Optional[Sequence[str | dict[str, Any]]] = None,
+    no_subscribe: bool = False,
+    origin_platform: Optional[str] = None,
+    origin_chat_id: Optional[str] = None,
+    origin_thread_id: Optional[str] = None,
+    origin_user_id: Optional[str] = None,
+    notifier_profile: Optional[str] = None,
+) -> int:
+    """Attach notification subscriptions for a newly-created task.
+
+    ``--no-subscribe`` wins over every other source.  Otherwise the global
+    ``kanban.notify_on_create`` flag gates automatic subscription. Explicit
+    targets come from CLI ``--notify`` flags; ambient origin is supplied by
+    gateway callers; and config ``notify_default_targets`` is a CLI fallback
+    only when there are no explicit targets and no ambient origin.
+    """
+    if no_subscribe:
+        return 0
+
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+    except Exception:
+        cfg = {}
+    kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+    if kanban_cfg.get("notify_on_create", True) is False:
+        return 0
+
+    targets: list[dict[str, Optional[str]]] = []
+    for target in explicit_targets or []:
+        if isinstance(target, str):
+            targets.append(_parse_notify_target(target))
+        elif isinstance(target, dict):
+            targets.append({
+                "platform": str(target.get("platform") or "").strip(),
+                "chat_id": str(target.get("chat_id") or "").strip(),
+                "thread_id": (
+                    str(target.get("thread_id") or "").strip() or None
+                ),
+                "user_id": target.get("user_id"),
+                "notifier_profile": target.get("notifier_profile"),
+            })
+        else:
+            continue
+
+    has_ambient = bool(origin_platform and origin_chat_id)
+    if has_ambient:
+        targets.append({
+            "platform": str(origin_platform).strip(),
+            "chat_id": str(origin_chat_id).strip(),
+            "thread_id": str(origin_thread_id or "").strip() or None,
+            "user_id": origin_user_id,
+            "notifier_profile": notifier_profile,
+        })
+    elif not targets:
+        for target in kanban_cfg.get("notify_default_targets") or []:
+            if isinstance(target, str):
+                targets.append(_parse_notify_target(target))
+            elif isinstance(target, dict):
+                targets.append({
+                    "platform": str(target.get("platform") or "").strip(),
+                    "chat_id": str(target.get("chat_id") or "").strip(),
+                    "thread_id": (
+                        str(target.get("thread_id") or "").strip() or None
+                    ),
+                    "user_id": target.get("user_id"),
+                    "notifier_profile": target.get("notifier_profile"),
+                })
+
+    added = 0
+    owner = notifier_profile or _profile_author()
+    for target in targets:
+        platform = (target.get("platform") or "").strip()
+        chat_id = (target.get("chat_id") or "").strip()
+        if not platform or not chat_id:
+            continue
+        before = len(kb.list_notify_subs(conn, task_id))
+        kb.add_notify_sub(
+            conn,
+            task_id=task_id,
+            platform=platform,
+            chat_id=chat_id,
+            thread_id=target.get("thread_id"),
+            user_id=target.get("user_id"),
+            notifier_profile=target.get("notifier_profile") or owner,
+        )
+        after = len(kb.list_notify_subs(conn, task_id))
+        added += max(0, after - before)
+    return added
 
 
 def _check_dispatcher_presence() -> tuple[bool, str]:
@@ -333,6 +442,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "and re-queues the task.")
     p_create.add_argument("--created-by", default="user",
                           help="Author name recorded on the task (default: user)")
+    p_create.add_argument("--notify", action="append", default=[], dest="notify_targets",
+                          metavar="PLATFORM:CHAT_ID[:THREAD_ID]",
+                          help="Subscribe a gateway target to this task's terminal events (repeatable)")
+    p_create.add_argument("--no-subscribe", action="store_true",
+                          help="Do not create any notify subscriptions for this task")
     p_create.add_argument("--skill", action="append", default=[], dest="skills",
                           help="Skill to force-load into the worker "
                                "(repeatable). The kanban lifecycle is already "
@@ -1306,6 +1420,10 @@ def _cmd_create(args: argparse.Namespace) -> int:
     try:
         ws_kind, ws_path = _parse_workspace_flag(args.workspace)
         branch_name = _parse_branch_flag(getattr(args, "branch", None))
+        notify_targets = [
+            _parse_notify_target(raw)
+            for raw in (getattr(args, "notify_targets", None) or [])
+        ]
     except argparse.ArgumentTypeError as exc:
         print(f"kanban: {exc}", file=sys.stderr)
         return 2
@@ -1349,6 +1467,12 @@ def _cmd_create(args: argparse.Namespace) -> int:
             initial_status=getattr(args, "initial_status", "running"),
         )
         task = kb.get_task(conn, task_id)
+        _auto_subscribe_on_create(
+            conn,
+            task_id,
+            explicit_targets=notify_targets,
+            no_subscribe=bool(getattr(args, "no_subscribe", False)),
+        )
     if getattr(args, "json", False):
         print(json.dumps(_task_to_dict(task), indent=2, ensure_ascii=False))
     else:

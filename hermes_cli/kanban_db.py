@@ -5133,6 +5133,12 @@ def decompose_triage_task(
                 {"by": author or "decomposer", "from_decompose_of": task_id},
             )
             child_ids.append(new_id)
+            inherit_parent_subscribers(
+                conn,
+                child_task_id=new_id,
+                parent_task_ids=[task_id],
+                inherit_depth=1,
+            )
 
         # Link children to their sibling parents (within the decomposed graph).
         for idx, child in enumerate(children):
@@ -8267,6 +8273,118 @@ def add_notify_sub(
                 """,
                 (notifier_profile, task_id, platform, chat_id, thread_id or ""),
             )
+
+
+def inherit_parent_subscribers(
+    conn: sqlite3.Connection,
+    *,
+    child_task_id: str,
+    parent_task_ids: Optional[list[str]] = None,
+    inherit_depth: Optional[int] = 1,
+) -> int:
+    """Walk ancestor tasks up to ``inherit_depth`` and copy their notify
+    subscriptions to ``child_task_id`` using INSERT OR IGNORE semantics.
+
+    BFS through the ``task_links`` parent/child graph, avoiding cycles
+    with a visited set.  Each ancestor's ``kanban_notify_subs`` rows are
+    copied verbatim (platform, chat_id, thread_id, user_id,
+    notifier_profile) into the child task.  The count returned is the
+    number of *new* subscriptions added to the child — duplicates
+    (same PK = same task_id+platform+chat_id+thread_id) are silently
+    skipped.
+
+    Args:
+        conn: Open DB connection (the caller's board scope).
+        child_task_id: The task to inherit subscriptions into.
+        parent_task_ids: Explicit ancestor task IDs.  When empty/None
+            the function queries ``task_links`` to find parents of
+            ``child_task_id``.
+        inherit_depth: Max levels of ancestry to walk.
+            0 → no-op (return 0).
+            None → unlimited (walk all reachable ancestors).
+
+    Returns:
+        Number of subscriptions newly inserted for ``child_task_id``.
+    """
+    if inherit_depth is not None and inherit_depth <= 0:
+        return 0
+
+    # Resolve starting parent IDs from task_links if not provided.
+    if not parent_task_ids:
+        rows = conn.execute(
+            "SELECT parent_id FROM task_links WHERE child_id = ?",
+            (child_task_id,),
+        ).fetchall()
+        if not rows:
+            return 0
+        parent_task_ids = [r["parent_id"] for r in rows]
+
+    now = int(time.time())
+    visited: set[str] = set()
+    current_level: list[str] = list(parent_task_ids)
+    depth = 0
+
+    txn_cm = contextlib.nullcontext(conn) if conn.in_transaction else write_txn(conn)
+    with txn_cm:
+        # Snapshot the current notify-sub count for this task so we can
+        # diff after the walk.
+        existing_count = conn.execute(
+            "SELECT COUNT(*) FROM kanban_notify_subs WHERE task_id = ?",
+            (child_task_id,),
+        ).fetchone()[0]
+
+        while current_level:
+            if inherit_depth is not None and depth >= inherit_depth:
+                break
+
+            next_level: list[str] = []
+            for ancestor_id in current_level:
+                if ancestor_id in visited:
+                    continue
+                visited.add(ancestor_id)
+
+                # Fetch all subscriptions for this ancestor task.
+                subs = conn.execute(
+                    """SELECT platform, chat_id, thread_id, user_id, notifier_profile
+                       FROM kanban_notify_subs
+                       WHERE task_id = ?""",
+                    (ancestor_id,),
+                ).fetchall()
+
+                for sub in subs:
+                    conn.execute(
+                        """INSERT OR IGNORE INTO kanban_notify_subs
+                           (task_id, platform, chat_id, thread_id, user_id,
+                            notifier_profile, created_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            child_task_id,
+                            sub["platform"],
+                            sub["chat_id"],
+                            sub["thread_id"] or "",
+                            sub["user_id"],
+                            sub["notifier_profile"],
+                            now,
+                        ),
+                    )
+
+                # Queue grandparent tasks for the next level, depth permitting.
+                if inherit_depth is None or depth + 1 < inherit_depth:
+                    grandparent_rows = conn.execute(
+                        "SELECT parent_id FROM task_links WHERE child_id = ?",
+                        (ancestor_id,),
+                    ).fetchall()
+                    next_level.extend(r["parent_id"] for r in grandparent_rows)
+
+            current_level = next_level
+            depth += 1
+
+        # Diff to count new subscriptions (INSERT OR IGNORE may have skipped dupes).
+        new_count = conn.execute(
+            "SELECT COUNT(*) FROM kanban_notify_subs WHERE task_id = ?",
+            (child_task_id,),
+        ).fetchone()[0]
+        return new_count - existing_count
 
 
 def list_notify_subs(

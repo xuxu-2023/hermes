@@ -934,6 +934,13 @@ def _handle_create(args: dict, **kw) -> str:
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
             )
+            if parents:
+                kb.inherit_parent_subscribers(
+                    conn,
+                    child_task_id=new_tid,
+                    parent_task_ids=list(parents),
+                    inherit_depth=1,
+                )
             new_task = kb.get_task(conn, new_tid)
             subscribed = _maybe_auto_subscribe(conn, new_tid)
             return _ok(
