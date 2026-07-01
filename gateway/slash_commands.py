@@ -1083,6 +1083,57 @@ class GatewaySlashCommandsMixin:
 
         return t("gateway.stop.no_active")
 
+    async def _handle_exit_restricted_command(self, event: MessageEvent) -> str:
+        """Handle /exit-restricted — reset iteration budget and restore full tool access.
+
+        When an agent exhausts its iteration budget within a turn (default 90
+        iterations), the budget counter accumulates but never resets between
+        turns because the gateway caches agent instances.  This leaves the agent
+        in "restricted mode" where only housekeeping tools (memory, todo,
+        skill_manage, session_search) are available.
+
+        This command resets the iteration budget counter so the next turn has
+        the full budget available, restoring normal tool access.
+        See issue #42824.
+        """
+        from gateway.run import _AGENT_PENDING_SENTINEL
+        source = event.source
+        session_entry = self.session_store.get_or_create_session(source)
+        session_key = session_entry.session_key
+
+        # Try running agent first (mid-turn), then cached agent (between turns)
+        agent = self._running_agents.get(session_key)
+        if not agent or agent is _AGENT_PENDING_SENTINEL:
+            _cache_lock = getattr(self, "_agent_cache_lock", None)
+            _cache = getattr(self, "_agent_cache", None)
+            if _cache_lock and _cache is not None:
+                with _cache_lock:
+                    cached = _cache.get(session_key)
+                    if cached:
+                        agent = cached[0] if isinstance(cached, tuple) else cached
+
+        if not agent:
+            return "No active agent found for this session."
+
+        # Reset iteration budget
+        budget_reset = False
+        if hasattr(agent, "iteration_budget") and agent.iteration_budget:
+            agent.iteration_budget.reset()
+            budget_reset = True
+
+        # Reset budget-related flags
+        if hasattr(agent, "_budget_exhausted_injected"):
+            agent._budget_exhausted_injected = False
+        if hasattr(agent, "_budget_grace_call"):
+            agent._budget_grace_call = False
+
+        if budget_reset:
+            return (
+                f"✅ Restricted mode cleared. Iteration budget reset "
+                f"({agent.iteration_budget.max_total} iterations available)."
+            )
+        return "No iteration budget found on the active agent."
+
     async def _handle_platform_command(self, event: MessageEvent) -> str:
         """Handle ``/platform list|pause|resume [name]`` — surface and
         manually control failed/paused gateway adapters.

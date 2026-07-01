@@ -104,3 +104,79 @@ def test_iteration_budget_remaining():
     assert budget.remaining == 2
     budget.refund()
     assert budget.remaining == 3
+
+
+def test_iteration_budget_reset_clears_used():
+    """reset() must clear the used counter back to zero.
+
+    This is the core fix for issue #42824: when an agent exhausts its
+    iteration budget, the counter persists across turns because the gateway
+    caches agent instances.  reset() clears the counter so the next turn
+    has the full budget available.
+    """
+    from run_agent import IterationBudget
+
+    budget = IterationBudget(max_total=90)
+
+    # Exhaust the budget
+    for _ in range(90):
+        budget.consume()
+    assert budget.used == 90
+    assert budget.remaining == 0
+
+    # Reset should clear the counter
+    budget.reset()
+    assert budget.used == 0
+    assert budget.remaining == 90
+
+    # Should be able to consume again
+    assert budget.consume() is True
+    assert budget.used == 1
+
+
+def test_iteration_budget_reset_preserves_max_total():
+    """reset() must not change the max_total cap."""
+    from run_agent import IterationBudget
+
+    budget = IterationBudget(max_total=42)
+    budget.consume()
+    budget.consume()
+    budget.reset()
+    assert budget.max_total == 42
+    assert budget.remaining == 42
+
+
+def test_iteration_budget_reset_is_thread_safe():
+    """reset() must be safe to call while other threads consume/refund."""
+    from concurrent.futures import ThreadPoolExecutor
+    from run_agent import IterationBudget
+
+    budget = IterationBudget(max_total=1000)
+    errors = []
+
+    def consumer():
+        try:
+            for _ in range(200):
+                budget.consume()
+        except Exception as exc:
+            errors.append(exc)
+
+    def resetter():
+        try:
+            for _ in range(50):
+                budget.reset()
+        except Exception as exc:
+            errors.append(exc)
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [
+            executor.submit(consumer),
+            executor.submit(consumer),
+            executor.submit(resetter),
+            executor.submit(resetter),
+        ]
+        for f in futures:
+            f.result()
+
+    assert not errors, f"Thread safety violation: {errors}"
+    assert 0 <= budget.used <= budget.max_total

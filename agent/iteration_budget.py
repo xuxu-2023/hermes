@@ -48,6 +48,17 @@ class IterationBudget:
             if self._used > 0:
                 self._used -= 1
 
+    def reset(self) -> None:
+        """Reset the used counter to zero.
+
+        Called between user turns so that a budget exhausted in a prior
+        turn does not permanently block the next turn.  The ``max_total``
+        cap is preserved — this only clears the accumulated ``_used``
+        count.  See ``/exit-restricted`` (issue #42824).
+        """
+        with self._lock:
+            self._used = 0
+
     @property
     def used(self) -> int:
         with self._lock:
