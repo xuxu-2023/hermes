@@ -926,6 +926,32 @@ def _wrap_current_message_with_observed_context(message: Any, observed_context: 
     return message
 
 
+def _prepend_note_to_message(message: Any, note: str) -> Any:
+    """Prepend a one-shot system-style note to a user message.
+
+    ``message`` is normally a plain string, but gateway code can convert it
+    into a list of OpenAI-style content parts when native image attachments
+    are present.  Naively doing ``note + "\\n\\n" + message`` raises
+    ``TypeError: can only concatenate str (not "list") to str`` in that case.
+
+    Mirrors ``_prepend_note_to_message`` in ``cli.py`` (commit 043350dfd).
+    """
+    if not note:
+        return message
+    if isinstance(message, str):
+        return f"{note}\n\n{message}"
+    if isinstance(message, list):
+        parts = list(message)
+        for i, part in enumerate(parts):
+            if isinstance(part, dict) and part.get("type") == "text":
+                merged = dict(part)
+                merged["text"] = f"{note}\n\n{part.get('text', '')}"
+                parts[i] = merged
+                return parts
+        return [{"type": "text", "text": note}, *parts]
+    return message
+
+
 def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
     """Return the ``timestamp`` of the last usable transcript row, if any.
 
@@ -17447,7 +17473,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _pending_notes = getattr(self, '_pending_model_notes', {})
             _msn = _pending_notes.pop(session_key, None) if session_key else None
             if _msn:
-                message = _msn + "\n\n" + message
+                message = _prepend_note_to_message(message, _msn)
 
             # Auto-continue: if the loaded history ends with a tool result,
             # the previous agent turn was interrupted mid-work (gateway
@@ -17566,7 +17592,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _pending_notes and session_key and session_key in _pending_notes:
                 _srn = _pending_notes.pop(session_key, None)
                 if _srn:
-                    message = _srn + "\n\n" + message
+                    message = _prepend_note_to_message(message, _srn)
 
             # Safety net: a startup auto-resume event carries empty
             # text and relies on the resume_pending branch above to supply the
