@@ -125,10 +125,42 @@ def _is_kanban_worker_env_gate(item: dict) -> bool:
     return bool(tools) and all(str(tool).startswith("kanban_") for tool in tools)
 
 
+def _vision_native_fast_path_active() -> bool:
+    """True when the main model's native vision fast path is active.
+
+    When the active model is itself vision-capable (e.g. MiniMax-M3 with
+    ``model.supports_vision: true``, or a well-known multimodal model on a
+    supported provider), the native fast path handles image pixels directly
+    without needing an auxiliary vision provider.  The doctor should not warn
+    about a missing vision dependency in that case.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+    except Exception:
+        return False
+    model_cfg = cfg.get("model") if isinstance(cfg, dict) else {}
+    if not isinstance(model_cfg, dict):
+        return False
+    provider = str(model_cfg.get("provider") or "").strip().lower()
+    model = str(
+        model_cfg.get("default") or model_cfg.get("model") or ""
+    ).strip()
+    if not provider or not model:
+        return False
+    try:
+        from agent.image_routing import decide_image_input_mode
+        return decide_image_input_mode(provider, model, cfg) == "native"
+    except Exception:
+        return False
+
+
 def _doctor_tool_availability_detail(toolset: str) -> str:
     """Optional explanatory suffix for toolsets whose doctor status needs context."""
     if toolset == "kanban" and not os.environ.get("HERMES_KANBAN_TASK"):
         return "(runtime-gated; loaded only for dispatcher-spawned workers)"
+    if toolset == "vision" and _vision_native_fast_path_active():
+        return "(native fast path — main model is vision-capable)"
     return ""
 
 
@@ -145,6 +177,10 @@ def _apply_doctor_tool_availability_overrides(available: list[str], unavailable:
         if name == "honcho" and _honcho_is_configured_for_doctor():
             if "honcho" not in updated_available:
                 updated_available.append("honcho")
+            continue
+        if name == "vision" and _vision_native_fast_path_active():
+            if "vision" not in updated_available:
+                updated_available.append("vision")
             continue
         updated_unavailable.append(item)
     return updated_available, updated_unavailable
