@@ -347,6 +347,12 @@ def list_agent_created_skill_names() -> List[str]:
     usage = load_usage()
 
     names: List[str] = []
+    # Track resolved symlink targets to avoid counting the same skill
+    # directory multiple times when it's symlinked under different names
+    # (e.g. 26 ``lark-*`` symlinks all pointing to the same skill root).
+    # Without this the LLM consolidation pass sees N identical candidates
+    # and enters a multi-hour loop trying to merge them into umbrellas.
+    _seen_targets: set = set()
     # Top-level SKILL.md files (flat layout) AND nested category/skill/SKILL.md
     for skill_md in base.rglob("SKILL.md"):
         # Skip Hermes metadata, VCS, virtualenv/dependency, and cache dirs
@@ -360,6 +366,16 @@ def list_agent_created_skill_names() -> List[str]:
             skill_md.relative_to(base)
         except ValueError:
             continue
+        # Deduplicate symlinks: if the skill directory (or an ancestor)
+        # is a symlink whose target we already processed, skip it.
+        try:
+            resolved = skill_md.parent.resolve()
+            resolved_str = str(resolved)
+            if resolved_str in _seen_targets:
+                continue
+            _seen_targets.add(resolved_str)
+        except (OSError, ValueError):
+            pass
         name = _read_skill_name(skill_md, fallback=skill_md.parent.name)
         # Hub-installed skills are always off-limits.
         if name in hub:
