@@ -927,10 +927,17 @@ install_node() {
 
     local node_link_dir
     node_link_dir="$(get_command_link_dir)"
-    mkdir -p "$node_link_dir"
-    ln -sf "$HERMES_HOME/node/bin/node" "$node_link_dir/node"
-    ln -sf "$HERMES_HOME/node/bin/npm"  "$node_link_dir/npm"
-    ln -sf "$HERMES_HOME/node/bin/npx"  "$node_link_dir/npx"
+    # Only create node/npm/npx symlinks for root/FHS installs where they
+    # are needed for command resolution from a login shell.  For user
+    # installs (~/.local/bin) the symlinks would shadow the user's own
+    # Homebrew/nvm node — Hermes invokes its bundled node via absolute
+    # path in its own subprocesses anyway.  (GH-45279)
+    if [ "$ROOT_FHS_LAYOUT" = true ] || is_termux; then
+        mkdir -p "$node_link_dir"
+        ln -sf "$HERMES_HOME/node/bin/node" "$node_link_dir/node"
+        ln -sf "$HERMES_HOME/node/bin/npm"  "$node_link_dir/npm"
+        ln -sf "$HERMES_HOME/node/bin/npx"  "$node_link_dir/npx"
+    fi
 
     configure_managed_node_npm_prefix
 
