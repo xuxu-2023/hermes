@@ -19,6 +19,20 @@ except ImportError:
     import holographic as hrr  # type: ignore[no-redef]
 
 
+def _fts5_safe_query(text: str) -> str:
+    """Quote each whitespace token as an FTS5 literal phrase.
+
+    The memory ``search`` action is driven by the LLM, which routinely emits
+    queries containing FTS5 metasyntax — a stray double-quote, a ``key:value``
+    colon, a bare ``AND``/``OR``/``NEAR``, or a parenthesis. Passing those
+    straight to ``MATCH`` raises ``sqlite3.OperationalError``. Wrapping every
+    token in double quotes (embedded quotes doubled) turns the string into a
+    set of literal phrase matches that FTS5 always accepts, so the search
+    degrades to a usable query instead of returning nothing.
+    """
+    return " ".join('"' + tok.replace('"', '""') + '"' for tok in text.split() if tok)
+
+
 class FactRetriever:
     """Multi-strategy fact retrieval with trust-weighted scoring."""
 
@@ -524,8 +538,18 @@ class FactRetriever:
         try:
             rows = conn.execute(sql, params).fetchall()
         except Exception:
-            # FTS5 MATCH can fail on malformed queries — fall back to empty
-            return []
+            # FTS5 MATCH rejects query syntax the LLM routinely emits (a stray
+            # colon, quote, bare AND/OR/NEAR, or parenthesis). Rather than
+            # silently returning no memories, retry with each token quoted as a
+            # literal phrase so the search still finds matches.
+            safe_query = _fts5_safe_query(query)
+            if not safe_query:
+                return []
+            params[0] = safe_query  # the MATCH bind param is appended first
+            try:
+                rows = conn.execute(sql, params).fetchall()
+            except Exception:
+                return []
 
         if not rows:
             return []
