@@ -374,7 +374,35 @@ def lookup_models_dev_context(provider: str, model: str) -> Optional[int]:
                 if ctx:
                     return ctx
 
+    # Provider-level fallback: some providers have models split across
+    # multiple models.dev provider IDs (e.g. zai vs zai-coding-plan).
+    # When the primary ID doesn't contain the model, try alternatives.
+    for alt_id in _PROVIDER_MODELS_DEV_FALLBACKS.get(mdev_provider_id, ()):
+        alt_data = data.get(alt_id)
+        if not isinstance(alt_data, dict):
+            continue
+        alt_models = alt_data.get("models", {})
+        if not isinstance(alt_models, dict):
+            continue
+        entry = alt_models.get(model)
+        if entry:
+            ctx = _extract_context(entry)
+            if ctx:
+                return ctx
+        for mid, mdata in alt_models.items():
+            if mid.lower() == model_lower:
+                ctx = _extract_context(mdata)
+                if ctx:
+                    return ctx
+
     return None
+
+
+# Alternative models.dev provider IDs to check when the primary mapping
+# doesn't contain a model.  Keyed by the *primary* models.dev ID.
+_PROVIDER_MODELS_DEV_FALLBACKS: Dict[str, tuple[str, ...]] = {
+    "zai": ("zai-coding-plan",),
+}
 
 
 def _extract_context(entry: Dict[str, Any]) -> Optional[int]:

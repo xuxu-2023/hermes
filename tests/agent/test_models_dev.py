@@ -78,6 +78,26 @@ SAMPLE_REGISTRY = {
             },
         },
     },
+    "zai": {
+        "id": "zai",
+        "name": "Z.AI",
+        "models": {
+            "glm-4-flash": {
+                "id": "glm-4-flash",
+                "limit": {"context": 128000, "output": 4096},
+            },
+        },
+    },
+    "zai-coding-plan": {
+        "id": "zai-coding-plan",
+        "name": "Z.AI Coding Plan",
+        "models": {
+            "glm-5.2": {
+                "id": "glm-5.2",
+                "limit": {"context": 1000000, "output": 16000},
+            },
+        },
+    },
 }
 
 
@@ -161,6 +181,24 @@ class TestLookupModelsDevContext:
     def test_empty_registry(self, mock_fetch):
         mock_fetch.return_value = {}
         assert lookup_models_dev_context("anthropic", "claude-opus-4-6") is None
+
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_zai_primary_match(self, mock_fetch):
+        """zai provider resolves models in the primary 'zai' entry."""
+        mock_fetch.return_value = SAMPLE_REGISTRY
+        assert lookup_models_dev_context("zai", "glm-4-flash") == 128000
+
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_zai_coding_plan_fallback(self, mock_fetch):
+        """zai falls back to zai-coding-plan for models only listed there."""
+        mock_fetch.return_value = SAMPLE_REGISTRY
+        assert lookup_models_dev_context("zai", "glm-5.2") == 1000000
+
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_zai_coding_plan_case_insensitive(self, mock_fetch):
+        """Fallback also does case-insensitive matching."""
+        mock_fetch.return_value = SAMPLE_REGISTRY
+        assert lookup_models_dev_context("zai", "GLM-5.2") == 1000000
 
 
 class TestFetchModelsDev:
