@@ -522,26 +522,44 @@ class FactRetriever:
         params.append(limit)
 
         try:
-            rows = conn.execute(sql, params).fetchall()
+            fts_rows = conn.execute(sql, params).fetchall()
         except Exception:
-            # FTS5 MATCH can fail on malformed queries — fall back to empty
-            return []
+            fts_rows = []  # FTS5 MATCH failed (e.g. hyphens parsed as column refs)
 
-        if not rows:
-            return []
+        # ALSO run a LIKE fallback — FTS5's unicode61 tokenizer doesn't segment
+        # CJK text, so "香港腾讯云" is one token and searching for "香港" misses
+        # it. LIKE catches these cases plus any other tokenizer blind spots.
+        like_sql = "SELECT f.* FROM facts f WHERE f.content LIKE ? AND f.trust_score >= ?"
+        like_params: list = [f"%{query}%", min_trust]
+        if category:
+            like_sql += " AND f.category = ?"
+            like_params.append(category)
+        like_sql += " LIMIT ?"
+        like_params.append(limit * 3)
+        try:
+            like_rows = conn.execute(like_sql, like_params).fetchall()
+        except Exception:
+            like_rows = []
 
-        # Normalize FTS5 rank: rank is negative, lower = better
-        # Convert to positive score in [0, 1] range
-        raw_ranks = [abs(row["fts_rank_raw"]) for row in rows]
-        max_rank = max(raw_ranks) if raw_ranks else 1.0
-        max_rank = max(max_rank, 1e-6)  # avoid div by zero
-
+        # Merge: FTS5 results ranked by FTS, LIKE additions get neutral rank
+        seen = set()
         results = []
-        for row, raw_rank in zip(rows, raw_ranks):
-            fact = dict(row)
-            fact.pop("fts_rank_raw", None)
-            fact["fts_rank"] = raw_rank / max_rank  # normalize to [0, 1]
-            results.append(fact)
+
+        if fts_rows:
+            raw_ranks = [abs(row["fts_rank_raw"]) for row in fts_rows]
+            max_rank = max(raw_ranks) or 1e-6
+            for row, raw_rank in zip(fts_rows, raw_ranks):
+                fact = dict(row)
+                fact.pop("fts_rank_raw", None)
+                fact["fts_rank"] = raw_rank / max_rank
+                seen.add(fact["fact_id"])
+                results.append(fact)
+
+        for row in like_rows:
+            row_id = row["fact_id"]
+            if row_id not in seen:
+                seen.add(row_id)
+                results.append({**dict(row), "fts_rank": 0.5})
 
         return results
 
