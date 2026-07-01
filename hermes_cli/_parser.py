@@ -381,6 +381,16 @@ def build_top_level_parser():
         help="Troubleshooting mode: disable ALL customizations — user config, AGENTS.md/memory injection, plugins, and MCP servers (implies --ignore-user-config and --ignore-rules). Use to isolate whether a problem comes from your setup or from Hermes itself.",
     )
     chat_parser.add_argument(
+        "-x",
+        "--extra-body",
+        default=None,
+        help=(
+            "Arbitrary JSON object to pass as OpenAI SDK extra_body. "
+            "Useful for provider-specific request options, e.g. "
+            '\'{"provider":{"only":["anthropic"]}}\' for OpenRouter.'
+        ),
+    )
+    chat_parser.add_argument(
         "--source",
         default=None,
         help="Session source tag for filtering (default: cli). Use 'tool' for third-party integrations that should not appear in user session lists.",
