@@ -1474,6 +1474,93 @@ class TestFTS5Search:
 
 
 # =========================================================================
+# Read-only / cross-profile FTS detection (#49554)
+# =========================================================================
+
+class TestReadOnlyFTSDetection:
+    """Regression: read-only SessionDB handles must detect pre-existing FTS
+    tables so cross-profile session_search actually returns results instead
+    of silently short-circuiting to []."""
+
+    def test_read_only_detects_fts_and_returns_results(self, tmp_path):
+        """Read-only handle on a DB that HAS FTS tables must enable search."""
+        db_path = tmp_path / "state.db"
+        # Seed with a read-write handle so FTS tables get created.
+        writer = SessionDB(db_path=db_path)
+        try:
+            writer.create_session(session_id="s1", source="cli")
+            writer.append_message("s1", role="user", content="deploy with docker")
+        finally:
+            writer.close()
+
+        # Reopen read-only — the cross-profile / aggregation path.
+        ro = SessionDB(db_path=db_path, read_only=True)
+        try:
+            assert ro._fts_enabled is True
+            assert ro._trigram_available is True
+            results = ro.search_messages("docker")
+            assert len(results) >= 1
+            assert any("docker" in r.get("snippet", "").lower() for r in results)
+        finally:
+            ro.close()
+
+    def test_read_only_without_fts_tables_stays_disabled(self, tmp_path):
+        """Read-only handle on a DB with NO FTS tables must stay disabled
+        (graceful — search returns [], not an error)."""
+        db_path = tmp_path / "state.db"
+        writer = SessionDB(db_path=db_path)
+        try:
+            writer.create_session(session_id="s1", source="cli")
+            writer.append_message("s1", role="user", content="hello world")
+        finally:
+            writer.close()
+
+        # Drop the FTS virtual tables so the DB has data but no FTS.
+        import sqlite3 as _sql
+        conn = _sql.connect(str(db_path))
+        conn.executescript(
+            "DROP TABLE IF EXISTS messages_fts_trigram;"
+            "DROP TABLE IF EXISTS messages_fts;"
+        )
+        conn.commit()
+        conn.close()
+
+        ro = SessionDB(db_path=db_path, read_only=True)
+        try:
+            assert ro._fts_enabled is False
+            assert ro.search_messages("hello") == []
+        finally:
+            ro.close()
+
+    def test_read_only_trigram_flag_matches_table_presence(self, tmp_path):
+        """When trigram FTS is absent but base FTS exists, _fts_enabled must
+        be True and _trigram_available must be False."""
+        db_path = tmp_path / "state.db"
+        writer = SessionDB(db_path=db_path)
+        try:
+            writer.create_session(session_id="s1", source="cli")
+            writer.append_message("s1", role="user", content="searchable content")
+        finally:
+            writer.close()
+
+        # Remove only the trigram table.
+        import sqlite3 as _sql
+        conn = _sql.connect(str(db_path))
+        conn.executescript("DROP TABLE IF EXISTS messages_fts_trigram;")
+        conn.commit()
+        conn.close()
+
+        ro = SessionDB(db_path=db_path, read_only=True)
+        try:
+            assert ro._fts_enabled is True
+            assert ro._trigram_available is False
+            # Base FTS search still works.
+            assert len(ro.search_messages("searchable")) >= 1
+        finally:
+            ro.close()
+
+
+# =========================================================================
 # CJK (Chinese/Japanese/Korean) LIKE fallback
 # =========================================================================
 
