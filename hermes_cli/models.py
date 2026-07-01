@@ -332,6 +332,11 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "MiniMax-M2.1",
         "MiniMax-M2",
     ],
+    "aigateway": [
+        "moonshotai/kimi-k2.6",
+        "google/gemini-3.1-pro-preview",
+        "qwen/qwen3.7-max",
+    ],
     "minimax-oauth": [
         "MiniMax-M3",
         "MiniMax-M2.7",
@@ -1057,6 +1062,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("bedrock",        "AWS Bedrock",              "AWS Bedrock (Claude, Nova, Llama, DeepSeek; IAM or API key)"),
     ProviderEntry("azure-foundry",  "Azure Foundry",            "Azure Foundry (OpenAI-style or Anthropic-style endpoint, your Azure AI deployment)"),
     ProviderEntry("qwen-oauth",     "Qwen OAuth (Portal)",      "Qwen OAuth (Reuses local Qwen CLI login)"),
+    ProviderEntry("aigateway", "AI Gateway", "AI Gateway (api.aigateway.sh)"),
 ]
 
 # Auto-extend CANONICAL_PROVIDERS with any provider registered in providers/
@@ -1265,6 +1271,8 @@ _PROVIDER_ALIASES = {
     "lm_studio": "lmstudio",
     "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
     "ollama_cloud": "ollama-cloud",
+    "aig": "aigateway",
+    "ai-gateway": "aigateway",
 }
 
 

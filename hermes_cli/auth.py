@@ -296,6 +296,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("MINIMAX_API_KEY",),
         base_url_env_var="MINIMAX_BASE_URL",
     ),
+    "aigateway": ProviderConfig(
+        id="aigateway",
+        name="AI Gateway",
+        auth_type="api_key",
+        inference_base_url="https://api.aigateway.sh/v1",
+        api_key_env_vars=("AIGATEWAY_API_KEY",),
+        base_url_env_var="AIGATEWAY_BASE_URL",
+    ),
     "minimax-oauth": ProviderConfig(
         id="minimax-oauth",
         name="MiniMax (OAuth \u00b7 minimax.io)",
@@ -1634,6 +1642,7 @@ def resolve_provider(
         "ollama": "custom", "ollama_cloud": "ollama-cloud",
         "vllm": "custom", "llamacpp": "custom",
         "llama.cpp": "custom", "llama-cpp": "custom",
+        "aig": "aigateway", "ai-gateway": "aigateway",
     }
     # Extend with aliases declared in plugins/model-providers/<name>/ that aren't already mapped.
     # This keeps providers/ as the single source for new aliases while the

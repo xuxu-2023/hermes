@@ -3120,6 +3120,7 @@ def select_provider_and_model(args=None):
         "deepseek",
         "xai",
         "zai",
+        "aigateway",
         "kimi-coding-cn",
         "minimax",
         "minimax-cn",

@@ -1426,6 +1426,25 @@ def _resolve_explicit_runtime(
             explicit_api_key=explicit_api_key,
             explicit_base_url=explicit_base_url,
         )
+    if provider == "aigateway":
+        api_key = (
+            os.environ.get("AIGATEWAY_API_KEY")
+            or config.get("aigateway_api_key")
+        )
+
+        base_url = os.environ.get(
+            "AIGATEWAY_BASE_URL",
+            "https://api.aigateway.sh/v1",
+        )
+
+        return {
+            "provider": "aigateway",
+            "api_mode": "chat_completions",
+            "base_url": base_url,
+            "api_key": api_key,
+            "source": "env" if os.environ.get("AIGATEWAY_API_KEY") else "config",
+            "requested_provider": requested_provider,
+        }
 
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
