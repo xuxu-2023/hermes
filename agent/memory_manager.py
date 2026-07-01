@@ -97,7 +97,9 @@ def memory_provider_tools_enabled(enabled_toolsets: Optional[List[str]]) -> bool
         return False
 
 
-def inject_memory_provider_tools(agent: Any) -> int:
+def inject_memory_provider_tools(
+    agent: Any, *, disabled_toolsets: set[str] | None = None,
+) -> int:
     """Append external memory-provider tool schemas to an agent tool surface."""
     memory_manager = getattr(agent, "_memory_manager", None)
     tools = getattr(agent, "tools", None)
@@ -109,9 +111,12 @@ def inject_memory_provider_tools(agent: Any) -> int:
         for tool in tools
         if isinstance(tool, dict)
     }
+    _has_providers = bool(getattr(memory_manager, "providers", None))
+    _mem_disabled = disabled_toolsets and "memory" in disabled_toolsets
     if (
         "memory" not in existing_tool_names
         and not memory_provider_tools_enabled(getattr(agent, "enabled_toolsets", None))
+        and not (_mem_disabled and _has_providers)
     ):
         return 0
 
