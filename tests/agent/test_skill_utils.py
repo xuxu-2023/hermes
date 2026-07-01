@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from agent.skill_utils import (
     extract_skill_conditions,
+    extract_skill_description,
     get_disabled_skill_names,
     get_external_skills_dirs,
     is_excluded_skill_path,
@@ -13,6 +14,45 @@ from agent.skill_utils import (
     resolve_skill_config_values,
     skill_matches_platform,
 )
+
+
+class TestExtractSkillDescription:
+    def test_normal_short_description(self):
+        assert extract_skill_description({"description": "Short desc."}) == "Short desc."
+
+    def test_description_at_exactly_60_chars(self):
+        desc = "A" * 60
+        assert extract_skill_description({"description": desc}) == desc
+
+    def test_description_over_60_chars_is_truncated(self):
+        desc = "A" * 61
+        result = extract_skill_description({"description": desc})
+        assert result == "A" * 57 + "..."
+        assert len(result) == 60
+
+    def test_missing_description_returns_empty(self):
+        assert extract_skill_description({}) == ""
+
+    def test_empty_description_returns_empty(self):
+        assert extract_skill_description({"description": ""}) == ""
+
+    def test_strips_surrounding_quotes(self):
+        assert extract_skill_description({"description": '"Quoted desc."'}) == "Quoted desc."
+
+    def test_duplicate_description_prefix_is_stripped(self):
+        # Regression guard: malformed YAML that duplicates the key as a value prefix
+        fm = {"description": 'description: "Actual description."'}
+        assert extract_skill_description(fm) == "Actual description."
+
+    def test_duplicate_prefix_case_insensitive(self):
+        fm = {"description": "Description: Real text."}
+        assert extract_skill_description(fm) == "Real text."
+
+    def test_duplicate_prefix_long_value_still_truncated(self):
+        long_text = "B" * 80
+        fm = {"description": f"description: {long_text}"}
+        result = extract_skill_description(fm)
+        assert result == "B" * 57 + "..."
 
 
 def test_metadata_as_dict_with_hermes():

@@ -713,6 +713,10 @@ def extract_skill_description(frontmatter: Dict[str, Any]) -> str:
     if not raw_desc:
         return ""
     desc = str(raw_desc).strip().strip("'\"")
+    # Guard against malformed YAML that duplicates the key as a value prefix
+    # (e.g. `description: description: "actual text"`)
+    if desc.lower().startswith("description:"):
+        desc = desc[len("description:"):].strip().strip("'\"")
     if len(desc) > 60:
         return desc[:57] + "..."
     return desc
