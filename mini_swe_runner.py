@@ -195,6 +195,8 @@ class MiniSWERunner:
         self.cwd = cwd
         
         self.logger = logging.getLogger(__name__)
+        if verbose:
+            self.logger.setLevel(logging.DEBUG)
         
         # Initialize LLM client via centralized provider router.
         # If explicit api_key/base_url are provided (e.g. from CLI args),
