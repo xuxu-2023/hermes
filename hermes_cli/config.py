@@ -8,7 +8,9 @@ Config files are stored in ~/.hermes/ for easy access:
 This module provides:
 - hermes config          - Show current configuration
 - hermes config edit     - Open config in editor
+- hermes config get      - Get a specific value
 - hermes config set      - Set a specific value
+- hermes config unset    - Remove a value (restore default)
 - hermes config wizard   - Re-run setup wizard
 """
 
@@ -2382,6 +2384,18 @@ DEFAULT_CONFIG = {
         "require_mention": True,       # Require @mention to respond in rooms
         "free_response_rooms": "",     # Comma-separated room IDs where bot responds without mention
         "allowed_rooms": "",           # If set, bot ONLY responds in these room IDs (whitelist)
+    },
+
+    # Feishu/Lark platform settings (gateway mode)
+    "feishu": {
+        "require_mention": True,       # Require @mention to respond in group chats
+        # Per-group rules overriding global settings.
+        # Keys are Feishu chat_ids (oc_xxx), values override require_mention.
+        # Example:
+        #   group_rules:
+        #     oc_xxx: { require_mention: false }
+        #     oc_yyy: { require_mention: true }
+        "group_rules": {},
     },
 
     # Approval mode for dangerous commands:
@@ -7594,6 +7608,129 @@ def edit_config():
     subprocess.run([editor, str(config_path)])
 
 
+def get_config_value(key: str) -> str:
+    """Read a configuration value by dotted key path.
+
+    Reads from the fully-resolved config (user overrides merged over defaults),
+    so it returns the actual effective value, not just what's in config.yaml.
+
+    Supports nested dict and list index navigation:
+      hermes config get model.default        → "deepseek-v4-pro"
+      hermes config get terminal.timeout      → 180
+      hermes config get providers.0.name      → first provider name
+
+    For dict/list values, returns YAML. For scalars, returns the string
+    representation so it can be used in shell pipelines.
+    """
+    config = load_config()
+    parts = key.split(".")
+    current = config
+    for part in parts:
+        if isinstance(current, list):
+            try:
+                idx = int(part)
+                current = current[idx]
+            except (ValueError, IndexError):
+                _fail_get(key)
+        elif isinstance(current, dict):
+            if part not in current:
+                _fail_get(key)
+            current = current[part]
+        else:
+            _fail_get(key)
+
+    if isinstance(current, (dict, list)):
+        return yaml.dump(current, default_flow_style=False, allow_unicode=True).rstrip()
+    elif isinstance(current, bool):
+        return str(current).lower()
+    elif current is None:
+        return "null"
+    return str(current)
+
+
+def _fail_get(key: str) -> None:
+    """Print error and exit for get_config_value key-not-found."""
+    print(f"✗ Configuration key {key!r} not found")
+    print("  Run 'hermes config' to see all available settings")
+    sys.exit(1)
+
+
+def unset_config_value(key: str):
+    """Remove a key from the user's config.yaml, restoring the default.
+
+    Only operates on the user's config file (not the effective merged config)
+    so that removing a key exposes the upstream default.  If the key does not
+    exist in the user's config file this is a no-op with a message.
+    """
+    if is_managed():
+        managed_error("unset configuration values")
+        return
+
+    config_path = get_config_path()
+    if not config_path.exists():
+        print(f"✗ Config file not found at {config_path}")
+        sys.exit(1)
+
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            user_config = yaml.safe_load(f) or {}
+    except Exception:
+        print(f"✗ Could not read {config_path}")
+        sys.exit(1)
+
+    parts = key.split(".")
+    if not parts:
+        print("✗ Usage: hermes config unset <key>")
+        sys.exit(1)
+
+    # Walk to the parent container
+    current = user_config
+    for i, part in enumerate(parts[:-1]):
+        if isinstance(current, list):
+            try:
+                idx = int(part)
+                current = current[idx]
+            except (ValueError, IndexError):
+                _fail_unset(key, "not found")
+                return
+        elif isinstance(current, dict):
+            if part not in current:
+                _fail_unset(key, "not set (using default)")
+                return
+            current = current[part]
+        else:
+            _fail_unset(key, "not found")
+            return
+
+    leaf = parts[-1]
+    deleted = False
+
+    if isinstance(current, dict) and leaf in current:
+        del current[leaf]
+        deleted = True
+    elif isinstance(current, list):
+        try:
+            idx = int(leaf)
+            del current[idx]
+            deleted = True
+        except (ValueError, IndexError):
+            pass
+
+    if not deleted:
+        _fail_unset(key, "not set (using default)")
+        return
+
+    from utils import atomic_yaml_write
+    atomic_yaml_write(config_path, user_config, sort_keys=False)
+    print(f"✓ Removed {key} from {config_path}")
+
+
+def _fail_unset(key: str, reason: str) -> None:
+    """Print message for unset_config_value when key is not in user config."""
+    print(f"✗ {key}: {reason}")
+    print("  The default value is still active. Run 'hermes config' to see it.")
+
+
 def set_config_value(key: str, value: str):
     """Set a configuration value."""
     if is_managed():
@@ -7720,6 +7857,29 @@ def config_command(args):
             print("  hermes config set OPENROUTER_API_KEY sk-or-...")
             sys.exit(1)
         set_config_value(key, value)
+
+    elif subcmd == "get":
+        key = getattr(args, 'key', None)
+        if not key:
+            print("Usage: hermes config get <key>")
+            print()
+            print("Examples:")
+            print("  hermes config get model.default")
+            print("  hermes config get terminal.backend")
+            print("  hermes config get provider")
+            sys.exit(1)
+        print(get_config_value(key))
+
+    elif subcmd == "unset":
+        key = getattr(args, 'key', None)
+        if not key:
+            print("Usage: hermes config unset <key>")
+            print()
+            print("Examples:")
+            print("  hermes config unset model.default")
+            print("  hermes config unset terminal.backend")
+            sys.exit(1)
+        unset_config_value(key)
     
     elif subcmd == "path":
         print(get_config_path())
@@ -7825,13 +7985,15 @@ def config_command(args):
         print(f"Unknown config command: {subcmd}")
         print()
         print("Available commands:")
-        print("  hermes config           Show current configuration")
-        print("  hermes config edit      Open config in editor")
-        print("  hermes config set <key> <value>   Set a config value")
-        print("  hermes config check     Check for missing/outdated config")
-        print("  hermes config migrate   Update config with new options")
-        print("  hermes config path      Show config file path")
-        print("  hermes config env-path  Show .env file path")
+        print("  hermes config              Show current configuration")
+        print("  hermes config edit         Open config in editor")
+        print("  hermes config get <key>    Get a config value")
+        print("  hermes config set <key> <value>  Set a config value")
+        print("  hermes config unset <key>  Remove a config value (restore default)")
+        print("  hermes config check        Check for missing/outdated config")
+        print("  hermes config migrate      Update config with new options")
+        print("  hermes config path         Show config file path")
+        print("  hermes config env-path     Show .env file path")
         sys.exit(1)
 
 

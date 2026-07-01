@@ -34,6 +34,20 @@ def build_config_parser(subparsers, *, cmd_config: Callable) -> None:
     )
     config_set.add_argument("value", nargs="?", help="Value to set")
 
+    # config get
+    config_get = config_subparsers.add_parser("get", help="Get a configuration value")
+    config_get.add_argument(
+        "key", nargs="?", help="Configuration key (e.g., model.default)"
+    )
+
+    # config unset
+    config_unset = config_subparsers.add_parser(
+        "unset", help="Remove a config value (restore default)"
+    )
+    config_unset.add_argument(
+        "key", nargs="?", help="Configuration key (e.g., terminal.backend)"
+    )
+
     # config path
     config_subparsers.add_parser("path", help="Print config file path")
 
