@@ -1130,7 +1130,7 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
 
         # Language: config.yaml (stt.local.language) > env var > auto-detect.
         _forced_lang = (
-            _load_stt_config().get("local", {}).get("language")
+            (_load_stt_config().get("local") or {}).get("language")
             or os.getenv(LOCAL_STT_LANGUAGE_ENV)
             or None
         )
@@ -1213,7 +1213,7 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
 
     # Language: config.yaml (stt.local.language) > env var > "en" default.
     language = (
-        _load_stt_config().get("local", {}).get("language")
+        (_load_stt_config().get("local") or {}).get("language")
         or os.getenv(LOCAL_STT_LANGUAGE_ENV)
         or DEFAULT_LOCAL_STT_LANGUAGE
     )
@@ -1657,14 +1657,14 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
     provider = _get_provider(stt_config)
 
     if provider == "local":
-        local_cfg = stt_config.get("local", {})
+        local_cfg = stt_config.get("local") or {}
         model_name = _normalize_local_model(
             model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
         )
         return _transcribe_local(file_path, model_name)
 
     if provider == "local_command":
-        local_cfg = stt_config.get("local", {})
+        local_cfg = stt_config.get("local") or {}
         model_name = _normalize_local_command_model(
             model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
         )
