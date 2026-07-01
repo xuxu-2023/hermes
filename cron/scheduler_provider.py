@@ -157,6 +157,15 @@ class InProcessCronScheduler(CronScheduler):
     ``start()`` blocks in the tick loop until ``stop_event`` is set, identical
     to the pre-refactor ``_start_cron_ticker`` core loop. The caller runs it in
     a daemon thread.
+
+    Profile-aware cross-profile iteration: in each tick cycle, iterates all
+    profiles discovered under ``<default_home>/profiles/``, temporarily
+    retargeting ``cron.jobs`` module globals (same pattern as WebUI's
+    ``_call_cron_for_profile``) AND setting a ``ContextVar`` override via
+    ``set_hermes_home_override`` so that ``run_job`` resolves scripts, .env,
+    and config.yaml against the correct profile home — even inside
+    ``sync=False`` background workers.  This makes a single gateway discover
+    and fire cron jobs across all profiles, not just the default one.
     """
 
     @property
@@ -167,28 +176,64 @@ class InProcessCronScheduler(CronScheduler):
         import logging
         from cron.scheduler import tick as cron_tick
         from cron.jobs import record_ticker_heartbeat
+        from hermes_constants import get_hermes_home, set_hermes_home_override
 
         logger = logging.getLogger("cron.scheduler_provider")
         logger.info("In-process cron scheduler started (interval=%ds)", interval)
+
+        # ── Build ordered list of profile cron homes ──────────────────
+        default_home = get_hermes_home().resolve()
+        cron_homes = [default_home]
+        profiles_root = default_home / "profiles"
+        if profiles_root.is_dir():
+            for entry in sorted(profiles_root.iterdir()):
+                if entry.is_dir() and (entry / "cron" / "jobs.json").exists():
+                    cron_homes.append(entry.resolve())
+        if len(cron_homes) > 1:
+            logger.info(
+                "Cron ticker: %d profile(s) discovered (%s)",
+                len(cron_homes),
+                ", ".join(p.name for p in cron_homes),
+            )
+
         # Heartbeat once before the first sleep so `hermes cron status` sees a
         # live ticker immediately after startup, not only after the first tick.
         record_ticker_heartbeat()
+
+        # ── Save defaults for restore after each rotation ─────────────
+        import cron.jobs as cron_jobs
+        default_cron_dir = cron_jobs.CRON_DIR
+        default_jobs_file = cron_jobs.JOBS_FILE
+        default_output_dir = cron_jobs.OUTPUT_DIR
+
         while not stop_event.is_set():
-            ok = False
-            try:
-                cron_tick(verbose=False, adapters=adapters, loop=loop, sync=False)
-                ok = True
-            except BaseException as e:
-                # Catch BaseException (not just Exception) so a SystemExit from
-                # a misbehaving provider SDK / agent retry path does not kill
-                # the ticker thread silently (#32612). KeyboardInterrupt is
-                # intentionally caught here too — gateway shutdown is driven by
-                # stop_event (set by the main thread's signal handler), not by
-                # an exception in this daemon thread, so swallowing it and
-                # re-checking stop_event keeps shutdown clean.
-                logger.error("Cron tick error: %s", e, exc_info=True)
-            # Record liveness every iteration; bump the success marker only on a
-            # clean tick, so status can tell "alive but failing every tick" from
-            # "actually firing jobs" (#32612, #32895).
-            record_ticker_heartbeat(success=ok)
+            any_ok = False
+            for home in cron_homes:
+                if stop_event.is_set():
+                    break
+                # Retarget cron.jobs globals AND set ContextVar override.
+                # ContextVar is thread-safe: cron_tick()'s copy_context()
+                # snapshots the override for each background worker, so
+                # _run_job_script / .env / config.yaml resolve correctly
+                # even with sync=False.
+                cron_jobs.CRON_DIR = home / "cron"
+                cron_jobs.JOBS_FILE = cron_jobs.CRON_DIR / "jobs.json"
+                cron_jobs.OUTPUT_DIR = cron_jobs.CRON_DIR / "output"
+                set_hermes_home_override(str(home))
+                try:
+                    cron_tick(verbose=False, adapters=adapters, loop=loop, sync=False)
+                    any_ok = True
+                except BaseException as e:
+                    logger.error(
+                        "Cron tick error (profile=%s): %s", home.name, e, exc_info=True,
+                    )
+            # Restore defaults so the rest of the Gateway sees consistent paths
+            cron_jobs.CRON_DIR = default_cron_dir
+            cron_jobs.JOBS_FILE = default_jobs_file
+            cron_jobs.OUTPUT_DIR = default_output_dir
+            set_hermes_home_override(None)
+
+            # Record liveness once per full cycle; mark success if at least
+            # one profile tick completed cleanly.
+            record_ticker_heartbeat(success=any_ok)
             stop_event.wait(interval)
