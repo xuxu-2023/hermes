@@ -1933,7 +1933,7 @@ def _resolve_model() -> str:
         return str(m.get("default", "") or "").strip()
     if isinstance(m, str) and m:
         return m.strip()
-    return "anthropic/claude-sonnet-4"
+    return ""
 
 
 def _config_model_target() -> tuple[str, str]:
