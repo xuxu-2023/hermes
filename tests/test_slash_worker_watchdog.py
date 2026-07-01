@@ -19,3 +19,10 @@ def test_is_orphaned_false_when_parent_alive_and_matches():
     assert (
         slash_worker._is_orphaned(me.pid, me.create_time(), getppid=lambda: me.pid) is False
     )
+
+
+def test_is_orphaned_false_when_create_time_unknown():
+    # create_time was unreadable at startup (None sentinel): the PID-reuse guard
+    # must be skipped so a live, matching parent is not treated as orphaned.
+    me = psutil.Process()
+    assert slash_worker._is_orphaned(me.pid, None, getppid=lambda: me.pid) is False

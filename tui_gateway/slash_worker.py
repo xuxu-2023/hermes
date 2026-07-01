@@ -54,12 +54,15 @@ _in_flight = threading.Event()  # set while a command is executing
 def _is_orphaned(original_ppid, parent_create_time, getppid=os.getppid) -> bool:
     """True once our spawning gateway is gone. Compare to the ORIGINAL ppid
     (never ==1: Linux reparents to a subreaper) and guard PID reuse via
-    create_time."""
+    create_time. A ``parent_create_time`` of ``None`` means it was unreadable
+    at startup, so the PID-reuse guard is skipped rather than firing falsely."""
     if getppid() != original_ppid:
         return True
     try:
         if not psutil.pid_exists(original_ppid):
             return True
+        if parent_create_time is None:
+            return False
         return psutil.Process(original_ppid).create_time() != parent_create_time
     except psutil.Error:
         return True
@@ -127,7 +130,10 @@ def main():
     try:
         parent_create_time = psutil.Process(orig_ppid).create_time()
     except psutil.Error:
-        parent_create_time = 0.0
+        # Unreadable at startup — leave the PID-reuse guard disabled instead of
+        # pinning a 0.0 sentinel that would later read as "orphaned" against a
+        # live parent and self-terminate the worker immediately.
+        parent_create_time = None
     _start_parent_death_watchdog(orig_ppid, parent_create_time)
 
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
