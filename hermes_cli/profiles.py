@@ -1077,6 +1077,13 @@ def create_profile(
             source_skills = source_dir / "skills"
             if source_skills.is_dir():
                 shutil.copytree(source_skills, profile_dir / "skills", dirs_exist_ok=True)
+                # Drop the source's .bundled_manifest so the sync engine
+                # regenerates it from the actual skills on disk.  The source
+                # manifest may contain stale entries for skills that were
+                # deleted but marked as "user deleted" — copying those would
+                # permanently block re-seeding of those skills in the clone.
+                cloned_manifest = profile_dir / "skills" / ".bundled_manifest"
+                cloned_manifest.unlink(missing_ok=True)
 
             # Clone memory and other subdirectory files
             for relpath in _CLONE_SUBDIR_FILES:
