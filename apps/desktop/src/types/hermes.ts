@@ -201,6 +201,7 @@ export interface OpenVikingSetup {
 }
 
 export interface OpenVikingSetupSaveRequest {
+  overwrite?: boolean
   profile_name?: string
   profile_path?: string
   save_mode: 'profile'

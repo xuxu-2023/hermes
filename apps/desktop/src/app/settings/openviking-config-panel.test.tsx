@@ -279,6 +279,49 @@ describe('OpenVikingConfigPanel', () => {
     expect(screen.getByText('https://fresh.example (~/.openviking/ovcli.conf.fresh)')).toBeTruthy()
   })
 
+  it('keeps the wizard open when refreshing profiles fails', async () => {
+    await renderPanel()
+    await openWizard()
+    await chooseExistingProfiles()
+
+    getOpenVikingSetup.mockRejectedValueOnce(new Error('network unavailable'))
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh profiles' }))
+
+    await waitFor(() => expect(getOpenVikingSetup).toHaveBeenCalledTimes(4))
+    expect(screen.getByRole('dialog')).toBeTruthy()
+    expect(screen.getByRole('combobox', { name: 'OpenViking profile' })).toBeTruthy()
+    expect(screen.queryByText('Loading OpenViking settings...')).toBeNull()
+  })
+
+  it('does not let a late wizard refresh overwrite user edits', async () => {
+    const openingRefresh = deferred<OpenVikingSetup>()
+    getOpenVikingSetup
+      .mockResolvedValueOnce(setupPayload())
+      .mockReturnValueOnce(openingRefresh.promise)
+
+    await renderPanel()
+    await openWizard()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Custom Server' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+    fireEvent.change(screen.getByLabelText('Profile name'), { target: { value: 'typed_profile' } })
+    fireEvent.change(screen.getByLabelText('OpenViking URL'), { target: { value: 'https://typed.example' } })
+
+    openingRefresh.resolve(setupPayload({
+      defaults: {
+        actor_peer_id: 'hermes',
+        service_url: 'https://api.vikingdb.cn-beijing.volces.com/openviking',
+        url: 'http://127.0.0.1:1934'
+      }
+    }))
+
+    await waitFor(() => expect(getOpenVikingSetup).toHaveBeenCalledTimes(2))
+    await waitFor(() =>
+      expect((screen.getByLabelText('Profile name') as HTMLInputElement).value).toBe('typed_profile')
+    )
+    expect((screen.getByLabelText('OpenViking URL') as HTMLInputElement).value).toBe('https://typed.example')
+  })
+
   it('validates and links an existing profile when saving without sending secrets', async () => {
     await renderPanel()
     await openWizard()
@@ -402,6 +445,37 @@ describe('OpenVikingConfigPanel', () => {
         save_mode: 'profile',
         values: {
           actor_peer_id: 'agent',
+          api_key: 'service-secret',
+          api_key_type: 'user',
+          url: 'https://api.vikingdb.cn-beijing.volces.com/openviking'
+        }
+      })
+    )
+  })
+
+  it('asks before overwriting an existing profile with different settings', async () => {
+    saveOpenVikingSetup
+      .mockRejectedValueOnce(new Error('409: {"detail":"OpenViking profile already exists with different settings."}'))
+      .mockResolvedValueOnce({ ok: true, mode: 'profile', profile_path: '/tmp/ovcli.conf.openviking_service' })
+
+    await renderPanel()
+    await openWizard()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+    fireEvent.change(screen.getByLabelText('OpenViking API key'), { target: { value: 'service-secret' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save profile' }))
+
+    expect(await screen.findByText('OpenViking profile already exists')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Replace profile' }))
+
+    await waitFor(() =>
+      expect(saveOpenVikingSetup).toHaveBeenLastCalledWith({
+        overwrite: true,
+        profile_name: 'openviking_service',
+        save_mode: 'profile',
+        values: {
+          actor_peer_id: 'hermes',
           api_key: 'service-secret',
           api_key_type: 'user',
           url: 'https://api.vikingdb.cn-beijing.volces.com/openviking'
@@ -595,6 +669,25 @@ describe('OpenVikingConfigPanel', () => {
     fireEvent.change(screen.getByLabelText('OpenViking URL'), { target: { value: 'https://custom.example' } })
 
     expect(screen.queryByRole('button', { name: 'Start local server' })).toBeNull()
+  })
+
+  it('disables save while local server startup is in flight', async () => {
+    const localStart = deferred<{ ok: boolean; message: string }>()
+    startOpenVikingLocal.mockReturnValueOnce(localStart.promise)
+
+    await renderPanel()
+    await openWizard()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Custom Server' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Start local server' }))
+    await waitFor(() => expect(startOpenVikingLocal).toHaveBeenCalledTimes(1))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+
+    expect((screen.getByRole('button', { name: 'Save profile' }) as HTMLButtonElement).disabled).toBe(true)
+
+    localStart.resolve({ ok: true, message: 'started' })
   })
 
   it('shows local start guidance when openviking-server is missing', async () => {

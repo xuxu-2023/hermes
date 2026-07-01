@@ -781,6 +781,7 @@ class OpenVikingSetupUpdate(BaseModel):
     save_mode: str = "profile"
     profile_name: str = ""
     profile_path: str = ""
+    overwrite: bool = False
     profile: Optional[str] = None
 
 
@@ -3922,15 +3923,18 @@ async def get_openviking_setup(profile: Optional[str] = None):
     try:
         import plugins.memory.openviking as openviking
 
-        with _config_profile_scope(profile):
-            config = load_config()
-            memory_config = config.get("memory") if isinstance(config, dict) else {}
-            provider_config = (
-                memory_config.get("openviking", {})
-                if isinstance(memory_config, dict)
-                else {}
-            )
-            return openviking.get_desktop_openviking_setup(provider_config)
+        def _run():
+            with _config_profile_scope(profile):
+                config = load_config()
+                memory_config = config.get("memory") if isinstance(config, dict) else {}
+                provider_config = (
+                    memory_config.get("openviking", {})
+                    if isinstance(memory_config, dict)
+                    else {}
+                )
+                return openviking.get_desktop_openviking_setup(provider_config)
+
+        return await asyncio.to_thread(_run)
     except HTTPException:
         raise
     except Exception:
@@ -3943,12 +3947,15 @@ async def validate_openviking_setup(body: OpenVikingValidateRequest, profile: Op
     try:
         import plugins.memory.openviking as openviking
 
-        with _config_profile_scope(body.profile or profile):
-            return openviking.validate_desktop_openviking_setup(
-                body.values,
-                require_api_key=body.require_api_key,
-                profile_path=body.profile_path,
-            )
+        def _run():
+            with _config_profile_scope(body.profile or profile):
+                return openviking.validate_desktop_openviking_setup(
+                    body.values,
+                    require_api_key=body.require_api_key,
+                    profile_path=body.profile_path,
+                )
+
+        return await asyncio.to_thread(_run)
     except HTTPException:
         raise
     except ValueError as exc:
@@ -3963,24 +3970,30 @@ async def update_openviking_setup(body: OpenVikingSetupUpdate, profile: Optional
     try:
         import plugins.memory.openviking as openviking
 
-        with _config_profile_scope(body.profile or profile):
-            config = load_config()
-            result = openviking.save_desktop_openviking_setup(
-                config=config,
-                hermes_home=get_hermes_home(),
-                values=body.values,
-                save_mode=body.save_mode,
-                profile_name=body.profile_name,
-                profile_path=body.profile_path,
-            )
-            save_config(config)
-            from hermes_cli.config import reload_env
+        def _run():
+            with _config_profile_scope(body.profile or profile):
+                config = load_config()
+                result = openviking.save_desktop_openviking_setup(
+                    config=config,
+                    hermes_home=get_hermes_home(),
+                    values=body.values,
+                    save_mode=body.save_mode,
+                    profile_name=body.profile_name,
+                    profile_path=body.profile_path,
+                    overwrite=body.overwrite,
+                )
+                save_config(config)
+                from hermes_cli.config import reload_env
 
-            reload_env()
-            return result
+                reload_env()
+                return result
+
+        return await asyncio.to_thread(_run)
     except HTTPException:
         raise
     except ValueError as exc:
+        if exc.__class__.__name__ == "_OpenVikingProfileConflictError":
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception:
         _log.exception("PUT /api/memory/providers/openviking/setup failed")
@@ -3992,8 +4005,11 @@ async def start_openviking_local(body: OpenVikingStartLocalRequest, profile: Opt
     try:
         import plugins.memory.openviking as openviking
 
-        with _config_profile_scope(body.profile or profile):
-            return openviking.start_desktop_openviking_local(body.url)
+        def _run():
+            with _config_profile_scope(body.profile or profile):
+                return openviking.start_desktop_openviking_local(body.url)
+
+        return await asyncio.to_thread(_run)
     except HTTPException:
         raise
     except ValueError as exc:

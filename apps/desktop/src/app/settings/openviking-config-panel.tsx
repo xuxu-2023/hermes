@@ -356,6 +356,41 @@ function RoleMismatchPrompt({
   )
 }
 
+function ProfileConflictPrompt({
+  disabled,
+  onChooseAnotherName,
+  onReplace
+}: {
+  disabled: boolean
+  onChooseAnotherName: () => void
+  onReplace: () => void
+}) {
+  return (
+    <div
+      className="grid gap-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-xs leading-5 text-foreground"
+      role="alert"
+    >
+      <div className="flex items-start gap-2">
+        <AlertCircle className="mt-0.5 size-3.5 shrink-0 text-amber-600 dark:text-amber-300" />
+        <div className="grid gap-1">
+          <div className="font-medium">OpenViking profile already exists</div>
+          <div className="text-muted-foreground">
+            A saved profile with this name has different settings. Choose another name or replace the existing profile.
+          </div>
+        </div>
+      </div>
+      <div className="flex flex-wrap justify-end gap-2">
+        <Button disabled={disabled} onClick={onChooseAnotherName} size="sm" type="button" variant="ghost">
+          Choose another name
+        </Button>
+        <Button disabled={disabled} onClick={onReplace} size="sm" type="button" variant="secondary">
+          Replace profile
+        </Button>
+      </div>
+    </div>
+  )
+}
+
 function healthTone(status: OpenVikingHealth['status']) {
   if (status === 'healthy') {
     return {
@@ -459,10 +494,30 @@ export function OpenVikingConfigPanel() {
   const [refreshingProfiles, setRefreshingProfiles] = useState(false)
   const [validation, setValidation] = useState<ValidationState | null>(null)
   const [roleMismatch, setRoleMismatch] = useState<RoleMismatch | null>(null)
+  const [profileConflict, setProfileConflict] = useState(false)
+  const [refreshError, setRefreshError] = useState<string | null>(null)
   const saveInFlightRef = useRef(false)
+  const dialogOpenRef = useRef(false)
+  const wizardDirtyRef = useRef(false)
+
+  const setWizardOpen = useCallback((open: boolean) => {
+    dialogOpenRef.current = open
+    setDialogOpen(open)
+
+    if (!open) {
+      wizardDirtyRef.current = false
+      setProfileConflict(false)
+      setRefreshError(null)
+    }
+  }, [])
+
+  const markWizardDirty = useCallback(() => {
+    wizardDirtyRef.current = true
+  }, [])
 
   const applySetupSnapshot = useCallback(
     (next: OpenVikingSetup, preferred?: { mode?: SourceMode; profilePath?: string }) => {
+      const preserveWizardEdits = dialogOpenRef.current && wizardDirtyRef.current && !preferred
       const nextMode = preferred?.mode ?? modeFromSetup(next)
       const activeProfile = next.profiles.find(profile => profile.is_active) ?? next.profiles[0]
 
@@ -473,12 +528,19 @@ export function OpenVikingConfigPanel() {
       const profile = preferredProfile ?? activeProfile
 
       setSetup(next)
+      setRefreshError(null)
+
+      if (preserveWizardEdits) {
+        return
+      }
+
       setMode(nextMode)
       setProfilePath(profile?.path ?? '')
       setProfileName(defaultProfileName(nextMode))
       setValues(nextMode === 'profile' && profile ? profileValues(profile, next.defaults.actor_peer_id) : seedValues(next, nextMode))
       setValidation(null)
       setRoleMismatch(null)
+      setProfileConflict(false)
     },
     []
   )
@@ -489,6 +551,13 @@ export function OpenVikingConfigPanel() {
       applySetupSnapshot(next, preferred)
     } catch (err) {
       notifyError(err, 'OpenViking settings failed to load')
+
+      if (dialogOpenRef.current) {
+        setRefreshError('OpenViking settings could not be refreshed. Keep editing or try again.')
+
+        return
+      }
+
       setSetup(null)
       setValues(null)
     }
@@ -526,15 +595,19 @@ export function OpenVikingConfigPanel() {
   const resetValidation = useCallback(() => {
     setValidation(null)
     setRoleMismatch(null)
+    setProfileConflict(false)
   }, [])
 
   const openWizard = useCallback(() => {
+    wizardDirtyRef.current = false
     setStep('source')
     setValidation(null)
     setRoleMismatch(null)
-    setDialogOpen(true)
+    setProfileConflict(false)
+    setRefreshError(null)
+    setWizardOpen(true)
     void refresh()
-  }, [refresh])
+  }, [refresh, setWizardOpen])
 
   const refreshProfiles = useCallback(async () => {
     setRefreshingProfiles(true)
@@ -554,6 +627,7 @@ export function OpenVikingConfigPanel() {
 
       setMode(nextMode)
       setProfileName(defaultProfileName(nextMode))
+      markWizardDirty()
       resetValidation()
 
       if (nextMode === 'profile') {
@@ -570,15 +644,16 @@ export function OpenVikingConfigPanel() {
 
       setValues(seedValues(setup, nextMode))
     },
-    [profilePath, refresh, resetValidation, setup]
+    [markWizardDirty, profilePath, refresh, resetValidation, setup]
   )
 
   const updateValue = useCallback(
     <K extends keyof FormValues>(key: K, value: FormValues[K]) => {
       resetValidation()
+      markWizardDirty()
       setValues(current => (current ? { ...current, [key]: value } : current))
     },
-    [resetValidation]
+    [markWizardDirty, resetValidation]
   )
 
   const chooseProfile = useCallback(
@@ -589,13 +664,14 @@ export function OpenVikingConfigPanel() {
 
       const profile = setup.profiles.find(item => item.path === path)
       setProfilePath(path)
+      markWizardDirty()
       resetValidation()
 
       if (profile) {
         setValues(profileValues(profile, setup.defaults.actor_peer_id))
       }
     },
-    [resetValidation, setup]
+    [markWizardDirty, resetValidation, setup]
   )
 
   const validateCurrentSetup = useCallback(async () => {
@@ -676,7 +752,7 @@ export function OpenVikingConfigPanel() {
     setStep('details')
   }, [])
 
-  const save = useCallback(async () => {
+  const save = useCallback(async (overwrite = false) => {
     if (saveInFlightRef.current || saving || validating || starting || !setup || !values) {
       return
     }
@@ -684,6 +760,7 @@ export function OpenVikingConfigPanel() {
     saveInFlightRef.current = true
 
     try {
+      setProfileConflict(false)
       const validated = await validateCurrentSetup()
 
       if (!validated) {
@@ -696,6 +773,7 @@ export function OpenVikingConfigPanel() {
         await saveOpenVikingSetup({ profile_path: profilePath, save_mode: 'profile', values: {} })
       } else {
         await saveOpenVikingSetup({
+          ...(overwrite ? { overwrite: true } : {}),
           profile_name: profileName.trim(),
           save_mode: 'profile',
           values: buildConnectionValues(values, mode, setup)
@@ -703,15 +781,21 @@ export function OpenVikingConfigPanel() {
       }
 
       notify({ kind: 'success', title: 'OpenViking saved', message: 'Memory provider configuration updated.' })
-      setDialogOpen(false)
+      setWizardOpen(false)
       await refresh()
     } catch (err) {
+      if (!overwrite && messageFromError(err).toLowerCase().includes('profile already exists')) {
+        setProfileConflict(true)
+
+        return
+      }
+
       notifyError(err, 'Failed to save OpenViking settings')
     } finally {
       saveInFlightRef.current = false
       setSaving(false)
     }
-  }, [mode, profileName, profilePath, refresh, saving, setup, starting, validateCurrentSetup, validating, values])
+  }, [mode, profileName, profilePath, refresh, saving, setWizardOpen, setup, starting, validateCurrentSetup, validating, values])
 
   const startLocal = useCallback(async () => {
     if (!values) {
@@ -786,7 +870,7 @@ export function OpenVikingConfigPanel() {
         ) : null}
       </div>
 
-      <Dialog onOpenChange={setDialogOpen} open={dialogOpen}>
+      <Dialog onOpenChange={setWizardOpen} open={dialogOpen}>
         <DialogContent className="max-w-2xl" onInteractOutside={event => event.preventDefault()}>
           <div className="absolute right-5 top-11 text-xs font-medium text-muted-foreground">
             Step {currentStepNumber} of {WIZARD_STEPS.length}: {currentStepLabel}
@@ -797,6 +881,7 @@ export function OpenVikingConfigPanel() {
           </DialogHeader>
 
           <div className="grid gap-4">
+            {refreshError ? <Notice state={{ message: refreshError, tone: 'error' }} /> : null}
             {step === 'source' ? (
               <div className="grid gap-3">
                 <div className="text-sm font-medium text-foreground">Choose setup</div>
@@ -904,6 +989,7 @@ export function OpenVikingConfigPanel() {
                         className="font-mono"
                         id="openviking-profile-name"
                         onChange={event => {
+                          markWizardDirty()
                           resetValidation()
                           setProfileName(event.target.value)
                         }}
@@ -1027,6 +1113,16 @@ export function OpenVikingConfigPanel() {
                 </div>
 
                 {validation ? <Notice state={validation} /> : null}
+                {profileConflict ? (
+                  <ProfileConflictPrompt
+                    disabled={saving || validating}
+                    onChooseAnotherName={() => {
+                      setProfileConflict(false)
+                      setStep('details')
+                    }}
+                    onReplace={() => void save(true)}
+                  />
+                ) : null}
                 {roleMismatch ? (
                   <RoleMismatchPrompt
                     mismatch={roleMismatch}
@@ -1078,7 +1174,7 @@ export function OpenVikingConfigPanel() {
             ) : null}
             {step === 'validate' ? (
               <Button
-                disabled={saving || validating || (mode === 'profile' && !profilePath)}
+                disabled={saving || validating || starting || (mode === 'profile' && !profilePath)}
                 onClick={() => void save()}
                 size="sm"
                 type="button"

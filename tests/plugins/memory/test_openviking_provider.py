@@ -142,6 +142,34 @@ def test_openviking_legacy_env_names_are_runtime_fallbacks(monkeypatch):
     assert settings["actor_peer_id"] == "legacy-agent"
 
 
+def test_openviking_legacy_url_env_makes_provider_available(monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    monkeypatch.setattr(openviking_module, "_load_hermes_openviking_config", lambda: {})
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://legacy.local")
+
+    assert OpenVikingMemoryProvider().is_available() is True
+
+
+def test_openviking_status_reports_legacy_env_overrides(tmp_path, monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    ovcli_path = tmp_path / "ovcli.conf"
+    ovcli_path.write_text(
+        json.dumps({"url": "http://profile.local", "actor_peer_id": "profile-agent"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://legacy.local")
+    monkeypatch.setenv("OPENVIKING_AGENT", "legacy-agent")
+
+    status = OpenVikingMemoryProvider().get_status_config({
+        "use_ovcli_config": True,
+        "ovcli_config_path": str(ovcli_path),
+    })
+
+    assert status["url"] == "http://legacy.local"
+    assert status["actor_peer_id"] == "legacy-agent"
+    assert status["env_overrides"] == "OPENVIKING_ENDPOINT, OPENVIKING_AGENT"
+
+
 def test_openviking_desktop_setup_redacts_secrets_and_reports_profiles(tmp_path, monkeypatch):
     _clear_openviking_env(monkeypatch)
     monkeypatch.setattr(
@@ -548,6 +576,106 @@ def test_openviking_desktop_save_profile_clears_stale_env_values(tmp_path, monke
     }
     env = env_path.read_text(encoding="utf-8")
     assert "OPENVIKING_" not in env
+
+
+def test_openviking_desktop_save_profile_rejects_different_existing_profile_without_overwrite(tmp_path, monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    monkeypatch.setattr(openviking_module.Path, "home", staticmethod(lambda: tmp_path))
+    profile_path = tmp_path / ".openviking" / "ovcli.conf.VPS"
+    profile_path.parent.mkdir()
+    profile_path.write_text(
+        json.dumps({"url": "https://old.example", "api_key": "old-key", "actor_peer_id": "old-agent"}),
+        encoding="utf-8",
+    )
+    config = {"memory": {"openviking": {}}}
+
+    with pytest.raises(ValueError, match="OpenViking profile already exists"):
+        openviking_module.save_desktop_openviking_setup(
+            config=config,
+            hermes_home=hermes_home,
+            values={
+                "url": "https://new.example",
+                "api_key": "new-key",
+                "actor_peer_id": "new-agent",
+            },
+            save_mode="profile",
+            profile_name="VPS",
+        )
+
+    assert json.loads(profile_path.read_text(encoding="utf-8")) == {
+        "url": "https://old.example",
+        "api_key": "old-key",
+        "actor_peer_id": "old-agent",
+    }
+    assert config == {"memory": {"openviking": {}}}
+
+
+def test_openviking_desktop_save_profile_reuses_matching_existing_profile(tmp_path, monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    monkeypatch.setattr(openviking_module.Path, "home", staticmethod(lambda: tmp_path))
+    profile_path = tmp_path / ".openviking" / "ovcli.conf.VPS"
+    profile_path.parent.mkdir()
+    profile_path.write_text(
+        json.dumps({"url": "https://vps.example", "api_key": "same-key", "actor_peer_id": "same-agent"}),
+        encoding="utf-8",
+    )
+    config = {"memory": {"openviking": {}}}
+
+    result = openviking_module.save_desktop_openviking_setup(
+        config=config,
+        hermes_home=hermes_home,
+        values={
+            "url": "https://vps.example",
+            "api_key": "same-key",
+            "actor_peer_id": "same-agent",
+        },
+        save_mode="profile",
+        profile_name="VPS",
+    )
+
+    assert result == {"ok": True, "mode": "profile", "profile_path": str(profile_path)}
+    assert config["memory"]["openviking"] == {
+        "use_ovcli_config": True,
+        "ovcli_config_path": str(profile_path),
+    }
+
+
+def test_openviking_desktop_save_profile_overwrites_existing_profile_when_requested(tmp_path, monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    monkeypatch.setattr(openviking_module.Path, "home", staticmethod(lambda: tmp_path))
+    profile_path = tmp_path / ".openviking" / "ovcli.conf.VPS"
+    profile_path.parent.mkdir()
+    profile_path.write_text(
+        json.dumps({"url": "https://old.example", "api_key": "old-key", "actor_peer_id": "old-agent"}),
+        encoding="utf-8",
+    )
+    config = {"memory": {"openviking": {}}}
+
+    result = openviking_module.save_desktop_openviking_setup(
+        config=config,
+        hermes_home=hermes_home,
+        values={
+            "url": "https://new.example",
+            "api_key": "new-key",
+            "actor_peer_id": "new-agent",
+        },
+        save_mode="profile",
+        profile_name="VPS",
+        overwrite=True,
+    )
+
+    assert result == {"ok": True, "mode": "profile", "profile_path": str(profile_path)}
+    assert json.loads(profile_path.read_text(encoding="utf-8")) == {
+        "url": "https://new.example",
+        "api_key": "new-key",
+        "actor_peer_id": "new-agent",
+    }
 
 
 def test_openviking_desktop_save_profile_persists_root_api_key_metadata(tmp_path, monkeypatch):

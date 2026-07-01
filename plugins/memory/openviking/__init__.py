@@ -72,6 +72,7 @@ _OPENVIKING_ENV_KEYS = (
 )
 _OPENVIKING_LEGACY_ENV_KEYS = ("OPENVIKING_ENDPOINT", "OPENVIKING_AGENT")
 _OPENVIKING_ENV_KEYS_TO_REMOVE = _OPENVIKING_ENV_KEYS + _OPENVIKING_LEGACY_ENV_KEYS
+_OPENVIKING_ENV_KEYS_FOR_STATUS = _OPENVIKING_ENV_KEYS + _OPENVIKING_LEGACY_ENV_KEYS
 _TIMEOUT = 30.0
 _SESSION_DRAIN_TIMEOUT = 10.0
 _DEFERRED_COMMIT_TIMEOUT = (_TIMEOUT * 2) + 5.0
@@ -137,6 +138,10 @@ class _OpenVikingHTTPError(RuntimeError):
 
 class _OpenVikingProfileNotFoundError(ValueError):
     """Hermes is linked to an OpenViking profile file that no longer exists."""
+
+
+class _OpenVikingProfileConflictError(ValueError):
+    """Desktop attempted to overwrite a different OpenViking profile."""
 
 
 _MISSING_LINKED_PROFILE_MESSAGE = (
@@ -253,7 +258,8 @@ class _VikingClient:
         self._actor_peer_id = (
             actor_peer_id
             if actor_peer_id is not None
-            else os.environ.get("OPENVIKING_ACTOR_PEER_ID", _DEFAULT_ACTOR_PEER_ID)
+            else os.environ.get("OPENVIKING_ACTOR_PEER_ID")
+            or os.environ.get("OPENVIKING_AGENT", _DEFAULT_ACTOR_PEER_ID)
         )
         self._httpx = _get_httpx()
         if self._httpx is None:
@@ -1944,6 +1950,7 @@ def save_desktop_openviking_setup(
     save_mode: str = "profile",
     profile_name: str = "",
     profile_path: str = "",
+    overwrite: bool = False,
 ) -> dict:
     """Persist OpenViking setup from Desktop using the same helpers as CLI setup."""
     values = dict(values or {})
@@ -1965,7 +1972,18 @@ def save_desktop_openviking_setup(
         if not _is_valid_ovcli_profile_name(profile_name):
             raise ValueError("OpenViking profile name can only contain letters, numbers, '-' and '_'.")
         path = _ovcli_config_dir() / f"{_OVCLI_SAVED_PREFIX}{profile_name}"
-        _write_ovcli_config(path, values)
+        new_data = _ovcli_data_from_connection_values(values)
+        if path.exists():
+            try:
+                existing_data = _load_ovcli_config(path)
+            except Exception:
+                existing_data = {}
+            if existing_data != new_data and not overwrite:
+                raise _OpenVikingProfileConflictError(
+                    "OpenViking profile already exists with different settings."
+                )
+        if not path.exists() or overwrite:
+            _write_ovcli_config(path, values)
     _link_ovcli_profile(
         config=config,
         provider_config=provider_config,
@@ -2059,7 +2077,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
     def is_available(self) -> bool:
         """Check if OpenViking URL is configured. No network calls."""
-        if os.environ.get("OPENVIKING_URL"):
+        if _env_value("OPENVIKING_URL") or _env_value("OPENVIKING_ENDPOINT"):
             return True
         provider_config = _load_hermes_openviking_config()
         if not provider_config.get("use_ovcli_config"):
@@ -2174,7 +2192,10 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 display["account"] = settings["account"]
             if settings.get("user"):
                 display["user"] = settings["user"]
-            env_overrides = [key for key in _OPENVIKING_ENV_KEYS if _env_value(key) is not None]
+            env_overrides = [
+                key for key in _OPENVIKING_ENV_KEYS_FOR_STATUS
+                if _env_value(key) is not None
+            ]
             if env_overrides:
                 display["env_overrides"] = ", ".join(env_overrides)
             return display
