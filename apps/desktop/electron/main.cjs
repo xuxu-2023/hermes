@@ -5665,6 +5665,14 @@ function wireCommonWindowHandlers(win) {
     event.preventDefault()
     openExternalUrl(url)
   })
+  // Restore persisted zoom level after every full navigation (cold start,
+  // session window open, reload).  Without this, a user who zooms in
+  // (Cmd+=) on one conversation and switches to another via sidebar loses
+  // their zoom — the new hash route triggers Chromium's per-URL
+  // per_host_zoom_levels which resets to 1.0 for the unseen URL.
+  win.webContents.on('did-finish-load', () => {
+    restorePersistedZoomLevel(win)
+  })
 }
 
 // Secondary "session windows" — one extra OS window per chat so a user can
@@ -6007,7 +6015,6 @@ function createWindow() {
   }
 
   mainWindow.webContents.once('did-finish-load', () => {
-    restorePersistedZoomLevel(mainWindow)
     broadcastBootProgress()
     sendWindowStateChanged()
     startHermes().catch(error => rememberLog(error.stack || error.message))
