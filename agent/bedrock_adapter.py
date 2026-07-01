@@ -519,7 +519,8 @@ def _convert_content_to_converse(content) -> List[Dict]:
                 blocks.append({"text": text if text else " "})
             elif part_type == "image_url":
                 image_url = part.get("image_url", {})
-                url = image_url.get("url", "") if isinstance(image_url, dict) else ""
+                url = image_url.get("url") if isinstance(image_url, dict) else ""
+                url = url if isinstance(url, str) else ""
                 if url.startswith("data:"):
                     # data:image/jpeg;base64,/9j/4AAQ...
                     header, _, data = url.partition(",")
