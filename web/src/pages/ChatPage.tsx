@@ -530,6 +530,75 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     term.open(host);
 
+    // --- Right-click spellcheck integration --------------------------
+    //
+    // xterm's rightClickSelectsWord selects the word under the pointer
+    // but calls preventDefault() on the contextmenu event, which stops
+    // the browser from showing spelling suggestions.  To fix this we
+    // add a transparent <textarea> overlay (spellcheck=true) atop the
+    // xterm viewport.  On right-click mousedown we:
+    //
+    //   1. Compute which word is at the click position using xterm's
+    //      buffer API.
+    //   2. Populate the overlay textarea with that word and select it.
+    //   3. Briefly set pointer-events:auto so the subsequent contextmenu
+    //      event targets the textarea instead of xterm's canvas.
+    //   4. The browser sees an editable element with a selected word
+    //      and includes spelling suggestions in its native context menu.
+    //   5. After the menu dismisses we restore pointer-events:none.
+    //
+    // left-click, keyboard input, and scrolling are unaffected because
+    // the overlay defaults to pointer-events:none — all normal input
+    // passes straight through to xterm.
+
+    const spellTA = document.createElement("textarea");
+    spellTA.spellcheck = true;
+    spellTA.setAttribute("aria-hidden", "true");
+    spellTA.style.cssText =
+      "position:absolute;inset:0;width:100%;height:100%;" +
+      "opacity:0;z-index:1;pointer-events:none;resize:none;" +
+      "border:none;outline:none;overflow:hidden;";
+    host.appendChild(spellTA);
+
+    /** Return the word under the pointer position (`e`), or "" if none. */
+    const wordAt = (e: MouseEvent): string => {
+      const screen = host.querySelector(".xterm-screen") as HTMLElement | null;
+      if (!screen) return "";
+      const sr = screen.getBoundingClientRect();
+      const core = (term as any)._core;
+      const cw: number = core._charSizeService?.width ?? 9;
+      const ch: number = core._charSizeService?.height ?? 18;
+      const col = Math.floor((e.clientX - sr.left) / cw);
+      const row = Math.floor((e.clientY - sr.top) / ch);
+      if (col < 0 || row < 0) return "";
+      const buf = term.buffer.active;
+      const line = buf.getLine(row + buf.viewportY);
+      if (!line) return "";
+      const text = line.translateToString();
+      if (col >= text.length || text[col] === " ") return "";
+      let s = col, e2 = col;
+      while (s > 0 && text[s - 1] !== " ") s--;
+      while (e2 < text.length && text[e2] !== " ") e2++;
+      return s === e2 ? "" : text.slice(s, e2);
+    };
+
+    host.addEventListener("mousedown", (e: MouseEvent) => {
+      if (e.button !== 2) return;                 // right-click only
+      const word = wordAt(e);
+      if (!word) return;                           // no word under pointer
+      spellTA.value = word;
+      spellTA.setSelectionRange(0, word.length);
+      spellTA.style.pointerEvents = "auto";        // become the contextmenu target
+      const restore = () => {
+        spellTA.style.pointerEvents = "none";
+        spellTA.value = "";
+        document.removeEventListener("mousedown", restore, true);
+        document.removeEventListener("keydown", restore, true);
+      };
+      document.addEventListener("mousedown", restore, { once: true, capture: true });
+      document.addEventListener("keydown", restore, { once: true, capture: true });
+    });
+
     // WebGL draws from a texture atlas sized with device pixels. On phones and
     // in DevTools device mode that often produces *visually* much larger cells
     // than `fontSize` suggests — users see "huge" text even at 7–9px settings.
