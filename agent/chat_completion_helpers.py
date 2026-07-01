@@ -2098,12 +2098,18 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             if agent._interrupt_requested:
                 break
 
+            # Capture usage from any chunk — standard OpenAI sends it in
+            # a trailing chunk with empty choices, but some providers and
+            # proxies (DeepSeek v4, Kilocode, etc.) may include usage in
+            # a chunk that also carries content/choices.  Checking every
+            # chunk ensures usage isn't silently dropped when the trailing
+            # chunk has non-empty choices.
+            if hasattr(chunk, "usage") and chunk.usage:
+                usage_obj = chunk.usage
+
             if not chunk.choices:
                 if hasattr(chunk, "model") and chunk.model:
                     model_name = chunk.model
-                # Usage comes in the final chunk with empty choices
-                if hasattr(chunk, "usage") and chunk.usage:
-                    usage_obj = chunk.usage
                 continue
 
             delta = chunk.choices[0].delta

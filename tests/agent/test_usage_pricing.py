@@ -106,6 +106,25 @@ def test_normalize_usage_openai_prefers_prompt_tokens_details_over_top_level():
     assert normalized.cache_write_tokens == 150
 
 
+def test_normalize_usage_deepseek_v4_cache_hit_fallback():
+    """DeepSeek v4+ returns prompt_cache_hit_tokens at the usage-object
+    level rather than inside prompt_tokens_details. It should be used as a
+    fallback for cache_read_tokens when the nested fields are absent.
+    """
+    usage = SimpleNamespace(
+        prompt_tokens=2000,
+        completion_tokens=400,
+        prompt_cache_hit_tokens=800,
+    )
+
+    normalized = normalize_usage(usage, provider="deepseek", api_mode="chat_completions")
+
+    assert normalized.cache_read_tokens == 800
+    # input_tokens = prompt_total - cache_read = 2000 - 800 = 1200
+    assert normalized.input_tokens == 1200
+    assert normalized.output_tokens == 400
+
+
 def test_openrouter_models_api_pricing_is_converted_from_per_token_to_per_million(monkeypatch):
     monkeypatch.setattr(
         "agent.usage_pricing.fetch_model_metadata",

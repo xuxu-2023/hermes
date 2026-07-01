@@ -810,6 +810,16 @@ def normalize_usage(
         cache_read_tokens = _to_int(getattr(details, "cached_tokens", 0) if details else 0)
         if not cache_read_tokens:
             cache_read_tokens = _to_int(getattr(response_usage, "cache_read_input_tokens", 0))
+        # DeepSeek (v4+) reports cache tokens at the usage level as
+        # prompt_cache_hit_tokens / prompt_cache_miss_tokens instead of
+        # nesting them inside prompt_tokens_details (OpenAI standard).
+        # The semantics are equivalent: prompt_cache_hit_tokens are the
+        # tokens served from the context-cache KV store, represents the
+        # same concept as OpenAI's prompt_tokens_details.cached_tokens.
+        if not cache_read_tokens:
+            cache_read_tokens = _to_int(
+                getattr(response_usage, "prompt_cache_hit_tokens", 0)
+            )
         cache_write_tokens = _to_int(
             getattr(details, "cache_write_tokens", 0) if details else 0
         )
