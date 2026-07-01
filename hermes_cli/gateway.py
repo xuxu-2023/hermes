@@ -3803,6 +3803,20 @@ def generate_launchd_plist() -> str:
     log_dir.mkdir(parents=True, exist_ok=True)
     label = get_launchd_label()
     profile_arg = _profile_arg(hermes_home)
+    # Determine the user the gateway should run as.  When launchd loads the
+    # plist in a Background session (macOS 26+), it spawns as root unless
+    # UserName is specified — causing gateway.lock (and gateway.pid, log
+    # files, etc.) to be created with root ownership.  A subsequent restart
+    # under the real user then hits PermissionError on those files,
+    # producing a crash loop (issue #42685).  Pinning UserName prevents
+    # this by ensuring the process always runs as the logged-in user.
+    import getpass
+    launchd_user = (
+        os.getenv("SUDO_USER")
+        or os.getenv("USER")
+        or os.getenv("LOGNAME")
+        or getpass.getuser()
+    ).strip()
     # Build a sane PATH for the launchd plist.  launchd provides only a
     # minimal default (/usr/bin:/bin:/usr/sbin:/sbin) which misses Homebrew,
     # nvm, cargo, etc.  We prepend venv/bin and node_modules/.bin (matching
@@ -3854,6 +3868,9 @@ def generate_launchd_plist() -> str:
 <dict>
     <key>Label</key>
     <string>{label}</string>
+
+    <key>UserName</key>
+    <string>{launchd_user}</string>
 
     <key>ProgramArguments</key>
     <array>
