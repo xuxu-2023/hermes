@@ -1843,7 +1843,7 @@ class MCPServerTask:
         server_params = StdioServerParameters(
             command=command,
             args=args,
-            env=safe_env if safe_env else None,
+            env=safe_env,
         )
 
         sampling_kwargs = self._sampling.session_kwargs() if self._sampling else {}
