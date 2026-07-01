@@ -11,6 +11,13 @@ describe('detectTrigger', () => {
     expect(detectTrigger('/skill')).toEqual({ kind: '/', query: 'skill', tokenLength: 6 })
   })
 
+  it('does not detect slash commands after existing message text', () => {
+    expect(detectTrigger('hello /')).toBeNull()
+    expect(detectTrigger('hello /skill')).toBeNull()
+    expect(detectTrigger('不附加文件 /文件夹')).toBeNull()
+    expect(detectTrigger('A / B')).toBeNull()
+  })
+
   it('detects a bare at-mention trigger with an empty query', () => {
     expect(detectTrigger('@')).toEqual({ kind: '@', query: '', tokenLength: 1 })
   })
