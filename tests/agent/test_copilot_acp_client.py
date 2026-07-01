@@ -209,7 +209,7 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
             target = home / ".ssh" / "id_rsa"
             target.parent.mkdir(parents=True, exist_ok=True)
 
-            with patch("agent.copilot_acp_client.is_write_denied", return_value=True, create=True):
+            with patch("agent.copilot_acp_client.get_write_denial_reason", return_value="Write denied: protected path", create=True):
                 response = self._dispatch(
                     {
                         "jsonrpc": "2.0",
@@ -249,6 +249,11 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
 
         self.assertIn("error", response)
         self.assertFalse(outside.exists())
+        # Verify the error message distinguishes safe-root from credential denial
+        error_msg = response["error"].get("message", "") if isinstance(response["error"], dict) else str(response["error"])
+        assert "outside" in error_msg
+        assert "HERMES_WRITE_SAFE_ROOT" in error_msg
+        assert "credential" not in error_msg
 
 
 if __name__ == "__main__":
