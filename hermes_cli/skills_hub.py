@@ -1510,7 +1510,13 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
         )
         if resp.status_code in {200, 202}:
             fork = resp.json()
-            fork_repo = fork["full_name"]
+            fork_repo = fork.get("full_name", "")
+            if not fork_repo:
+                return False, (
+                    "GitHub fork response missing 'full_name'. "
+                    "The fork may still be processing (async 202). "
+                    "Please wait a moment and retry."
+                )
         elif resp.status_code == 403:
             return False, "GitHub token lacks permission to fork repos"
         else:
@@ -1541,13 +1547,15 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
     # 4. Create a new branch
     branch_name = f"add-skill-{skill_name}"
     try:
-        httpx.post(
+        resp = httpx.post(
             f"https://api.github.com/repos/{fork_repo}/git/refs",
             headers=headers, timeout=15,
             json={"ref": f"refs/heads/{branch_name}", "sha": base_sha},
         )
-    except Exception as e:
-        return False, f"Failed to create branch: {e}"
+        if resp.status_code not in {200, 201}:
+            return False, f"Failed to create branch: {resp.status_code} {resp.text[:200]}"
+    except httpx.HTTPError as e:
+        return False, f"Network error creating branch: {e}"
 
     # 5. Upload skill files
     for f in skill_path.rglob("*"):
@@ -1558,7 +1566,7 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
         try:
             import base64
             content_b64 = base64.b64encode(f.read_bytes()).decode()
-            httpx.put(
+            resp = httpx.put(
                 f"https://api.github.com/repos/{fork_repo}/contents/{upload_path}",
                 headers=headers, timeout=15,
                 json={
@@ -1567,8 +1575,12 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
                     "branch": branch_name,
                 },
             )
-        except Exception as e:
-            return False, f"Failed to upload {rel}: {e}"
+            if resp.status_code not in {200, 201}:
+                return False, (
+                    f"Failed to upload {rel}: {resp.status_code} {resp.text[:200]}"
+                )
+        except httpx.HTTPError as e:
+            return False, f"Network error uploading {rel}: {e}"
 
     # 6. Create PR
     try:
