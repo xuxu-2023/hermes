@@ -19140,6 +19140,24 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                     except Exception:
                         pass
                     return False
+            
+                # After the old gateway exits, wait for platform-side cleanup
+                # (e.g., Feishu WebSocket server-side disconnection). Feishu SDK
+                # has a 30-120s reconnect window on the server side; a short delay
+                # here prevents the new gateway from attempting to connect while
+                # the old connection is still considered valid, which causes
+                # auth_failed errors (issue #43296).
+                # Configurable via HERMES_GATEWAY_REPLACE_CLEANUP_DELAY (seconds).
+                try:
+                    cleanup_delay = float(os.getenv("HERMES_GATEWAY_REPLACE_CLEANUP_DELAY", "3"))
+                except ValueError:
+                    cleanup_delay = 3
+                if cleanup_delay > 0:
+                    logger.info(
+                        "Waiting %.1fs for platform-side cleanup before starting new gateway.",
+                        cleanup_delay,
+                    )
+                    time.sleep(cleanup_delay)
             remove_pid_file()
             # remove_pid_file() is a no-op when the PID doesn't match.
             # Force-unlink to cover the old-process-crashed case.
