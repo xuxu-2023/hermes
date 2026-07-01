@@ -936,6 +936,22 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             stage=f"tool result {name}",
         )
 
+        # ── Opt-in tool-timing sidecar (HERMES_TOOL_TRACE=1) ────────
+        # Real wall latency from time.time() before/after the call.
+        # state.db timestamps are persistence-time and can't be used for this.
+        try:
+            from agent.tool_trace_sidecar import record_tool_timing
+            record_tool_timing(
+                session_id=getattr(agent, "session_id", None),
+                tool_call_id=tc.id,
+                tool_name=name,
+                duration_s=tool_duration,
+                is_error=locals().get("is_error", False),
+                result=function_result,
+            )
+        except Exception:
+            pass
+
         # ── Per-tool /steer drain ───────────────────────────────────
         # Same as the sequential path: drain between each collected
         # result so the steer lands as early as possible.
@@ -1584,6 +1600,20 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             messages,
             stage=f"tool result {function_name}",
         )
+
+        # ── Opt-in tool-timing sidecar (HERMES_TOOL_TRACE=1) ────────
+        try:
+            from agent.tool_trace_sidecar import record_tool_timing
+            record_tool_timing(
+                session_id=getattr(agent, "session_id", None),
+                tool_call_id=tool_call.id,
+                tool_name=function_name,
+                duration_s=locals().get("tool_duration"),
+                is_error=locals().get("is_error", False),
+                result=function_result,
+            )
+        except Exception:
+            pass
 
         # ── Per-tool /steer drain ───────────────────────────────────
         # Drain pending steer BETWEEN individual tool calls so the
