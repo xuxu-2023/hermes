@@ -640,7 +640,16 @@ def find_profile_gateway_processes(
 
 
 def _gateway_run_args_for_profile(profile: str) -> list[str]:
-    args = [get_python_path(), "-m", "hermes_cli.main"]
+    python_path = get_python_path()
+    if is_windows():
+        # On Windows, use pythonw.exe (windowless GUI subsystem) instead of
+        # python.exe (console subsystem) so the post-update gateway restart
+        # does not leave a visible console window open on the user's desktop.
+        p = Path(python_path)
+        pythonw_path = str(p.with_name(p.stem + "w" + p.suffix))
+        if Path(pythonw_path).exists():
+            python_path = pythonw_path
+    args = [python_path, "-m", "hermes_cli.main"]
     if profile != "default":
         args.extend(["--profile", profile])
     args.extend(["gateway", "run", "--replace"])
