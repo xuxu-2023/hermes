@@ -7793,6 +7793,10 @@ def _default_spawn(
         cmd.extend(["--toolsets", ",".join(worker_toolsets)])
     cmd.extend([
         "chat",
+        # Workers are detached, non-TTY subprocesses. Scope --cli to the chat
+        # subcommand so TUI-default configs do not try to start hermes-tui and
+        # fail with "hermes-tui: no TTY" before reaching kanban tools.
+        "--cli",
         "-q", prompt,
     ])
     # Redirect output to a per-task log under <board-root>/logs/.
