@@ -31,7 +31,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_document_from_bytes,
 )
-from gateway.platforms.helpers import strip_markdown
+from gateway.platforms.helpers import MessageDeduplicator, strip_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +151,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
+        self._dedup = MessageDeduplicator()
 
     # ------------------------------------------------------------------
     # API helpers
@@ -862,6 +863,42 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 return candidate.strip()
         return None
 
+    def _webhook_dedup_key(
+        self,
+        payload: Dict[str, Any],
+        record: Dict[str, Any],
+        message_id: Optional[str],
+        text: str,
+    ) -> Optional[str]:
+        """Build a replay key without dropping same-GUID lifecycle updates."""
+        if not message_id:
+            return None
+
+        attachments = []
+        for attachment in record.get("attachments") or []:
+            if not isinstance(attachment, dict):
+                continue
+            attachments.append(
+                {
+                    "guid": attachment.get("guid"),
+                    "mimeType": attachment.get("mimeType"),
+                    "transferName": attachment.get("transferName"),
+                    "uti": attachment.get("uti"),
+                }
+            )
+
+        fingerprint = {
+            "event": self._value(payload.get("type"), payload.get("event")),
+            "text": text,
+            "associatedMessageGuid": record.get("associatedMessageGuid"),
+            "associatedMessageType": record.get("associatedMessageType"),
+            "threadOriginatorGuid": record.get("threadOriginatorGuid"),
+            "itemType": record.get("itemType"),
+            "attachments": attachments,
+        }
+        encoded = json.dumps(fingerprint, sort_keys=True, separators=(",", ":"))
+        return f"{message_id}:{encoded}"
+
     async def _handle_webhook(self, request):
         from aiohttp import web
 
@@ -1012,16 +1049,25 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             user_name=sender,
             chat_id_alt=chat_identifier,
         )
+        message_id = self._value(
+            record.get("guid"),
+            record.get("messageGuid"),
+            record.get("id"),
+        )
+        dedup_key = self._webhook_dedup_key(payload, record, message_id, text)
+        if dedup_key and self._dedup.is_duplicate(dedup_key):
+            logger.debug(
+                "[bluebubbles] duplicate webhook message ignored: %s",
+                _redact(message_id),
+            )
+            return web.Response(text="ok")
+
         event = MessageEvent(
             text=text,
             message_type=msg_type,
             source=source,
             raw_message=payload,
-            message_id=self._value(
-                record.get("guid"),
-                record.get("messageGuid"),
-                record.get("id"),
-            ),
+            message_id=message_id,
             reply_to_message_id=self._value(
                 record.get("threadOriginatorGuid"),
                 record.get("associatedMessageGuid"),
