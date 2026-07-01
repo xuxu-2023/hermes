@@ -415,8 +415,12 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # dir — the user's real cwd there, but the install dir for the gateway
         # daemon, which is why the gateway sets TERMINAL_CWD.
         context_files_prompt = _r.build_context_files_prompt(
-            cwd=resolve_context_cwd(), skip_soul=_soul_loaded,
-            context_length=_ctx_len)
+            cwd=resolve_context_cwd(),
+            skip_soul=_soul_loaded,
+            context_length=_ctx_len,
+            session_id=getattr(agent, "session_id", None),
+            platform=getattr(agent, "platform", None),
+        )
         if context_files_prompt:
             context_parts.append(context_files_prompt)
 
