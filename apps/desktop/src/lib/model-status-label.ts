@@ -51,6 +51,10 @@ const VARIANT_TAGS: ReadonlyArray<readonly [RegExp, string]> = [
   [/-latest$/i, 'Latest']
 ]
 
+const MODEL_DISPLAY_NAMES: Record<string, string> = {
+  'openrouter/fusion': 'OpenRouter Fusion'
+}
+
 const titleCase = (text: string): string => text.replace(/\b\w/g, char => char.toUpperCase()).trim()
 
 function prettifyBase(base: string): string {
@@ -72,6 +76,12 @@ function prettifyBase(base: string): string {
 /** Split a model id into a clean display name plus an optional grayed variant
  *  tag, so distinct ids (e.g. `…-4.8` vs `…-4.8-fast`) don't collapse. */
 export function modelDisplayParts(model: string): { name: string; tag: string } {
+  const override = MODEL_DISPLAY_NAMES[model.trim().toLowerCase()]
+
+  if (override) {
+    return { name: override, tag: '' }
+  }
+
   let base = modelBaseId(model)
   let tag = ''
 

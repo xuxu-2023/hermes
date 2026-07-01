@@ -3,6 +3,7 @@ import { useCallback } from 'react'
 
 import { getGlobalModelInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { persistString, storedString } from '@/lib/storage'
 import { notifyError } from '@/store/notifications'
 import { $activeSessionId, $currentModel, $currentProvider, setCurrentModel, setCurrentProvider } from '@/store/session'
 import type { ModelOptionsResponse } from '@/types/hermes'
@@ -10,6 +11,50 @@ import type { ModelOptionsResponse } from '@/types/hermes'
 interface ModelSelection {
   model: string
   provider: string
+}
+
+const COMPOSER_DEFAULT_BASELINE_KEY = 'hermes.desktop.composer.default-baseline'
+
+const LEGACY_DESKTOP_DEFAULTS: readonly ModelSelection[] = [
+  { model: 'gpt-5.5', provider: 'openai-codex' },
+  { model: 'openai/gpt-5.5', provider: 'openai-codex' }
+]
+
+function sameSelection(left: ModelSelection, right: ModelSelection): boolean {
+  return left.model === right.model && left.provider === right.provider
+}
+
+function normalizedSelection(selection: ModelSelection): ModelSelection {
+  return {
+    model: selection.model.trim(),
+    provider: selection.provider.trim()
+  }
+}
+
+function readComposerDefaultBaseline(): ModelSelection | null {
+  const raw = storedString(COMPOSER_DEFAULT_BASELINE_KEY)
+
+  if (!raw) {
+    return null
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<ModelSelection>
+    const model = typeof parsed.model === 'string' ? parsed.model.trim() : ''
+    const provider = typeof parsed.provider === 'string' ? parsed.provider.trim() : ''
+
+    return model ? { model, provider } : null
+  } catch {
+    return null
+  }
+}
+
+function writeComposerDefaultBaseline(selection: ModelSelection): void {
+  persistString(COMPOSER_DEFAULT_BASELINE_KEY, JSON.stringify(normalizedSelection(selection)))
+}
+
+function isLegacyDesktopDefault(selection: ModelSelection): boolean {
+  return LEGACY_DESKTOP_DEFAULTS.some(defaultSelection => sameSelection(selection, defaultSelection))
 }
 
 interface ModelControlsOptions {
@@ -36,33 +81,46 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
   )
 
   // Seed the composer's model state from the profile default. `force` reseeds
-  // for a profile swap (the new profile has its own default); otherwise this
-  // only fills an EMPTY selection so a user's pick (plain UI state in
-  // $currentModel) survives the lifecycle refreshes that fire on boot / fresh
-  // draft / session events. A live session owns the footer, so skip entirely.
+  // for a profile swap (the new profile has its own default). Routine refreshes
+  // may also reseed when the composer still matches the last default we seeded
+  // and the profile default has changed; once a user picks a different model,
+  // that plain UI state survives boot / fresh draft / session-event refreshes.
+  // A live session owns the footer, so skip entirely.
   const refreshCurrentModel = useCallback(async (force = false) => {
     try {
       if ($activeSessionId.get()) {
         return
       }
 
-      if (!force && $currentModel.get()) {
-        return
-      }
-
       const result = await getGlobalModelInfo()
+      const nextDefault = normalizedSelection({
+        model: typeof result.model === 'string' ? result.model : '',
+        provider: typeof result.provider === 'string' ? result.provider : ''
+      })
 
-      if ($activeSessionId.get() || (!force && $currentModel.get())) {
+      if ($activeSessionId.get() || !nextDefault.model) {
         return
       }
 
-      if (typeof result.model === 'string') {
-        setCurrentModel(result.model)
+      const current = normalizedSelection({
+        model: $currentModel.get(),
+        provider: $currentProvider.get()
+      })
+      const baseline = readComposerDefaultBaseline()
+      const shouldReseed =
+        force ||
+        !current.model ||
+        sameSelection(current, nextDefault) ||
+        (baseline != null && sameSelection(current, baseline) && !sameSelection(baseline, nextDefault)) ||
+        (baseline == null && isLegacyDesktopDefault(current) && !sameSelection(current, nextDefault))
+
+      if (!shouldReseed) {
+        return
       }
 
-      if (typeof result.provider === 'string') {
-        setCurrentProvider(result.provider)
-      }
+      setCurrentModel(nextDefault.model)
+      setCurrentProvider(nextDefault.provider)
+      writeComposerDefaultBaseline(nextDefault)
     } catch {
       // The delayed session.info event still updates this once the agent is ready.
     }

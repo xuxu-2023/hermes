@@ -13,6 +13,7 @@ describe('model-status-label', () => {
     expect(displayModelName('openai/gpt-5.5-fast')).toBe('GPT-5.5')
     expect(displayModelName('deepseek/deepseek-v4-pro-thinking')).toBe('Deepseek V4 Pro')
     expect(displayModelName('openai/gpt-5.5')).toBe('GPT-5.5')
+    expect(displayModelName('openrouter/fusion')).toBe('OpenRouter Fusion')
   })
 
   it('strips trailing date-pin snapshots from the display name', () => {
@@ -35,6 +36,7 @@ describe('model-status-label', () => {
   it('always surfaces the effort (default medium) so the level is visible', () => {
     expect(formatModelStatusLabel('openai/gpt-5.5', { reasoningEffort: 'medium' })).toBe('GPT-5.5 · Med')
     expect(formatModelStatusLabel('openai/gpt-5.5')).toBe('GPT-5.5 · Med')
+    expect(formatModelStatusLabel('openrouter/fusion')).toBe('OpenRouter Fusion · Med')
   })
 
   it('returns just the placeholder name when there is no model', () => {

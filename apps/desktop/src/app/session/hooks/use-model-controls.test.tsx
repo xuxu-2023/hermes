@@ -53,6 +53,7 @@ function Harness({
 
 describe('useModelControls', () => {
   beforeEach(() => {
+    window.localStorage.clear()
     $activeSessionId.set(null)
     setCurrentModel('')
     setCurrentProvider('')
@@ -61,6 +62,7 @@ describe('useModelControls', () => {
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
+    window.localStorage.clear()
     $activeSessionId.set(null)
     setCurrentModel('')
     setCurrentProvider('')
@@ -178,5 +180,104 @@ describe('useModelControls', () => {
     // A profile swap forces a reseed to the new profile's default.
     await result.current.refreshCurrentModel(true)
     expect($currentModel.get()).toBe('openai/gpt-5.5')
+  })
+
+  it('reseeds stale composer state when the profile default changes', async () => {
+    vi.mocked(getGlobalModelInfo).mockResolvedValueOnce({
+      model: 'openai/gpt-5.5',
+      provider: 'openai-codex'
+    })
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        activeSessionId: null,
+        queryClient: new QueryClient(),
+        requestGateway: vi.fn()
+      })
+    )
+
+    await result.current.refreshCurrentModel()
+    expect($currentModel.get()).toBe('openai/gpt-5.5')
+    expect($currentProvider.get()).toBe('openai-codex')
+
+    vi.mocked(getGlobalModelInfo).mockResolvedValueOnce({
+      model: 'openrouter/fusion',
+      provider: 'openrouter'
+    })
+
+    await result.current.refreshCurrentModel()
+
+    expect($currentModel.get()).toBe('openrouter/fusion')
+    expect($currentProvider.get()).toBe('openrouter')
+  })
+
+  it('replaces the legacy desktop default slug when no baseline has been recorded', async () => {
+    setCurrentModel('gpt-5.5')
+    setCurrentProvider('openai-codex')
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({
+      model: 'openrouter/fusion',
+      provider: 'openrouter'
+    })
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        activeSessionId: null,
+        queryClient: new QueryClient(),
+        requestGateway: vi.fn()
+      })
+    )
+
+    await result.current.refreshCurrentModel()
+
+    expect($currentModel.get()).toBe('openrouter/fusion')
+    expect($currentProvider.get()).toBe('openrouter')
+  })
+
+  it('replaces the legacy desktop OpenAI-prefixed default when no baseline has been recorded', async () => {
+    setCurrentModel('openai/gpt-5.5')
+    setCurrentProvider('openai-codex')
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({
+      model: 'openrouter/fusion',
+      provider: 'openrouter'
+    })
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        activeSessionId: null,
+        queryClient: new QueryClient(),
+        requestGateway: vi.fn()
+      })
+    )
+
+    await result.current.refreshCurrentModel()
+
+    expect($currentModel.get()).toBe('openrouter/fusion')
+    expect($currentProvider.get()).toBe('openrouter')
+  })
+
+  it('does not clobber a same-profile user pick on routine refresh', async () => {
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({
+      model: 'openrouter/fusion',
+      provider: 'openrouter'
+    })
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        activeSessionId: null,
+        queryClient: new QueryClient(),
+        requestGateway: vi.fn()
+      })
+    )
+
+    await result.current.refreshCurrentModel()
+
+    await result.current.selectModel({
+      model: 'anthropic/claude-sonnet-4.6',
+      provider: 'openrouter'
+    })
+    await result.current.refreshCurrentModel()
+
+    expect($currentModel.get()).toBe('anthropic/claude-sonnet-4.6')
+    expect($currentProvider.get()).toBe('openrouter')
   })
 })
