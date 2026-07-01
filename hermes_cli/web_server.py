@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager, contextmanager
 import asyncio
 import base64
 import binascii
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hmac
@@ -3640,24 +3641,56 @@ def get_profiles_sessions(
             errors.append({"profile": name, "error": str(exc)})
             continue
         try:
-            rows = db.list_sessions_rich(
-                source=source_filter,
-                exclude_sources=exclude_list or None,
-                limit=per_profile,
-                offset=0,
-                min_message_count=min_message_count,
-                include_archived=include_archived,
-                archived_only=archived_only,
-                order_by_last_active=order == "recent",
-            )
-            profile_total = db.session_count(
-                source=source_filter,
-                exclude_sources=exclude_list or None,
-                min_message_count=min_message_count,
-                include_archived=include_archived,
-                archived_only=archived_only,
-                exclude_children=True,
-            )
+            try:
+                rows = db.list_sessions_rich(
+                    source=source_filter,
+                    exclude_sources=exclude_list or None,
+                    limit=per_profile,
+                    offset=0,
+                    min_message_count=min_message_count,
+                    include_archived=include_archived,
+                    archived_only=archived_only,
+                    order_by_last_active=order == "recent",
+                )
+                profile_total = db.session_count(
+                    source=source_filter,
+                    exclude_sources=exclude_list or None,
+                    min_message_count=min_message_count,
+                    include_archived=include_archived,
+                    archived_only=archived_only,
+                    exclude_children=True,
+                )
+            except sqlite3.OperationalError:
+                # Schema mismatch — profile DB was last written under an older
+                # Hermes release and is missing columns added since.  Open it
+                # read-write once to trigger _init_schema() migration, then
+                # re-open read-only and retry.  This is a one-time cost per
+                # lagging profile; after migration the read-only path works.
+                db.close()
+                try:
+                    migrate_db = SessionDB(db_path=db_path, read_only=False)
+                    migrate_db.close()
+                except Exception:
+                    pass
+                db = SessionDB(db_path=db_path, read_only=True)
+                rows = db.list_sessions_rich(
+                    source=source_filter,
+                    exclude_sources=exclude_list or None,
+                    limit=per_profile,
+                    offset=0,
+                    min_message_count=min_message_count,
+                    include_archived=include_archived,
+                    archived_only=archived_only,
+                    order_by_last_active=order == "recent",
+                )
+                profile_total = db.session_count(
+                    source=source_filter,
+                    exclude_sources=exclude_list or None,
+                    min_message_count=min_message_count,
+                    include_archived=include_archived,
+                    archived_only=archived_only,
+                    exclude_children=True,
+                )
             total += profile_total
             profile_totals[name] = profile_total
             for s in rows:
