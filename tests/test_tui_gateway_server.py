@@ -177,22 +177,47 @@ def test_profile_configured_cwd_skips_placeholders_and_missing(tmp_path):
     home = _write_profile_cfg(tmp_path / "ghost", str(tmp_path / "does-not-exist"))
     assert server._profile_configured_cwd(home) is None
 
-
 def test_completion_cwd_prefers_profile_over_stale_env(monkeypatch, tmp_path):
-    """Issue #40334: a new session bound to another profile must use THAT
-    profile's terminal.cwd, not the launch profile's stale TERMINAL_CWD."""
+    """A session bound to another profile must use THAT profile's terminal.cwd,
+    not the launch profile's TERMINAL_CWD.  When no profile is specified, the
+    launch profile's own terminal.cwd config is checked before the env var."""
     profile_b = tmp_path / "ef-design"
     profile_b.mkdir()
     home = _write_profile_cfg(tmp_path / "home-b", str(profile_b))
     stale = tmp_path / "mahjong"
     stale.mkdir()
 
+    # Launch profile home with NO terminal.cwd configured → should fall through
+    # to TERMINAL_CWD (the env var) for backward-compatible behaviour.
+    launch_home = tmp_path / "launch-home"
+    _write_profile_cfg(launch_home, None)
+
     monkeypatch.setenv("TERMINAL_CWD", str(stale))
     monkeypatch.setattr(server, "_profile_home", lambda name: home if name else None)
+    monkeypatch.setattr(server, "_hermes_home", launch_home)
 
     assert server._completion_cwd({"profile": "ef-design"}) == str(profile_b)
-    # No profile → unchanged fallback to the launch env var.
+    # No profile → launch profile config has no cwd → falls through to env var.
     assert server._completion_cwd({}) == str(stale)
+
+
+def test_completion_cwd_launch_profile_cwd_beats_stale_env(monkeypatch, tmp_path):
+    """When no profile is specified, the launch profile's terminal.cwd config
+    takes precedence over a stale TERMINAL_CWD environment variable.  This
+    prevents desktop sessions from falling back to os.getcwd() (e.g. System32)
+    when the user has configured a working directory."""
+    launch_project = tmp_path / "my-workspace"
+    launch_project.mkdir()
+    launch_home = _write_profile_cfg(tmp_path / "launch-home", str(launch_project))
+    stale = tmp_path / "stale-dir"
+    stale.mkdir()
+
+    monkeypatch.setenv("TERMINAL_CWD", str(stale))
+    monkeypatch.setattr(server, "_profile_home", lambda name: None)
+    monkeypatch.setattr(server, "_hermes_home", launch_home)
+
+    # No profile, no explicit cwd → should use launch profile's terminal.cwd
+    assert server._completion_cwd({}) == str(launch_project)
 
 
 def test_completion_cwd_explicit_cwd_wins_over_profile(monkeypatch, tmp_path):
