@@ -651,8 +651,103 @@ class TestFileUriSupport:
 
 
 # ---------------------------------------------------------------------------
-# Base64 size pre-flight check
+# MSYS / Git Bash / Cygwin path translation on Windows
 # ---------------------------------------------------------------------------
+
+
+class TestMsysPathTranslation:
+    """Verify that Unix-style paths on Windows are translated via cygpath."""
+
+    @pytest.mark.asyncio
+    async def test_msys_path_translated_to_windows_path(self, tmp_path):
+        """A /c/Users/... style path should be translated to Windows via cygpath."""
+        # Create a real image file at the Windows-style path cygpath would return.
+        win_path = tmp_path / "img" / "shot.png"
+        win_path.parent.mkdir(parents=True)
+        # Minimal PNG bytes -- no embedded CRLF to avoid cross-platform quoting issues.
+        win_path.write_bytes(b"\x89PNG" + b"\x0d\x0a\x1a\x0a" + b"\x00" * 8)
+
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "A test image"
+        mock_response.choices = [mock_choice]
+
+        # Simulate cygpath translating /c/tmp/img/shot.png -> the real tmp_path.
+        fake_cygpath = MagicMock()
+        fake_cygpath.returncode = 0
+        fake_cygpath.stdout = str(win_path)
+
+        with (
+            patch("tools.vision_tools.sys.platform", "win32"),
+            patch(
+                "tools.vision_tools.subprocess.run",
+                return_value=fake_cygpath,
+            ),
+            patch(
+                "tools.vision_tools._image_to_base64_data_url",
+                return_value="data:image/png;base64,abc",
+            ),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                return_value=mock_response,
+            ),
+        ):
+            result = await vision_analyze_tool(
+                "/c/tmp/img/shot.png", "describe this", "test/model"
+            )
+            data = json.loads(result)
+            assert data["success"] is True
+            assert data["analysis"] == "A test image"
+
+    @pytest.mark.asyncio
+    async def test_msys_path_without_cygpath_gives_helpful_error(self):
+        """When cygpath is unavailable, the error should mention Unix-style paths."""
+        with (
+            patch("tools.vision_tools.sys.platform", "win32"),
+            patch(
+                "tools.vision_tools.subprocess.run",
+                side_effect=FileNotFoundError,
+            ),
+            patch("tools.vision_tools.logger"),
+        ):
+            result = await vision_analyze_tool(
+                "/tmp/img/p1.jpg", "describe", "test/model"
+            )
+            data = json.loads(result)
+            assert data["success"] is False
+            assert "Unix-style path" in data.get("error", "")
+            assert "cygpath" in data.get("error", "")
+
+    @pytest.mark.asyncio
+    async def test_msys_path_skipped_on_posix(self, tmp_path):
+        """On POSIX, /tmp/img paths should not trigger cygpath translation."""
+        img = tmp_path / "photo.png"
+        img.write_bytes(b"\x89PNG" + b"\x0d\x0a\x1a\x0a" + b"\x00" * 8)
+
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "POSIX local file"
+        mock_response.choices = [mock_choice]
+
+        with (
+            # platform is already not win32 in the test env, but be explicit.
+            patch("tools.vision_tools.sys.platform", "linux"),
+            patch(
+                "tools.vision_tools._image_to_base64_data_url",
+                return_value="data:image/png;base64,abc",
+            ),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                return_value=mock_response,
+            ),
+        ):
+            result = await vision_analyze_tool(
+                str(img), "describe this", "test/model"
+            )
+            data = json.loads(result)
+            assert data["success"] is True
 
 
 class TestBase64SizeLimit:

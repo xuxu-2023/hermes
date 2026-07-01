@@ -35,6 +35,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
+import subprocess
 import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Dict, Optional
@@ -1002,6 +1003,23 @@ async def vision_analyze_tool(
         resolved_url = image_url
         if resolved_url.startswith("file://"):
             resolved_url = resolved_url[len("file://"):]
+
+        # On Windows, translate MSYS / Git Bash / Cygwin style paths
+        # (e.g. /c/Users/... or /tmp/img.jpg) to a Windows-native path
+        # via cygpath so that is_file() and the download path resolve
+        # correctly.  If cygpath is unavailable the path falls through
+        # to a clear actionable error.
+        if sys.platform == "win32" and resolved_url.startswith("/"):
+            try:
+                _proc = subprocess.run(
+                    ["cygpath", "-w", resolved_url],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if _proc.returncode == 0 and _proc.stdout.strip():
+                    resolved_url = _proc.stdout.strip()
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                pass
+
         local_path = Path(os.path.expanduser(resolved_url))
         if local_path.is_file():
             # Local file path (e.g. from platform image cache) -- skip download
@@ -1019,9 +1037,23 @@ async def vision_analyze_tool(
             await _download_image(image_url, temp_image_path)
             should_cleanup = True
         else:
-            raise ValueError(
-                "Invalid image source. Provide an HTTP/HTTPS URL or a valid local file path."
+            msg = (
+                "Invalid image source. Provide an HTTP/HTTPS URL or "
+                "a valid local file path."
             )
+            # Improve the diagnostic when a Unix-style path was passed
+            # but cygpath (the translation helper) isn't installed.
+            if sys.platform == "win32" and (
+                image_url.startswith("/") and not image_url.startswith("//")
+            ):
+                msg += (
+                    f"  Path {image_url!r} looks like a Unix-style path. "
+                    "On Windows, provide a Windows-style absolute path "
+                    "such as 'C:\\Users\\...\\img.jpg', or install Cygwin / "
+                    "Git Bash's cygpath tool so the path can be "
+                    "translated automatically."
+                )
+            raise ValueError(msg)
         
         # Get image file size for logging
         image_size_bytes = temp_image_path.stat().st_size
