@@ -7438,6 +7438,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                 adapter = None
                 try:
+                    # Re-read .env so proxy_manager's silent .env swap takes effect
+                    try:
+                        from hermes_cli.env_loader import load_hermes_dotenv
+                        load_hermes_dotenv()
+                    except Exception:
+                        pass
+
                     adapter = self._create_adapter(platform, platform_config)
                     if not adapter:
                         logger.warning(
