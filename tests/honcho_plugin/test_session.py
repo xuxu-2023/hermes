@@ -653,13 +653,70 @@ class TestToolsModeInitBehavior:
         assert provider._manager is None
         assert provider._lazy_init_kwargs is not None
 
-    def test_tools_eager_init(self):
-        """tools + initOnSessionStart=true → session IS initialized after initialize()."""
-        provider, _, _ = self._make_provider_with_config(
-            recall_mode="tools", init_on_session_start=True,
-        )
+    def test_tools_eager_init_starts_background_without_blocking(self):
+        """tools + initOnSessionStart=true starts init async and returns before Honcho is ready."""
+        import threading
+        from plugins.memory.honcho.client import HonchoClientConfig
+        from unittest.mock import patch
+
+        cfg = HonchoClientConfig(api_key="test-key", enabled=True, recall_mode="tools", init_on_session_start=True)
+        provider = HonchoMemoryProvider()
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_init(*_args, **_kwargs):
+            started.set()
+            release.wait(timeout=2.0)
+            provider._manager = MagicMock()
+            provider._session_initialized = True
+
+        with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg):
+            provider._do_session_init = slow_init
+            provider.initialize(session_id="test-session-001")
+
+        assert started.wait(timeout=1.0)
+        assert provider._session_initialized is False
+        assert provider._manager is None
+        release.set()
+        provider._init_thread.join(timeout=1.0)
         assert provider._session_initialized is True
-        assert provider._manager is not None
+
+    def test_tools_async_init_flushes_pending_turns_when_ready(self):
+        import threading
+        from plugins.memory.honcho.client import HonchoClientConfig
+        from unittest.mock import patch
+
+        cfg = HonchoClientConfig(api_key="test-key", enabled=True, recall_mode="tools", init_on_session_start=True)
+        provider = HonchoMemoryProvider()
+        session = MagicMock()
+        manager = MagicMock()
+        manager.get_or_create.return_value = session
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_init(*_args, **_kwargs):
+            started.set()
+            release.wait(timeout=2.0)
+            provider._manager = manager
+            provider._session_key = "test-session-001"
+            provider._session_initialized = True
+
+        with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg):
+            provider._do_session_init = slow_init
+            provider.initialize(session_id="test-session-001")
+
+        assert started.wait(timeout=1.0)
+        provider.sync_turn("hello", "hi")
+        session.add_message.assert_not_called()
+
+        release.set()
+        provider._init_thread.join(timeout=1.0)
+        if provider._sync_thread:
+            provider._sync_thread.join(timeout=1.0)
+
+        assert session.add_message.call_args_list[0].args == ("user", "hello")
+        assert session.add_message.call_args_list[1].args == ("assistant", "hi")
+        manager._flush_session.assert_called_once_with(session)
 
     def test_tools_eager_prefetch_still_empty(self):
         """tools mode with eager init still returns empty from prefetch() (no auto-injection)."""

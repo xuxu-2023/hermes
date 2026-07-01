@@ -244,6 +244,8 @@ class HonchoMemoryProvider(MemoryProvider):
         self._init_thread: Optional[threading.Thread] = None
         self._init_lock = threading.Lock()
         self._init_error = ""
+        self._pending_turns: list[tuple[str, str]] = []
+        self._pending_turns_lock = threading.Lock()
 
         # Port #4053: cron guard — when True, plugin is fully inactive
         self._cron_skipped = False
@@ -347,14 +349,12 @@ class HonchoMemoryProvider(MemoryProvider):
             self._session_key = self._resolve_session_key(cfg, session_id, **kwargs)
 
             # Network-backed session creation can block on Honcho service or DB
-            # outages. Startup must fail open for context/hybrid modes, where
-            # Honcho is initialized only to enrich prompts. Tools-only mode has
-            # an explicit contract: init_on_session_start=False stays lazy until
-            # the first tool call, while init_on_session_start=True remains an
-            # eager, ready-on-return initialization path.
+            # outages. Startup must fail open for every recall mode. Tools-only
+            # with init_on_session_start=True starts the same background init path
+            # so configured eager startup can warm Honcho without blocking Hermes.
             if self._recall_mode == "tools":
                 if cfg.init_on_session_start:
-                    self._ensure_session()
+                    self._start_session_init_background()
                     return
                 logger.debug("Honcho tools-only mode — deferring session init until first tool call")
                 return
@@ -413,6 +413,7 @@ class HonchoMemoryProvider(MemoryProvider):
                     self._lazy_init_kwargs = None
                     self._lazy_init_session_id = None
                     self._init_error = ""
+                    self._flush_pending_turns()
                 except Exception as e:
                     self._init_error = str(e)
                     self._manager = None
@@ -1211,20 +1212,20 @@ class HonchoMemoryProvider(MemoryProvider):
             ),
         }
 
-    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
-        """Record the conversation turn in Honcho (non-blocking).
-
-        Messages exceeding the Honcho API limit (default 25k chars) are
-        split into multiple messages with continuation markers.
-        """
-        if self._cron_skipped:
-            return
-        if self._recall_mode == "tools" and not self._session_ready():
-            return
+    def _flush_pending_turns(self) -> None:
         if not self._session_ready():
-            self._start_session_init_background()
             return
+        with self._pending_turns_lock:
+            pending = list(self._pending_turns)
+            self._pending_turns.clear()
+        if not pending:
+            return
+        for user_content, assistant_content in pending:
+            self._sync_turn_ready(user_content, assistant_content)
 
+    def _sync_turn_ready(self, user_content: str, assistant_content: str) -> None:
+        if not self._session_ready():
+            return
         msg_limit = self._config.message_max_chars if self._config else 25000
         clean_user_content = sanitize_context(user_content or "").strip()
         clean_assistant_content = sanitize_context(assistant_content or "").strip()
@@ -1246,6 +1247,25 @@ class HonchoMemoryProvider(MemoryProvider):
             target=_sync, daemon=True, name="honcho-sync"
         )
         self._sync_thread.start()
+
+    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+        """Record the conversation turn in Honcho (non-blocking).
+
+        Messages exceeding the Honcho API limit (default 25k chars) are
+        split into multiple messages with continuation markers.
+        """
+        if self._cron_skipped:
+            return
+        if self._recall_mode == "tools" and not self._session_ready():
+            if self._init_thread and self._init_thread.is_alive():
+                with self._pending_turns_lock:
+                    self._pending_turns.append((user_content, assistant_content))
+            return
+        if not self._session_ready():
+            self._start_session_init_background()
+            return
+
+        self._sync_turn_ready(user_content, assistant_content)
 
     def on_memory_write(
         self,
