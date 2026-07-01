@@ -884,6 +884,12 @@ class ShellFileOperations(FileOperations):
         from tools.tool_output_limits import get_max_line_length
         max_line_length = get_max_line_length()
         lines = content.split('\n')
+        # Drop the phantom trailing empty line that split() produces when the
+        # content ends with '\n' (the normal well-formed case).  Matches
+        # cat -n behaviour: a trailing newline terminates the last line, it
+        # does not start a new empty one.
+        if lines and lines[-1] == '':
+            lines.pop()
         numbered = []
         for i, line in enumerate(lines, start=start_line):
             # Truncate long lines
