@@ -1768,6 +1768,70 @@ class TestHTTPConfig:
         assert captured["legacy_headers"]["MCP-Protocol-Version"] == "custom-version"
         assert "mcp-protocol-version" not in captured["legacy_headers"]
 
+    def test_legacy_streamable_http_timeouts_are_timedeltas(self):
+        """Older MCP SDKs expect Streamable HTTP timeouts as timedeltas.
+
+        Passing numeric config values through to ``streamablehttp_client`` can
+        crash inside ``StreamableHTTPTransport`` with
+        ``'float' object has no attribute 'seconds'`` before Hermes even gets a
+        chance to initialize the MCP session.
+        """
+        from datetime import timedelta
+        from tools.mcp_tool import MCPServerTask
+
+        server = MCPServerTask("remote")
+        captured = {}
+
+        class DummyLegacyTransportCtx:
+            def __init__(self, **kwargs):
+                timeout = kwargs.get("timeout")
+                sse_read_timeout = kwargs.get("sse_read_timeout")
+                assert timeout is not None
+                assert sse_read_timeout is not None
+                # Simulate the legacy SDK code path reported in #49629: the
+                # transport accesses ``.seconds`` while constructing itself.
+                timeout.seconds
+                sse_read_timeout.seconds
+                captured.update(kwargs)
+
+            async def __aenter__(self):
+                return MagicMock(), MagicMock(), (lambda: None)
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        class DummySession:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def initialize(self):
+                return None
+
+        async def _discover_tools(self):
+            self._shutdown_event.set()
+
+        async def _test():
+            with patch("tools.mcp_tool._MCP_HTTP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._MCP_NEW_HTTP", False), \
+                 patch("tools.mcp_tool.streamablehttp_client", side_effect=lambda url, **kwargs: DummyLegacyTransportCtx(**kwargs)), \
+                 patch("tools.mcp_tool.ClientSession", DummySession), \
+                 patch.object(MCPServerTask, "_discover_tools", _discover_tools):
+                await server._run_http({
+                    "url": "https://example.com/mcp",
+                    "connect_timeout": 7,
+                })
+
+        asyncio.run(_test())
+
+        assert captured["timeout"] == timedelta(seconds=7)
+        assert captured["sse_read_timeout"] == timedelta(seconds=300)
+
 
 # ---------------------------------------------------------------------------
 # Reconnection logic

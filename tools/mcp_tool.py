@@ -95,7 +95,7 @@ import sys
 import threading
 import time
 from typing import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Coroutine, Dict, List, Optional
 from urllib.parse import urlparse
 
@@ -300,6 +300,18 @@ _MAX_BACKOFF_SECONDS = 60
 # stops a misconfigured tiny interval from busy-looping the keepalive.
 _DEFAULT_KEEPALIVE_INTERVAL = 180  # seconds between liveness pings
 _MIN_KEEPALIVE_INTERVAL = 5        # clamp floor for configured intervals
+
+
+def _timeout_delta(seconds: float | int | timedelta) -> timedelta:
+    """Return an MCP SDK-compatible timeout value.
+
+    Older Streamable HTTP SDK releases read ``.seconds`` on timeout values, so
+    legacy client-managed HTTP transports must receive ``timedelta`` objects
+    instead of raw numeric config values.
+    """
+    if isinstance(seconds, timedelta):
+        return seconds
+    return timedelta(seconds=float(seconds))
 
 # Environment variables that are safe to pass to stdio subprocesses
 _SAFE_ENV_KEYS = frozenset({
@@ -2202,7 +2214,8 @@ class MCPServerTask:
             # Deprecated API (mcp < 1.24.0): manages httpx client internally.
             _http_kwargs: dict = {
                 "headers": headers,
-                "timeout": float(connect_timeout),
+                "timeout": _timeout_delta(connect_timeout),
+                "sse_read_timeout": _timeout_delta(300.0),
                 "verify": ssl_verify,
             }
             if _oauth_auth is not None:
