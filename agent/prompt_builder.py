@@ -1343,6 +1343,7 @@ def _build_snapshot_entry(
     if isinstance(platforms, str):
         platforms = [platforms]
 
+    status = frontmatter.get("status")  # draft, pending, confirmed, or None
     return {
         "skill_name": skill_name,
         "category": category,
@@ -1350,6 +1351,7 @@ def _build_snapshot_entry(
         "description": description,
         "platforms": [str(p).strip() for p in platforms if str(p).strip()],
         "conditions": extract_skill_conditions(frontmatter),
+        "status": status,  # draft/pending/confirmed/None
     }
 
 
@@ -1495,6 +1497,11 @@ def build_skills_system_prompt(
                 available_toolsets,
             ):
                 continue
+            # Suppress draft/pending skills unless explicitly requested
+            from tools.skill_provenance import should_suppress_drafts
+            status = entry.get("status")
+            if should_suppress_drafts() and status in ("draft", "pending"):
+                continue
             skills_by_category.setdefault(category, []).append(
                 (frontmatter_name, entry.get("description", ""))
             )
@@ -1519,6 +1526,11 @@ def build_skills_system_prompt(
                 available_tools,
                 available_toolsets,
             ):
+                continue
+            # Suppress draft/pending skills unless explicitly requested
+            from tools.skill_provenance import should_suppress_drafts
+            status = entry.get("status")
+            if should_suppress_drafts() and status in ("draft", "pending"):
                 continue
             skills_by_category.setdefault(entry["category"], []).append(
                 (entry["frontmatter_name"], entry["description"])
