@@ -11,6 +11,12 @@ describe('detectTrigger', () => {
     expect(detectTrigger('/skill')).toEqual({ kind: '/', query: 'skill', tokenLength: 6 })
   })
 
+  it('does not detect slash triggers after whitespace or text', () => {
+    expect(detectTrigger(' /skill')).toBeNull()
+    expect(detectTrigger('不附加文件 /文件夾')).toBeNull()
+    expect(detectTrigger('Run an A/B test')).toBeNull()
+  })
+
   it('detects a bare at-mention trigger with an empty query', () => {
     expect(detectTrigger('@')).toEqual({ kind: '@', query: '', tokenLength: 1 })
   })
