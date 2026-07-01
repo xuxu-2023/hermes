@@ -896,19 +896,33 @@ export function ChatBar({
               style={{ background: COMPOSER_FADE_BACKGROUND }}
             />
           )}
-          {/* Drag region: covers the transparent grab margin around the surface.
-              The surface sits on top (z-4) so only the exposed ring receives this
-              element's hover/cursor — grab cursor + a diagonal hatch (/////)
-              appear when you hover the draggable margin, never over the input.
-              The hatch pattern + opacity ladder live in styles.css. */}
+          {/* Drag affordance: keep the parent layer above the surface (z-5),
+              but make it pointer-events-none and expose only narrow shell-edge
+              hit targets. This keeps hover/double-click/drag available on the
+              docked top border without stealing input/control clicks. */}
           {popoutAllowed && (
             <div
               aria-hidden
-              className={cn('pointer-events-auto absolute inset-0', dragging ? 'cursor-grabbing' : 'cursor-grab')}
+              className="pointer-events-none absolute inset-0 z-5"
               data-dragging={dragging ? '' : undefined}
               data-slot="composer-drag-region"
-              onDoubleClick={handleComposerToggle}
-            />
+            >
+              <div
+                className={cn('pointer-events-auto absolute inset-x-0 top-0 h-3', dragging ? 'cursor-grabbing' : 'cursor-grab')}
+                data-slot="composer-drag-hit-target-top"
+                onDoubleClick={handleComposerToggle}
+              />
+              <div
+                className={cn('pointer-events-auto absolute inset-y-0 left-0 w-3', dragging ? 'cursor-grabbing' : 'cursor-grab')}
+                data-slot="composer-drag-hit-target-left"
+                onDoubleClick={handleComposerToggle}
+              />
+              <div
+                className={cn('pointer-events-auto absolute inset-y-0 right-0 w-3', dragging ? 'cursor-grabbing' : 'cursor-grab')}
+                data-slot="composer-drag-hit-target-right"
+                onDoubleClick={handleComposerToggle}
+              />
+            </div>
           )}
           <div className="relative w-full rounded-[inherit]">
             <div
