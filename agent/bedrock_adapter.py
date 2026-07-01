@@ -1296,9 +1296,19 @@ def classify_bedrock_error(error_message: str) -> str:
 # detection is unavailable.
 
 BEDROCK_CONTEXT_LENGTHS: Dict[str, int] = {
-    # Anthropic Claude models on Bedrock
-    "anthropic.claude-opus-4-6":     200_000,
-    "anthropic.claude-sonnet-4-6":   200_000,
+    # Anthropic Claude models on Bedrock.
+    # AWS and Anthropic list Opus/Sonnet 4.6+ as 1M-context Bedrock models;
+    # this fallback must not assume the older Claude-wide 200K window.
+    # These 1M entries must match agent/model_metadata.py DEFAULT_CONTEXT_LENGTHS
+    # or the agent compresses context prematurely (~200K) on a 1M-capable model.
+    # Longest-substring matching means more specific keys (…opus-4-8) win over
+    # the generic …opus-4 fallback, so list the generic 200K entry last.
+    "anthropic.claude-fable-5":      1_000_000,
+    "anthropic.claude-fable":        1_000_000,
+    "anthropic.claude-opus-4-8":     1_000_000,
+    "anthropic.claude-opus-4-7":     1_000_000,
+    "anthropic.claude-opus-4-6":     1_000_000,
+    "anthropic.claude-sonnet-4-6":   1_000_000,
     "anthropic.claude-sonnet-4-5":   200_000,
     "anthropic.claude-haiku-4-5":    200_000,
     "anthropic.claude-opus-4":       200_000,

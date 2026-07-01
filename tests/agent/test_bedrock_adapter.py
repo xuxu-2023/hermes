@@ -1167,11 +1167,36 @@ class TestBedrockContextLength:
 
     def test_claude_opus_4_6(self):
         from agent.bedrock_adapter import get_bedrock_context_length
-        assert get_bedrock_context_length("anthropic.claude-opus-4-6-20250514-v1:0") == 200_000
+        # Opus 4.6 is a 1M-context model on Bedrock.
+        assert get_bedrock_context_length("anthropic.claude-opus-4-6-20250514-v1:0") == 1_000_000
+
+    def test_claude_opus_4_7_and_4_8(self):
+        from agent.bedrock_adapter import get_bedrock_context_length
+        # Opus 4.7/4.8 inference profiles must not fall back to the generic
+        # …opus-4 (200K) key.
+        assert get_bedrock_context_length("us.anthropic.claude-opus-4-7") == 1_000_000
+        assert get_bedrock_context_length("us.anthropic.claude-opus-4-8") == 1_000_000
+        assert get_bedrock_context_length("global.anthropic.claude-opus-4-8") == 1_000_000
+
+    def test_claude_fable_5(self):
+        from agent.bedrock_adapter import get_bedrock_context_length
+        # Fable is a 1M-context model. DEFAULT_CONTEXT_LENGTHS already maps
+        # claude-fable-5 -> 1M, but the Bedrock resolution path short-circuits
+        # to this table before consulting it, so without entries here every
+        # Fable inference profile fell through to
+        # BEDROCK_DEFAULT_CONTEXT_LENGTH (128K).
+        assert get_bedrock_context_length("us.anthropic.claude-fable-5") == 1_000_000
+        assert get_bedrock_context_length("global.anthropic.claude-fable-5") == 1_000_000
+        assert get_bedrock_context_length("anthropic.claude-fable-5-v1:0") == 1_000_000
+
+    def test_claude_opus_4_base_stays_200k(self):
+        from agent.bedrock_adapter import get_bedrock_context_length
+        # The original Opus 4 (no minor version) keeps the 200K window.
+        assert get_bedrock_context_length("anthropic.claude-opus-4-20250514-v1:0") == 200_000
 
     def test_claude_sonnet_versioned(self):
         from agent.bedrock_adapter import get_bedrock_context_length
-        assert get_bedrock_context_length("anthropic.claude-sonnet-4-6-20250514-v1:0") == 200_000
+        assert get_bedrock_context_length("anthropic.claude-sonnet-4-6-20250514-v1:0") == 1_000_000
 
     def test_nova_pro(self):
         from agent.bedrock_adapter import get_bedrock_context_length
@@ -1188,7 +1213,7 @@ class TestBedrockContextLength:
     def test_inference_profile_resolves(self):
         from agent.bedrock_adapter import get_bedrock_context_length
         # Cross-region inference profiles contain the base model ID
-        assert get_bedrock_context_length("us.anthropic.claude-sonnet-4-6") == 200_000
+        assert get_bedrock_context_length("us.anthropic.claude-sonnet-4-6") == 1_000_000
 
     def test_longest_prefix_wins(self):
         from agent.bedrock_adapter import get_bedrock_context_length
