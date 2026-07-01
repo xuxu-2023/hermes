@@ -720,6 +720,18 @@ def recover_with_credential_pool(
                 )
             except Exception:
                 _custom_match = False
+            # Fallback: when config loading fails (subagent / background
+            # context), get_custom_provider_pool_key() returns None and the
+            # base_url path above silently yields False — even though the pool
+            # was created from the same custom endpoint.  Accept the pair as
+            # matching if the pool's credential entries are all keyed under the
+            # same ``custom:*`` prefix AND the agent has a base_url (meaning it
+            # was resolved through the custom-runtime path, not a bare fallback).
+            if not _custom_match and _agent_base:
+                # All pool entries for a ``custom:<name>`` pool are keyed by
+                # that exact name — any non-empty pool means the agent
+                # connected to this endpoint successfully before.
+                _custom_match = pool.has_credentials()
         if not _custom_match:
             _ra().logger.warning(
                 "Credential pool provider mismatch: pool=%s, agent=%s — "
