@@ -4301,13 +4301,36 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         logger.debug("No explicit MCP servers provided")
         return []
 
-    # Only attempt servers that aren't already connected and are enabled
-    # (enabled: false skips the server entirely without removing its config)
+    # Only skip servers that are both already in ``_servers`` AND have an
+    # active session.  A stale entry (``session is None``, e.g. after a
+    # transport disconnect) must be reconnected so that tool handlers don't
+    # permanently return "not connected" (#37768).
+    #
+    # Enabled: false servers are skipped without removing existing sessions.
     with _lock:
+        # Cancel lingering background tasks for stale entries BEFORE building
+        # new_servers.  Otherwise a stale MCPServerTask may still be parked
+        # in its reconnect backoff loop (or waiting on _reconnect_event).  If
+        # we launch a new _discover_and_register_server for the same name
+        # while the old task later finishes its reconnection, two sessions
+        # race for the same server name (TOCTOU on _servers[<name>]) and the
+        # old task is orphaned, leaking an asyncio Task (#37899 review).
+        for k in list(_servers.keys()):
+            srv = _servers[k]
+            if getattr(srv, "session", None) is None:
+                old_task = getattr(srv, "_task", None)
+                if old_task is not None and not old_task.done():
+                    old_task.cancel()
+                del _servers[k]
+
         new_servers = {
             k: v
             for k, v in servers.items()
-            if k not in _servers and _parse_boolish(v.get("enabled", True), default=True)
+            if _parse_boolish(v.get("enabled", True), default=True)
+            and (
+                k not in _servers
+                or getattr(_servers[k], "session", None) is None
+            )
         }
         _server_connecting.update(new_servers)
         for srv_name in new_servers:
