@@ -7,6 +7,7 @@ Jaccard similarity reranking and trust-weighted scoring.
 from __future__ import annotations
 
 import math
+import re
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -62,8 +63,17 @@ class FactRetriever:
 
         Returns list of dicts with fact data + 'score' field, sorted by score desc.
         """
-        # Stage 1: Get FTS5 candidates (more than limit for reranking headroom)
+        # Stage 1: Get FTS5 candidates (more than limit for reranking headroom).
+        # FTS5 treats whitespace-separated terms as AND by default, which is too
+        # strict for user memory queries like "Claude Code DaseinAI relay
+        # claude-daseinai" when punctuation/tokenization prevents one term from
+        # matching exactly. Fall back to an OR query before giving up.
         candidates = self._fts_candidates(query, category, min_trust, limit * 3)
+
+        if not candidates:
+            relaxed_query = self._relaxed_fts_query(query)
+            if relaxed_query and relaxed_query != query:
+                candidates = self._fts_candidates(relaxed_query, category, min_trust, limit * 3)
 
         if not candidates:
             return []
@@ -544,6 +554,28 @@ class FactRetriever:
             results.append(fact)
 
         return results
+
+    @staticmethod
+    def _relaxed_fts_query(query: str) -> str:
+        """Build a permissive FTS5 OR query from user text.
+
+        Plain FTS5 MATCH uses AND semantics for whitespace-separated terms.
+        Memory queries are often descriptive phrases; one tokenization mismatch
+        should not suppress otherwise good candidates. Keep only word-like terms
+        and quote each token so punctuation in the original query cannot create
+        malformed FTS syntax.
+        """
+        terms = re.findall(r"[\w-]+", query, flags=re.UNICODE)
+        seen: set[str] = set()
+        quoted_terms: list[str] = []
+        for term in terms:
+            normalized = term.lower()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            escaped = term.replace('"', '""')
+            quoted_terms.append(f'"{escaped}"')
+        return " OR ".join(quoted_terms)
 
     @staticmethod
     def _tokenize(text: str) -> set[str]:
