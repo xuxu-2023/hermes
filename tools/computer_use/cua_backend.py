@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import concurrent.futures
+import functools
 import json
 import logging
 import os
@@ -107,6 +108,41 @@ _DESKTOP_WINDOW_NAMES = (
 _CUA_TELEMETRY_ENV_VAR = "CUA_DRIVER_RS_TELEMETRY_ENABLED"
 
 
+def _cua_no_overlay() -> bool:
+    """True when Hermes should pass ``--no-overlay`` to cua-driver.
+
+    Reads ``computer_use.no_overlay`` from config.yaml.  Default is
+    ``None`` (auto-detect): disable the overlay on headless Linux / WSL2 /
+    containers where it serves no visual purpose and can consume CPU
+    indefinitely (#28152, #47032).  Explicit ``True`` / ``False`` in config
+    overrides auto-detection.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        cu = cfg.get("computer_use") or {}
+        val = cu.get("no_overlay")
+        if val is not None:
+            return bool(val)
+    except Exception:
+        pass
+    # Auto-detect: disable on headless Linux (no DISPLAY), WSL2, or
+    # containers.  Desktop Linux with a running compositor keeps the
+    # overlay — it's visually useful there.
+    if sys.platform != "linux":
+        return False
+    if not os.environ.get("DISPLAY"):
+        return True
+    try:
+        with open("/proc/version", encoding="utf-8") as f:
+            if "microsoft" in f.read().lower():
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def _cua_telemetry_disabled() -> bool:
     """True when Hermes should disable cua-driver telemetry for this user.
 
@@ -158,6 +194,13 @@ def _resolve_mcp_invocation(
     Falls back to ``(driver_cmd, ["mcp"])`` for older drivers that don't
     expose ``manifest``, or any indeterminate failure — the wrapper must
     not refuse to start just because the discovery hop failed.
+
+    When ``computer_use.no_overlay`` is enabled (or auto-detected on
+    Linux), ``--no-overlay`` is appended to suppress the cursor overlay
+    rendering loop that can consume CPU indefinitely when idle
+    (#28152, #47032).  Older drivers that don't recognise the flag will
+    reject it; callers should fall back to the no-overlay invocation on
+    spawn failure.
     """
     try:
         proc = subprocess.run(
@@ -166,28 +209,58 @@ def _resolve_mcp_invocation(
             stdin=subprocess.DEVNULL,
         )
     except Exception:
-        return driver_cmd, list(_CUA_DRIVER_ARGS)
+        return driver_cmd, _mcp_args_with_overlay_flag(list(_CUA_DRIVER_ARGS))
     out = (proc.stdout or "").strip()
     if proc.returncode != 0 or not out:
-        return driver_cmd, list(_CUA_DRIVER_ARGS)
+        return driver_cmd, _mcp_args_with_overlay_flag(list(_CUA_DRIVER_ARGS))
     try:
         manifest = json.loads(out)
     except (ValueError, TypeError):
-        return driver_cmd, list(_CUA_DRIVER_ARGS)
+        return driver_cmd, _mcp_args_with_overlay_flag(list(_CUA_DRIVER_ARGS))
     if not isinstance(manifest, dict):
-        return driver_cmd, list(_CUA_DRIVER_ARGS)
+        return driver_cmd, _mcp_args_with_overlay_flag(list(_CUA_DRIVER_ARGS))
     invocation = manifest.get("mcp_invocation")
     if not isinstance(invocation, dict):
-        return driver_cmd, list(_CUA_DRIVER_ARGS)
+        return driver_cmd, _mcp_args_with_overlay_flag(list(_CUA_DRIVER_ARGS))
     args = invocation.get("args")
     command = invocation.get("command")
     if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
-        return driver_cmd, list(_CUA_DRIVER_ARGS)
+        return driver_cmd, _mcp_args_with_overlay_flag(list(_CUA_DRIVER_ARGS))
     if not isinstance(command, str) or not command:
         # The driver knows the subcommand but didn't surface its own path.
         # Keep our resolved driver_cmd; the args are still authoritative.
-        return driver_cmd, args
-    return command, args
+        return driver_cmd, _mcp_args_with_overlay_flag(args)
+    return command, _mcp_args_with_overlay_flag(args)
+
+
+def _mcp_args_with_overlay_flag(
+    args: List[str],
+    driver_cmd: str = _CUA_DRIVER_CMD,
+) -> List[str]:
+    """Return *args* with ``--no-overlay`` appended when configured and supported."""
+    if _cua_no_overlay() and _cua_driver_supports_no_overlay(driver_cmd):
+        return [*args, "--no-overlay"]
+    return list(args)
+
+
+@functools.lru_cache(maxsize=1)
+def _cua_driver_supports_no_overlay(driver_cmd: str) -> bool:
+    """True if the installed cua-driver recognises ``--no-overlay``.
+
+    Probes ``<driver> --help`` once and caches the result.  Older
+    drivers (< 0.6.x) reject unknown flags, so passing ``--no-overlay``
+    would crash the MCP spawn.
+    """
+    try:
+        proc = subprocess.run(
+            [driver_cmd, "--help"],
+            capture_output=True, text=True, timeout=3.0,
+            stdin=subprocess.DEVNULL,
+        )
+        help_text = (proc.stdout or "") + (proc.stderr or "")
+        return "--no-overlay" in help_text
+    except Exception:
+        return False
 
 # Regex to parse element lines from get_window_state AX tree markdown.
 #
