@@ -4034,7 +4034,15 @@ def resolve_provider_client(
     # missing-credentials returns and ``_resolve_auto`` falls through to
     # the Step-2 chain as before.
     if not model:
-        model = _get_aux_model_for_provider(provider) or _read_main_model() or model
+        # For provider == "auto", skip the _read_main_model() fallback.
+        # The auto branch resolves the model from the live runtime via
+        # _resolve_auto(main_runtime=...), and a stale model from config
+        # would override the correctly resolved one (issue #44746).
+        _aux_default = _get_aux_model_for_provider(provider)
+        if _aux_default:
+            model = _aux_default
+        elif provider != "auto":
+            model = _read_main_model() or model
 
     def _needs_codex_wrap(client_obj, base_url_str: str, model_str: str) -> bool:
         """Decide if a plain OpenAI client should be wrapped for Responses API.
