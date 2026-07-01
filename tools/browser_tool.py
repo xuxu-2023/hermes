@@ -929,6 +929,47 @@ _CDP_FALLBACK_ELIGIBLE: frozenset[str] = frozenset({
     "scroll", "back", "press", "console", "errors",
 })
 
+_CDP_BACKEND_FAILURE_MARKERS: tuple[str, ...] = (
+    "all cdp discovery methods failed",
+    "failed to resolve cdp",
+    "failed to connect to cdp",
+    "websocket connect failed",
+    "websocket",
+    "socket closed",
+    "socket hang up",
+    "connection refused",
+    "connection reset",
+    "connection closed",
+    "econnrefused",
+    "econnreset",
+    "etimedout",
+    "io error",
+    "target closed",
+    "browser has disconnected",
+    "browser closed",
+    "command timed out",
+    "timed out after",
+    "returned no output",
+    "non-json output from agent-browser",
+)
+
+
+def _is_cdp_backend_failure(result: Dict[str, Any]) -> bool:
+    """Return True for transport/backend failures, not page semantics.
+
+    A failed click because ``@e999`` no longer exists, a JS exception from
+    ``eval``, or an app-level navigation error should be reported as-is.  Only
+    failures that indicate the selected CDP backend itself is unreachable,
+    disconnected, or unable to speak the expected protocol are safe to retry in
+    a different local browser.
+    """
+    if result.get("success"):
+        return False
+    error = str(result.get("error") or "").strip().lower()
+    if not error:
+        return False
+    return any(marker in error for marker in _CDP_BACKEND_FAILURE_MARKERS)
+
 
 def _cdp_fallback_reason(
     session_info: Dict[str, Any],
@@ -952,6 +993,8 @@ def _cdp_fallback_reason(
         return None
 
     if not result.get("success"):
+        if not _is_cdp_backend_failure(result):
+            return None
         error = str(result.get("error") or "command failed").strip()
         return f"CDP backend {command!r} failed ({error}); retried with local browser."
 
@@ -1003,6 +1046,17 @@ def _annotate_cdp_fallback(
     return annotated
 
 
+def _cdp_fallback_warmup_url_safe(url: str) -> bool:
+    """Return whether a cached URL may be reopened during CDP→local fallback."""
+    if not url:
+        return False
+    if _is_always_blocked_url(url):
+        return False
+    if not _allow_private_urls() and not _is_safe_url(url):
+        return False
+    return True
+
+
 def _run_cdp_local_fallback_command(
     task_id: str,
     command: str,
@@ -1022,7 +1076,7 @@ def _run_cdp_local_fallback_command(
 
     if command != "open":
         current_url = _last_browser_url_by_session_key.get(task_id)
-        if current_url:
+        if current_url and _cdp_fallback_warmup_url_safe(current_url):
             warmup = _run_browser_command(
                 local_session_key,
                 "open",
@@ -1036,6 +1090,13 @@ def _run_cdp_local_fallback_command(
                     command,
                     warmup.get("error"),
                 )
+        elif current_url:
+            logger.warning(
+                "CDP fallback: skipped unsafe cached warm-up URL before %s: %s",
+                command,
+                _sanitize_url_for_logs(current_url),
+            )
+            _last_browser_url_by_session_key.pop(task_id, None)
 
     fallback_result = _run_browser_command(local_session_key, command, args, timeout)
     # Future non-nav calls for this task should follow the browser that actually
@@ -2918,13 +2979,6 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         data = result.get("data", {})
         title = data.get("title", "")
         final_url = data.get("url", url)
-        if final_url:
-            _last_browser_url_by_session_key[served_session_key] = final_url
-            # If a backend fallback served this navigation, keep the original
-            # session key's last URL too so a later fallback can warm up local
-            # state even before _last_active_session_key is consulted.
-            if served_session_key != nav_session_key:
-                _last_browser_url_by_session_key[nav_session_key] = final_url
 
         # Post-redirect SSRF check — if the browser followed a redirect to a
         # private/internal address, block the result so the model can't read
@@ -2941,6 +2995,8 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
             and final_url != url
             and _is_always_blocked_url(final_url)
         ):
+            _last_browser_url_by_session_key.pop(served_session_key, None)
+            _last_browser_url_by_session_key.pop(nav_session_key, None)
             _run_browser_command(nav_session_key, "open", ["about:blank"], timeout=10)
             return json.dumps({
                 "success": False,
@@ -2954,11 +3010,21 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
             and final_url and final_url != url and not _is_safe_url(final_url)
         ):
             # Navigate away to a blank page to prevent snapshot leaks
+            _last_browser_url_by_session_key.pop(served_session_key, None)
+            _last_browser_url_by_session_key.pop(nav_session_key, None)
             _run_browser_command(nav_session_key, "open", ["about:blank"], timeout=10)
             return json.dumps({
                 "success": False,
                 "error": "Blocked: redirect landed on a private/internal address",
             })
+
+        if final_url:
+            _last_browser_url_by_session_key[served_session_key] = final_url
+            # If a backend fallback served this navigation, keep the original
+            # session key's last URL too so a later fallback can warm up local
+            # state even before _last_active_session_key is consulted.
+            if served_session_key != nav_session_key:
+                _last_browser_url_by_session_key[nav_session_key] = final_url
 
         response = {
             "success": True,
