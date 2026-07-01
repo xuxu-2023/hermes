@@ -571,6 +571,14 @@ def build_alias_map() -> dict[str, str]:
             continue
         if not is_windows and entry.suffix:
             continue
+        # Skip large files — Hermes wrappers are tiny shell/batch scripts.
+        # Large extensionless binaries in ~/.local/bin would be expensive to
+        # read and decode as text (issue #44032).
+        try:
+            if entry.stat().st_size > 65536:
+                continue
+        except OSError:
+            continue
         try:
             with open(entry, "r", encoding="utf-8", errors="strict") as f:
                 content = f.read(_WRAPPER_READ_LIMIT)
