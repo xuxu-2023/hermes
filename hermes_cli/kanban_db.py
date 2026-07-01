@@ -7793,6 +7793,7 @@ def _default_spawn(
         cmd.extend(["--toolsets", ",".join(worker_toolsets)])
     cmd.extend([
         "chat",
+        "--cli",
         "-q", prompt,
     ])
     # Redirect output to a per-task log under <board-root>/logs/.
