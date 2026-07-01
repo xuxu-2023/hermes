@@ -759,6 +759,11 @@ def _run_review_in_thread(
                     enabled_toolsets=review_toolsets,
                     quiet_mode=True,
                 )
+                # Background review must not call hindsight_retain — it generates
+                # LLM-summarized document content that replaces the user's original
+                # words in Hindsight's document store. The built-in memory tool
+                # is sufficient for the review purpose (per-repo skill #53148).
+                if t["function"]["name"] != "hindsight_retain"
             }
             set_thread_tool_whitelist(
                 review_whitelist,
