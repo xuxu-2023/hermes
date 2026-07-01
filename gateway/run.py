@@ -2444,7 +2444,12 @@ def _normalize_empty_agent_response(
         )
 
     api_calls = int(agent_result.get("api_calls", 0) or 0)
-    if api_calls > 0 and not agent_result.get("interrupted"):
+    if api_calls > 0:
+        if agent_result.get("interrupted"):
+            return (
+                "⚠️ Processing was interrupted before a response was "
+                "generated. Try sending your message again."
+            )
         if agent_result.get("partial"):
             err = agent_result.get("error", "processing incomplete")
             return f"⚠️ Processing stopped: {str(err)[:200]}. Try again."

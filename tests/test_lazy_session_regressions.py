@@ -347,8 +347,8 @@ class TestGatewaySurfacesNullResponse:
         assert response != "", "Null response with api_calls>0 must be surfaced"
         assert "nonexistent_tool" in response
 
-    def test_interrupted_response_stays_empty(self):
-        """Interrupted agent → response stays empty (platform handles UX)."""
+    def test_interrupted_response_surfaces_message(self):
+        """Interrupted agent with api_calls > 0 surfaces a message (fixes #44212)."""
         from gateway.run import _normalize_empty_agent_response
 
         agent_result = {
@@ -363,7 +363,26 @@ class TestGatewaySurfacesNullResponse:
             agent_result, response, history_len=10,
         )
 
-        assert response == "", "Interrupted turns should not get synthetic responses"
+        assert response != "", "Interrupted turns with api_calls>0 must surface a message"
+        assert "interrupted" in response.lower()
+
+    def test_interrupted_no_api_calls_stays_empty(self):
+        """Interrupted agent with no api_calls stays empty."""
+        from gateway.run import _normalize_empty_agent_response
+
+        agent_result = {
+            "final_response": None,
+            "api_calls": 0,
+            "partial": False,
+            "interrupted": True,
+        }
+
+        response = agent_result.get("final_response") or ""
+        response = _normalize_empty_agent_response(
+            agent_result, response, history_len=10,
+        )
+
+        assert response == "", "Interrupted turns without api_calls should stay empty"
 
     def test_failed_context_overflow(self):
         """Agent failed with context overflow → specific guidance message."""
