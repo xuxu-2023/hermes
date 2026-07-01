@@ -2496,22 +2496,47 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+
+            # Per-task model/provider override (issue #18591).
+            # Fallback chain: per-task field → delegation config → parent model.
+            # NOTE: .strip() guards against whitespace-only strings like "  ".
+            task_model = (t.get("model") or "").strip() or ""
+            task_provider = (t.get("provider") or "").strip() or ""
+
+            # Resolve per-task credentials when provider or model is specified.
+            # NOTE (fail-fast): credential resolution failure for task N aborts
+            # the entire batch.  Already-spawned children from tasks 0..N-1 are
+            # orphaned.  Pre-validate all tasks first if partial-failure handling
+            # is needed (see review discussion on PR #43134).
+            if task_provider or task_model:
+                task_creds = _resolve_task_credentials(
+                    task_model=task_model,
+                    task_provider=task_provider,
+                    delegation_creds=creds,
+                    parent_agent=parent_agent,
+                )
+                if isinstance(task_creds, str):
+                    # Error string from resolution
+                    return tool_error(task_creds)
+            else:
+                task_creds = creds
+
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                model=task_creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
+                override_provider=task_creds["provider"],
+                override_base_url=task_creds["base_url"],
+                override_api_key=task_creds["api_key"],
+                override_api_mode=task_creds["api_mode"],
                 override_acp_command=t.get("acp_command")
                 or acp_command
-                or creds.get("command"),
+                or task_creds.get("command"),
                 override_acp_args=(
                     task_acp_args
                     if task_acp_args is not None
@@ -3087,6 +3112,59 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     }
 
 
+def _resolve_task_credentials(
+    task_model: str,
+    task_provider: str,
+    delegation_creds: dict,
+    parent_agent,
+) -> dict | str:
+    """Resolve credentials for a single task with per-task model/provider.
+
+    Fallback chain for model:
+      1. Per-task ``model`` (highest priority)
+      2. ``delegation_creds["model"]`` (from delegation config)
+      3. ``parent_agent.model`` (inherited — handled by _build_child_agent)
+
+    Fallback chain for provider:
+      1. Per-task ``provider`` (triggers independent credential resolution)
+      2. ``delegation_creds`` provider (reuse already-resolved credentials)
+
+    Returns a credential dict on success, or an error string on failure.
+    """
+    # Resolve effective model: per-task > delegation > parent (parent handled
+    # downstream by _build_child_agent via effective_model = model or parent.model)
+    effective_model = task_model or delegation_creds.get("model") or None
+
+    # Fast path: same provider as delegation or no provider specified — reuse
+    # delegation credentials with the per-task model swapped in.
+    if not task_provider or task_provider == delegation_creds.get("provider"):
+        creds = dict(delegation_creds)
+        if task_model:
+            creds["model"] = task_model
+        return creds
+
+    # Slow path: per-task provider differs from delegation provider — resolve
+    # a fresh credential bundle for this provider.
+    try:
+        task_cfg = {"model": effective_model or "", "provider": task_provider}
+        task_resolved = _resolve_delegation_credentials(task_cfg, parent_agent)
+    except ValueError as exc:
+        return f"Cannot resolve per-task provider '{task_provider}': {exc}"
+    except (KeyError, LookupError) as exc:
+        return f"Configuration missing for per-task provider '{task_provider}': {exc}"
+    except Exception as exc:
+        logger.exception(
+            "Unexpected error resolving per-task provider %s", task_provider
+        )
+        return f"Error resolving per-task provider '{task_provider}': {exc}"
+
+    # Ensure per-task model takes priority over whatever the provider resolved
+    if task_model:
+        task_resolved["model"] = task_model
+
+    return task_resolved
+
+
 def _load_config() -> dict:
     """Load delegation config from CLI_CONFIG or persistent config.
 
@@ -3414,6 +3492,22 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "string",
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": (
+                                "Per-task model override (e.g. 'glm-5-turbo'). "
+                                "Overrides delegation.model and parent model for this task only. "
+                                "Leave empty to use delegation.model or parent model."
+                            ),
+                        },
+                        "provider": {
+                            "type": "string",
+                            "description": (
+                                "Per-task provider override (e.g. 'openrouter', 'groq'). "
+                                "Triggers independent credential resolution for this provider. "
+                                "Leave empty to use delegation.provider or parent provider."
+                            ),
                         },
                     },
                     "required": ["goal"],
