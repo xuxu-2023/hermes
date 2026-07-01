@@ -33,11 +33,13 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import re
 import subprocess
 import time
 from collections import deque
-from typing import Any, Deque, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Deque, Dict, Iterable, List, Mapping, Optional, Set
 
 try:
     from aiohttp import web
@@ -54,6 +56,7 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
 )
+from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -157,8 +160,13 @@ class WebhookAdapter(BasePlatformAdapter):
         # Load agent-created subscriptions before validating
         self._reload_dynamic_routes()
 
-        # Validate routes at startup — secret is required per route
+        # Validate routes at startup — each route needs either a regular
+        # HMAC secret or a provider-specific auth mode that can safely
+        # establish its secret through that provider's handshake (Notion).
         for name, route in self._routes.items():
+            if self._is_notion_auth_route(route):
+                continue
+
             secret = route.get("secret", self._global_secret)
             if not secret:
                 raise ValueError(
@@ -262,6 +270,15 @@ class WebhookAdapter(BasePlatformAdapter):
         if deliver_type == "github_comment":
             return await self._deliver_github_comment(content, delivery)
 
+        if deliver_type == "notion_comment":
+            if not (metadata or {}).get("notify"):
+                logger.info(
+                    "[webhook] Suppressing non-final Notion delivery for %s",
+                    chat_id,
+                )
+                return SendResult(success=True)
+            return await self._deliver_notion_comment(content, delivery)
+
         # Cross-platform delivery — any platform with a gateway adapter.
         # Check both built-in names and plugin-registered platforms.
         _is_known_platform = deliver_type in _BUILTIN_DELIVER_PLATFORMS
@@ -353,7 +370,6 @@ class WebhookAdapter(BasePlatformAdapter):
 
     def _reload_dynamic_routes(self) -> None:
         """Reload agent-created subscriptions from disk if the file changed."""
-        from hermes_constants import get_hermes_home
         hermes_home = get_hermes_home()
         subs_path = hermes_home / _DYNAMIC_ROUTES_FILENAME
         if not subs_path.exists():
@@ -378,6 +394,9 @@ class WebhookAdapter(BasePlatformAdapter):
                 if k in self._static_routes:
                     continue
                 effective_secret = v.get("secret", self._global_secret)
+                if self._is_notion_auth_route(v):
+                    new_dynamic[k] = v
+                    continue
                 if not effective_secret:
                     logger.warning(
                         "[webhook] Dynamic route '%s' skipped: 'secret' is "
@@ -483,28 +502,40 @@ class WebhookAdapter(BasePlatformAdapter):
             logger.error("[webhook] Failed to read body: %s", e)
             return web.json_response({"error": "Bad request"}, status=400)
 
-        # Validate HMAC signature FIRST (skip only for the explicit local-test
-        # INSECURE_NO_AUTH mode). Missing/empty secrets must fail closed here,
-        # not only during connect(), so direct handler reuse cannot turn a
-        # network webhook route into an unauthenticated agent-dispatch surface.
-        secret = route_config.get("secret", self._global_secret)
-        if not secret:
-            logger.error(
-                "[webhook] Route %s has no HMAC secret; refusing request",
-                route_name,
+        # Notion has a two-step auth flow: the first request carries an
+        # unsigned one-time verification_token; later event deliveries are
+        # signed with X-Notion-Signature: sha256=<hmac> using that token as
+        # the HMAC key. Keep that provider-specific boundary inside Hermes
+        # instead of moving it into the public ingress proxy.
+        if self._is_notion_auth_route(route_config):
+            notion_status = self._handle_notion_auth(
+                route_name, route_config, raw_body, request
             )
-            return web.json_response(
-                {"error": "Webhook route is missing an HMAC secret"},
-                status=403,
-            )
-        if secret != _INSECURE_NO_AUTH:
-            if not self._validate_signature(request, raw_body, secret):
-                logger.warning(
-                    "[webhook] Invalid signature for route %s", route_name
+            if notion_status is not None:
+                return notion_status
+        else:
+            # Validate HMAC signature FIRST (skip only for the explicit local-test
+            # INSECURE_NO_AUTH mode). Missing/empty secrets must fail closed here,
+            # not only during connect(), so direct handler reuse cannot turn a
+            # network webhook route into an unauthenticated agent-dispatch surface.
+            secret = route_config.get("secret", self._global_secret)
+            if not secret:
+                logger.error(
+                    "[webhook] Route %s has no HMAC secret; refusing request",
+                    route_name,
                 )
                 return web.json_response(
-                    {"error": "Invalid signature"}, status=401
+                    {"error": "Webhook route is missing an HMAC secret"},
+                    status=403,
                 )
+            if secret != _INSECURE_NO_AUTH:
+                if not self._validate_signature(request, raw_body, secret):
+                    logger.warning(
+                        "[webhook] Invalid signature for route %s", route_name
+                    )
+                    return web.json_response(
+                        {"error": "Invalid signature"}, status=401
+                    )
 
         # ── Rate limiting (after auth) ───────────────────────────
         now = time.time()
@@ -549,6 +580,32 @@ class WebhookAdapter(BasePlatformAdapter):
                 {"status": "ignored", "event": event_type}
             )
 
+        ignored_actor_id = self._ignored_actor_id_for_payload(
+            route_config, payload
+        )
+        if ignored_actor_id:
+            logger.info(
+                "[webhook] Ignoring event %s for route %s from actor %s",
+                event_type,
+                route_name,
+                ignored_actor_id,
+            )
+            return web.json_response(
+                {
+                    "status": "ignored",
+                    "event": event_type,
+                    "reason": "ignored_actor",
+                    "actor_id": ignored_actor_id,
+                },
+                status=200,
+            )
+
+        notion_filter_response = await self._notion_trigger_filter_response(
+            route_name, route_config, payload, event_type
+        )
+        if notion_filter_response is not None:
+            return notion_filter_response
+
         # Format prompt from template
         prompt_template = route_config.get("prompt", "")
         prompt = self._render_prompt(
@@ -584,12 +641,18 @@ class WebhookAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[webhook] Skill loading failed: %s", e)
 
-        # Build a unique delivery ID
+        # Build a unique delivery ID. Notion does not send GitHub/Svix-style
+        # delivery headers, but its event payloads include stable event IDs;
+        # use those before falling back to a timestamp so webhook retries are
+        # idempotent.
         delivery_id = request.headers.get(
             "X-GitHub-Delivery",
             request.headers.get(
                 "svix-id",
-                request.headers.get("X-Request-ID", str(int(time.time() * 1000))),
+                request.headers.get(
+                    "X-Request-ID",
+                    str(payload.get("id") or payload.get("event_id") or int(time.time() * 1000)),
+                ),
             ),
         )
 
@@ -723,6 +786,627 @@ class WebhookAdapter(BasePlatformAdapter):
             },
             status=202,
         )
+
+    # ------------------------------------------------------------------
+    # Route-level actor filtering
+    # ------------------------------------------------------------------
+
+    def _configured_ignored_actor_ids(self, route_config: dict) -> Set[str]:
+        """Return configured actor IDs that should never dispatch an agent run."""
+        ignored: Set[str] = set()
+
+        def collect(value: Any) -> None:
+            if value is None:
+                return
+            if isinstance(value, str):
+                values: Iterable[Any] = value.replace("\n", ",").split(",")
+            elif isinstance(value, (list, tuple, set)):
+                values = value
+            else:
+                values = (value,)
+
+            for raw in values:
+                item = os.path.expandvars(os.path.expanduser(str(raw))).strip()
+                if not item or "$" in item:
+                    continue
+                ignored.add(item.casefold())
+
+        collect(route_config.get("ignore_actor_ids"))
+        collect(route_config.get("ignored_actor_ids"))
+        collect(route_config.get("ignore_author_ids"))
+        filters = route_config.get("filters")
+        if isinstance(filters, Mapping):
+            collect(filters.get("ignore_actor_ids"))
+            collect(filters.get("ignore_author_ids"))
+        return ignored
+
+    def _ignored_actor_id_for_payload(
+        self, route_config: dict, payload: Any
+    ) -> Optional[str]:
+        ignored_ids = self._configured_ignored_actor_ids(route_config)
+        if not ignored_ids or not isinstance(payload, Mapping):
+            return None
+        for actor_id in self._actor_ids_from_payload(payload):
+            if actor_id.casefold() in ignored_ids:
+                return actor_id
+        return None
+
+    def _actor_ids_from_payload(self, payload: Mapping[str, Any]) -> Iterable[str]:
+        """Yield actor IDs from common webhook author fields only."""
+
+        def ids_from_actor(actor: Any) -> Iterable[str]:
+            if isinstance(actor, Mapping):
+                for key in ("id", "user_id"):
+                    candidate = actor.get(key)
+                    if isinstance(candidate, str) and candidate:
+                        yield candidate
+                nested_user = actor.get("user")
+                if isinstance(nested_user, Mapping):
+                    yield from ids_from_actor(nested_user)
+            elif isinstance(actor, list):
+                for item in actor:
+                    yield from ids_from_actor(item)
+
+        for key in (
+            "authors",
+            "actor",
+            "author",
+            "created_by",
+            "last_edited_by",
+            "user",
+            "sender",
+        ):
+            yield from ids_from_actor(payload.get(key))
+
+        event = payload.get("event")
+        if isinstance(event, Mapping):
+            for key in (
+                "authors",
+                "actor",
+                "author",
+                "created_by",
+                "last_edited_by",
+                "user",
+                "sender",
+            ):
+                yield from ids_from_actor(event.get(key))
+
+    # ------------------------------------------------------------------
+    # Notion trigger filtering
+    # ------------------------------------------------------------------
+
+    async def _notion_trigger_filter_response(
+        self,
+        route_name: str,
+        route_config: dict,
+        payload: Any,
+        event_type: str,
+    ) -> Optional["web.Response"]:
+        """Return an early response when a Notion event should not run the agent."""
+        trigger_config = route_config.get("notion_trigger_filter")
+        if not isinstance(trigger_config, Mapping):
+            return None
+        if trigger_config.get("enabled", True) is False:
+            return None
+        if not self._is_notion_auth_route(route_config):
+            return None
+        if event_type not in {"comment.created", "page.properties_updated"}:
+            return None
+        if not isinstance(payload, dict):
+            return web.json_response(
+                {
+                    "status": "ignored",
+                    "event": event_type,
+                    "reason": "notion_trigger_required",
+                },
+                status=200,
+            )
+
+        token = self._notion_api_token(route_config, trigger_config)
+        if not token:
+            logger.error(
+                "[webhook] Notion trigger filter for route %s missing API token",
+                route_name,
+            )
+            return web.json_response(
+                {"status": "error", "error": "Missing Notion API token"},
+                status=503,
+            )
+
+        notion_version = self._notion_api_version(route_config, trigger_config)
+        bot_user_id = self._notion_filter_bot_user_id(trigger_config)
+        bot_names = self._notion_filter_bot_names(trigger_config)
+        allow_plain_text = bool(trigger_config.get("allow_plain_text_mentions", False))
+
+        try:
+            if event_type == "comment.created":
+                return await self._notion_comment_trigger_filter_response(
+                    route_name,
+                    payload,
+                    token,
+                    notion_version,
+                    bot_user_id,
+                    bot_names,
+                    allow_plain_text,
+                )
+            return await self._notion_assignment_trigger_filter_response(
+                route_name,
+                payload,
+                token,
+                notion_version,
+                bot_user_id,
+                bot_names,
+                trigger_config,
+            )
+        except Exception:
+            logger.exception(
+                "[webhook] Notion trigger filter failed for route %s event=%s",
+                route_name,
+                event_type,
+            )
+            return web.json_response(
+                {"status": "error", "error": "Notion trigger filter failed"},
+                status=502,
+            )
+
+    async def _notion_comment_trigger_filter_response(
+        self,
+        route_name: str,
+        payload: dict,
+        token: str,
+        notion_version: str,
+        bot_user_id: str,
+        bot_names: List[str],
+        allow_plain_text: bool,
+    ) -> Optional["web.Response"]:
+        event_type = "comment.created"
+        comment_id = self._notion_entity_id(payload, expected_type="comment")
+        if not comment_id:
+            return self._notion_trigger_ignored_response(
+                event_type, "missing_comment_id"
+            )
+
+        comment = await asyncio.to_thread(
+            self._get_notion_api_json,
+            f"https://api.notion.com/v1/comments/{comment_id}",
+            token,
+            notion_version,
+        )
+        if not isinstance(comment, dict):
+            return self._notion_trigger_ignored_response(
+                event_type, "notion_trigger_required"
+            )
+
+        if self._ignored_actor_id_for_payload(
+            {"ignore_actor_ids": [bot_user_id]},
+            {"created_by": comment.get("created_by")},
+        ):
+            logger.info(
+                "[webhook] Ignoring event %s for route %s from fetched comment author",
+                event_type,
+                route_name,
+            )
+            return self._notion_trigger_ignored_response(
+                event_type, "ignored_actor"
+            )
+
+        rich_text = comment.get("rich_text", [])
+        if self._notion_rich_text_mentions_bot(
+            rich_text, bot_user_id, bot_names, allow_plain_text
+        ):
+            payload["_notion_context"] = {
+                "trigger": "comment_mention",
+                "comment": comment,
+            }
+            return None
+
+        logger.info(
+            "[webhook] Ignoring Notion comment.created for route %s: no bot mention",
+            route_name,
+        )
+        return self._notion_trigger_ignored_response(
+            event_type, "notion_trigger_required"
+        )
+
+    async def _notion_assignment_trigger_filter_response(
+        self,
+        route_name: str,
+        payload: dict,
+        token: str,
+        notion_version: str,
+        bot_user_id: str,
+        bot_names: List[str],
+        trigger_config: Mapping[str, Any],
+    ) -> Optional["web.Response"]:
+        event_type = "page.properties_updated"
+        property_names = self._notion_assignment_property_names(trigger_config)
+        updated_names = self._notion_updated_property_names(payload)
+        if updated_names and property_names and updated_names.isdisjoint(
+            {name.casefold() for name in property_names}
+        ):
+            logger.info(
+                "[webhook] Ignoring Notion page.properties_updated for route %s: unrelated properties",
+                route_name,
+            )
+            return self._notion_trigger_ignored_response(
+                event_type, "notion_trigger_required"
+            )
+
+        page_id = self._notion_entity_id(payload, expected_type="page")
+        if not page_id:
+            return self._notion_trigger_ignored_response(
+                event_type, "missing_page_id"
+            )
+
+        page = await asyncio.to_thread(
+            self._get_notion_api_json,
+            f"https://api.notion.com/v1/pages/{page_id}",
+            token,
+            notion_version,
+        )
+        if not isinstance(page, dict):
+            return self._notion_trigger_ignored_response(
+                event_type, "notion_trigger_required"
+            )
+
+        if self._notion_page_assigns_bot(
+            page, bot_user_id, bot_names, property_names
+        ):
+            payload["_notion_context"] = {
+                "trigger": "people_assignment",
+                "page": page,
+            }
+            return None
+
+        logger.info(
+            "[webhook] Ignoring Notion page.properties_updated for route %s: no bot assignment",
+            route_name,
+        )
+        return self._notion_trigger_ignored_response(
+            event_type, "notion_trigger_required"
+        )
+
+    def _notion_trigger_ignored_response(
+        self, event_type: str, reason: str
+    ) -> "web.Response":
+        return web.json_response(
+            {"status": "ignored", "event": event_type, "reason": reason},
+            status=200,
+        )
+
+    def _notion_api_token(
+        self, route_config: dict, trigger_config: Mapping[str, Any]
+    ) -> str:
+        extra = route_config.get("deliver_extra", {})
+        token_env = trigger_config.get("token_env")
+        if not token_env and isinstance(extra, Mapping):
+            token_env = extra.get("token_env")
+        token_env = str(token_env or "NOTION_API_TOKEN")
+        return os.environ.get(token_env) or os.environ.get("NOTION_API_KEY", "")
+
+    def _notion_api_version(
+        self, route_config: dict, trigger_config: Mapping[str, Any]
+    ) -> str:
+        extra = route_config.get("deliver_extra", {})
+        version = trigger_config.get("notion_version")
+        if not version and isinstance(extra, Mapping):
+            version = extra.get("notion_version")
+        return str(version or "2026-03-11")
+
+    def _notion_filter_bot_user_id(
+        self, trigger_config: Mapping[str, Any]
+    ) -> str:
+        value = trigger_config.get("bot_user_id", "")
+        expanded = os.path.expandvars(os.path.expanduser(str(value))).strip()
+        return "" if "$" in expanded else expanded
+
+    def _notion_filter_bot_names(
+        self, trigger_config: Mapping[str, Any]
+    ) -> List[str]:
+        value = trigger_config.get("bot_names", ["Hermes", "Hermes Agent"])
+        if isinstance(value, str):
+            names = value.replace("\n", ",").split(",")
+        elif isinstance(value, (list, tuple, set)):
+            names = [str(item) for item in value]
+        else:
+            names = []
+        return [name.strip() for name in names if name and name.strip()]
+
+    def _notion_assignment_property_names(
+        self, trigger_config: Mapping[str, Any]
+    ) -> List[str]:
+        value = trigger_config.get("assignment_people_properties", ["Assignee"])
+        if isinstance(value, str):
+            names = value.replace("\n", ",").split(",")
+        elif isinstance(value, (list, tuple, set)):
+            names = [str(item) for item in value]
+        else:
+            names = []
+        return [name.strip() for name in names if name and name.strip()]
+
+    def _notion_entity_id(
+        self, payload: Mapping[str, Any], *, expected_type: str
+    ) -> str:
+        entity = payload.get("entity")
+        if isinstance(entity, Mapping):
+            entity_id = entity.get("id")
+            entity_type = entity.get("type")
+            if (
+                isinstance(entity_id, str)
+                and entity_id
+                and (not entity_type or entity_type == expected_type)
+            ):
+                return entity_id
+        data = payload.get("data")
+        if expected_type == "page" and isinstance(data, Mapping):
+            page_id = data.get("page_id")
+            if isinstance(page_id, str) and page_id:
+                return page_id
+        return ""
+
+    def _notion_updated_property_names(
+        self, payload: Mapping[str, Any]
+    ) -> Set[str]:
+        data = payload.get("data")
+        if not isinstance(data, Mapping):
+            return set()
+        updated = data.get("updated_properties")
+        names: Set[str] = set()
+        if isinstance(updated, list):
+            for item in updated:
+                if isinstance(item, Mapping):
+                    name = item.get("name")
+                    if isinstance(name, str) and name:
+                        names.add(name.casefold())
+                elif isinstance(item, str) and item:
+                    names.add(item.casefold())
+        return names
+
+    def _notion_rich_text_mentions_bot(
+        self,
+        rich_text: Any,
+        bot_user_id: str,
+        bot_names: List[str],
+        allow_plain_text: bool,
+    ) -> bool:
+        bot_id = bot_user_id.casefold()
+        markers = {f"@{name}".casefold() for name in bot_names if name}
+        if not isinstance(rich_text, list):
+            return False
+        for item in rich_text:
+            if not isinstance(item, Mapping):
+                continue
+            mention = item.get("mention")
+            if isinstance(mention, Mapping):
+                user = mention.get("user")
+                if isinstance(user, Mapping):
+                    user_id = user.get("id")
+                    if isinstance(user_id, str) and user_id.casefold() == bot_id:
+                        return True
+            if allow_plain_text:
+                plain_text = item.get("plain_text")
+                if isinstance(plain_text, str) and any(
+                    marker in plain_text.casefold() for marker in markers
+                ):
+                    return True
+        return False
+
+    def _notion_page_assigns_bot(
+        self,
+        page: Mapping[str, Any],
+        bot_user_id: str,
+        bot_names: List[str],
+        property_names: List[str],
+    ) -> bool:
+        properties = page.get("properties")
+        if not isinstance(properties, Mapping):
+            return False
+        allowed = {name.casefold() for name in property_names}
+        names = {name.casefold() for name in bot_names}
+        bot_id = bot_user_id.casefold()
+        for property_name, value in properties.items():
+            if allowed and str(property_name).casefold() not in allowed:
+                continue
+            if not isinstance(value, Mapping):
+                continue
+            people = value.get("people")
+            if not isinstance(people, list):
+                continue
+            for person in people:
+                if not isinstance(person, Mapping):
+                    continue
+                person_id = person.get("id")
+                if isinstance(person_id, str) and person_id.casefold() == bot_id:
+                    return True
+                person_name = person.get("name")
+                if isinstance(person_name, str) and person_name.casefold() in names:
+                    return True
+        return False
+
+    def _get_notion_api_json(
+        self, url: str, token: str, notion_version: str
+    ) -> dict:
+        import urllib.error
+        import urllib.request
+
+        request = urllib.request.Request(
+            url,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Notion-Version": notion_version,
+            },
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Notion API returned {exc.code}: {detail}") from exc
+
+    # ------------------------------------------------------------------
+    # Notion verification-token and signature handling
+    # ------------------------------------------------------------------
+
+    def _is_notion_auth_route(self, route_config: dict) -> bool:
+        """Return True when a route uses Notion's webhook auth contract."""
+        auth = route_config.get("auth") if isinstance(route_config, dict) else None
+        mode = ""
+        if isinstance(auth, dict):
+            mode = str(auth.get("mode", ""))
+        provider = (
+            str(route_config.get("provider", ""))
+            if isinstance(route_config, dict)
+            else ""
+        )
+        return mode == "notion-signature" or provider == "notion"
+
+    def _handle_notion_auth(
+        self,
+        route_name: str,
+        route_config: dict,
+        raw_body: bytes,
+        request: "web.Request",
+    ) -> Optional["web.Response"]:
+        """Capture Notion verification tokens or validate signed events.
+
+        Returns a response when the request should stop before normal webhook
+        dispatch (verification captured or auth rejected). Returns None when
+        the signed event passed validation and can continue through the normal
+        event filter / prompt / dispatch path.
+        """
+        try:
+            payload = json.loads(raw_body)
+        except json.JSONDecodeError:
+            return web.json_response({"error": "Cannot parse body"}, status=400)
+        if not isinstance(payload, dict):
+            return web.json_response({"error": "Cannot parse body"}, status=400)
+
+        verification_token = payload.get("verification_token")
+        if isinstance(verification_token, str) and verification_token:
+            try:
+                self._store_notion_verification_token(
+                    route_name, route_config, verification_token
+                )
+            except Exception:
+                logger.exception(
+                    "[webhook] Failed to store Notion verification token for route %s",
+                    route_name,
+                )
+                return web.json_response(
+                    {"error": "Failed to store verification token"}, status=500
+                )
+            logger.info(
+                "[webhook] Captured Notion verification token for route %s",
+                route_name,
+            )
+            return web.json_response(
+                {"status": "verification_token_captured", "route": route_name},
+                status=200,
+            )
+
+        token = self._load_notion_verification_token(route_name, route_config)
+        if not token:
+            logger.warning(
+                "[webhook] Notion event for route %s arrived before verification token capture",
+                route_name,
+            )
+            return web.json_response(
+                {"error": "Notion verification token is missing"}, status=401
+            )
+
+        signature = request.headers.get("X-Notion-Signature", "")
+        if not self._validate_notion_signature(raw_body, token, signature):
+            logger.warning("[webhook] Invalid Notion signature for route %s", route_name)
+            return web.json_response({"error": "Invalid Notion signature"}, status=401)
+        return None
+
+    def _notion_token_store_path(self, route_config: dict) -> Path:
+        auth = route_config.get("auth") if isinstance(route_config, dict) else None
+        configured = ""
+        if isinstance(auth, dict):
+            configured = str(auth.get("token_store", ""))
+        configured = configured or str(route_config.get("token_store", ""))
+        if not configured:
+            configured = str(get_hermes_home() / "notion_webhook_tokens.json")
+        configured = configured.replace("${HERMES_HOME}", str(get_hermes_home()))
+        configured = os.path.expandvars(os.path.expanduser(configured))
+        return Path(configured)
+
+    def _read_notion_token_store(self, route_config: dict) -> dict:
+        path = self._notion_token_store_path(route_config)
+        if not path.exists():
+            return {"routes": {}}
+        with path.open("r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict):
+            raise ValueError("Notion token store must be a JSON object")
+        routes = data.setdefault("routes", {})
+        if not isinstance(routes, dict):
+            raise ValueError("Notion token store routes must be an object")
+        return data
+
+    def _store_notion_verification_token(
+        self, route_name: str, route_config: dict, verification_token: str
+    ) -> None:
+        path = self._notion_token_store_path(route_config)
+        data = self._read_notion_token_store(route_config)
+        data["routes"][route_name] = {
+            "route": route_name,
+            "verification_token": verification_token,
+            "captured_at": int(time.time()),
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        with tmp.open("w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2, sort_keys=True)
+            fh.write("\n")
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            logger.debug("[webhook] Could not chmod Notion token store temp file")
+        os.replace(tmp, path)
+
+    def _load_notion_verification_token(
+        self, route_name: str, route_config: dict
+    ) -> str:
+        auth = route_config.get("auth") if isinstance(route_config, dict) else None
+        if isinstance(auth, dict):
+            inline = auth.get("verification_token")
+            if isinstance(inline, str) and inline:
+                return inline
+        inline = route_config.get("verification_token")
+        if isinstance(inline, str) and inline:
+            return inline
+        try:
+            data = self._read_notion_token_store(route_config)
+            token = data.get("routes", {}).get(route_name, {}).get(
+                "verification_token", ""
+            )
+            return token if isinstance(token, str) else ""
+        except Exception as exc:
+            logger.warning("[webhook] Could not read Notion token store: %s", exc)
+            return ""
+
+    def _validate_notion_signature(
+        self, body: bytes, verification_token: str, signature_header: str
+    ) -> bool:
+        """Validate X-Notion-Signature: sha256=<hmac> over raw body bytes."""
+        if not (verification_token and signature_header):
+            return False
+        signature = signature_header.strip()
+        if signature.startswith("sha256="):
+            signature = signature[len("sha256=") :]
+        if len(signature) != 64:
+            return False
+        try:
+            int(signature, 16)
+        except ValueError:
+            return False
+        expected = hmac.new(
+            verification_token.encode(), body, hashlib.sha256
+        ).hexdigest()
+        return hmac.compare_digest(signature.lower(), expected)
 
     # ------------------------------------------------------------------
     # Signature validation
@@ -916,11 +1600,129 @@ class WebhookAdapter(BasePlatformAdapter):
         if deliver_type == "github_comment":
             return await self._deliver_github_comment(content, delivery)
 
+        if deliver_type == "notion_comment":
+            return await self._deliver_notion_comment(content, delivery)
+
         # Fall through to the cross-platform dispatcher, which validates the
         # target name and routes via the gateway runner.
         return await self._deliver_cross_platform(
             deliver_type, content, delivery
         )
+
+    async def _deliver_notion_comment(
+        self, content: str, delivery: dict
+    ) -> SendResult:
+        """Post the final webhook response as a Notion page/block comment."""
+        extra = delivery.get("deliver_extra", {})
+        payload = delivery.get("payload", {})
+        token_env = str(extra.get("token_env") or "NOTION_API_TOKEN")
+        token = os.environ.get(token_env) or os.environ.get("NOTION_API_KEY")
+        if not token:
+            logger.error("[webhook] notion_comment delivery missing %s", token_env)
+            return SendResult(success=False, error=f"Missing {token_env}")
+
+        body: Dict[str, Any] = {"markdown": str(content or "").strip()}
+        if not body["markdown"]:
+            return SendResult(success=True)
+
+        discussion_id = extra.get("discussion_id") or self._notion_comment_discussion_id(payload)
+        if isinstance(discussion_id, str) and discussion_id and "{" not in discussion_id:
+            body["discussion_id"] = discussion_id
+        else:
+            parent = self._notion_comment_parent(extra, payload)
+            if not parent:
+                logger.error("[webhook] notion_comment delivery missing page/block target")
+                return SendResult(success=False, error="Missing Notion comment target")
+            body["parent"] = parent
+
+        notion_version = str(extra.get("notion_version") or "2026-03-11")
+        try:
+            response = await asyncio.to_thread(
+                self._post_notion_comment,
+                body,
+                token,
+                notion_version,
+            )
+        except Exception as exc:
+            logger.error("[webhook] Notion comment delivery error: %s", exc)
+            return SendResult(success=False, error=str(exc))
+
+        comment_id = response.get("id") if isinstance(response, dict) else None
+        logger.info("[webhook] Posted Notion comment %s", comment_id or "(unknown id)")
+        return SendResult(success=True, message_id=comment_id, raw_response=response)
+
+    def _notion_comment_discussion_id(self, payload: dict) -> str:
+        for path in (
+            ("discussion_id",),
+            ("comment", "discussion_id"),
+            ("data", "discussion_id"),
+        ):
+            value: Any = payload
+            for part in path:
+                if not isinstance(value, dict):
+                    value = None
+                    break
+                value = value.get(part)
+            if isinstance(value, str) and value:
+                return value
+        return ""
+
+    def _notion_comment_parent(self, extra: dict, payload: dict) -> dict:
+        page_id = extra.get("page_id")
+        if isinstance(page_id, str) and page_id and "{" not in page_id:
+            return {"page_id": page_id}
+        block_id = extra.get("block_id")
+        if isinstance(block_id, str) and block_id and "{" not in block_id:
+            return {"block_id": block_id}
+
+        for path in (
+            ("entity",),
+            ("page",),
+            ("block",),
+            ("object",),
+            ("parent",),
+            ("comment", "parent"),
+            ("data", "parent"),
+        ):
+            value: Any = payload
+            for part in path:
+                if not isinstance(value, dict):
+                    value = None
+                    break
+                value = value.get(part)
+            if not isinstance(value, dict):
+                continue
+            target_id = value.get("id")
+            target_type = value.get("type") or value.get("object")
+            if isinstance(target_id, str) and target_id:
+                if target_type == "block":
+                    return {"block_id": target_id}
+                if target_type in {"page", "page_id"} or path == ("page",):
+                    return {"page_id": target_id}
+        return {}
+
+    def _post_notion_comment(
+        self, body: dict, token: str, notion_version: str
+    ) -> dict:
+        import urllib.error
+        import urllib.request
+
+        request = urllib.request.Request(
+            "https://api.notion.com/v1/comments",
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "Notion-Version": notion_version,
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Notion API returned {exc.code}: {detail}") from exc
 
     async def _deliver_github_comment(
         self, content: str, delivery: dict
