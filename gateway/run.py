@@ -5281,14 +5281,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         active = self._snapshot_running_agents()
         restart_source = self._restart_command_source if self._restart_requested else None
 
-        action = "restarting" if self._restart_requested else "shutting down"
-        hint = (
-            "Your current task will be interrupted. "
-            "Send any message after restart and I'll try to resume where you left off."
+        msg = t(
+            "gateway.shutdown_notice.restart"
             if self._restart_requested
-            else "Your current task will be interrupted."
+            else "gateway.shutdown_notice.shutdown"
         )
-        msg = f"⚠️ Gateway {action} — {hint}"
 
         notified: set[tuple[str, str, Optional[str]]] = set()
         for session_key in active:
@@ -13729,13 +13726,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if exit_code == 0:
                         await adapter.send(
                             chat_id,
-                            "✅ Hermes update finished.",
+                            t("gateway.update.finished"),
                             metadata=_non_conversational_metadata(metadata, platform=platform),
                         )
                     else:
                         await adapter.send(
                             chat_id,
-                            "❌ Hermes update failed (exit code {}).".format(exit_code),
+                            t("gateway.update.failed_exit", exit_code=exit_code),
                             metadata=_non_conversational_metadata(metadata, platform=platform),
                         )
                     logger.info("Update finished (exit=%s), notified %s", exit_code, session_key)
@@ -13793,14 +13790,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             except Exception as btn_err:
                                 logger.debug("Button-based update prompt failed: %s", btn_err)
                         if not sent_buttons:
-                            default_hint = f" (default: {default})" if default else ""
+                            default_hint = (
+                                t("gateway.update.prompt_default_hint", default=default)
+                                if default
+                                else ""
+                            )
                             _p = getattr(adapter, "typed_command_prefix", "/")
                             await adapter.send(
                                 chat_id,
-                                f"⚕ **Update needs your input:**\n\n"
-                                f"{prompt_text}{default_hint}\n\n"
-                                f"Reply `{_p}approve` (yes) or `{_p}deny` (no), "
-                                f"or type your answer directly.",
+                                t(
+                                    "gateway.update.prompt_fallback",
+                                    prompt=prompt_text,
+                                    default_hint=default_hint,
+                                    prefix=_p,
+                                ),
                                 metadata=_non_conversational_metadata(metadata, platform=platform),
                             )
                         # Keep the prompt marker on disk until the user
@@ -13824,7 +13827,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 await adapter.send(
                     chat_id,
-                    "❌ Hermes update timed out after 30 minutes.",
+                    t("gateway.update.timed_out"),
                     metadata=_non_conversational_metadata(metadata, platform=platform),
                 )
             except Exception:
@@ -13924,13 +13927,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if len(output) > 3500:
                         output = "…" + output[-3500:]
                     if exit_code == 0:
-                        msg = f"✅ Hermes update finished.\n\n```\n{output}\n```"
+                        msg = t("gateway.update.finished_with_output", output=output)
                     else:
-                        msg = f"❌ Hermes update failed.\n\n```\n{output}\n```"
+                        msg = t("gateway.update.failed_with_output", output=output)
                 elif exit_code == 0:
-                    msg = "✅ Hermes update finished successfully."
+                    msg = t("gateway.update.finished_successfully")
                 else:
-                    msg = "❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details."
+                    msg = t("gateway.update.failed_generic")
                 await adapter.send(
                     chat_id,
                     msg,
@@ -13997,7 +14000,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             result = await adapter.send(
                 str(chat_id),
-                "♻ Gateway restarted successfully. Your session continues.",
+                t("gateway.restart.completed"),
                 metadata=_non_conversational_metadata(metadata, platform=platform),
             )
             # adapter.send() catches provider errors (e.g. "Chat not found")
@@ -14038,7 +14041,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         delivered: set[tuple[str, str, Optional[str]]] = set()
         skipped = skip_targets or set()
-        message = "♻️ Gateway online — Hermes is back and ready."
+        message = t("gateway.restart.online")
 
         for platform, adapter in self.adapters.items():
             home = self.config.get_home_channel(platform)
