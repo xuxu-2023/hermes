@@ -35,7 +35,9 @@ _LOCKS_DIRNAME = "gateway-locks"
 _IS_WINDOWS = sys.platform == "win32"
 _UNSET = object()
 _GATEWAY_LOCK_FILENAME = "gateway.lock"
+_STARTUP_LOCK_FILENAME = "gateway-startup.lock"
 _gateway_lock_handle = None
+_startup_lock_handle = None
 # Windows byte-range locks are mandatory for other readers. Lock a byte well
 # past the JSON payload so runtime status / PID readers can still read the file
 # while another process holds the mutual-exclusion lock.
@@ -687,6 +689,47 @@ def release_gateway_runtime_lock() -> None:
     if handle is None:
         return
     _gateway_lock_handle = None
+    _release_file_lock(handle)
+    try:
+        handle.close()
+    except OSError:
+        pass
+
+
+def _get_startup_lock_path() -> Path:
+    return get_hermes_home() / _STARTUP_LOCK_FILENAME
+
+
+def acquire_gateway_startup_lock() -> bool:
+    """Serialize gateway startup and --replace handoff for one profile.
+
+    Runtime locks are held by the long-lived gateway process, so a replacer
+    cannot take that lock until the old process exits. This short-lived lock is
+    held only by CLI startup/replacement code to prevent concurrent --replace
+    launchers from all killing the same old gateway and racing to claim the PID
+    file on Windows.
+    """
+    global _startup_lock_handle
+    if _startup_lock_handle is not None:
+        return True
+
+    path = _get_startup_lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(path, "a+", encoding="utf-8")
+    if not _try_acquire_file_lock(handle):
+        handle.close()
+        return False
+    _startup_lock_handle = handle
+    return True
+
+
+def release_gateway_startup_lock() -> None:
+    """Release the short-lived gateway startup lock when owned."""
+    global _startup_lock_handle
+    handle = _startup_lock_handle
+    if handle is None:
+        return
+    _startup_lock_handle = None
     _release_file_lock(handle)
     try:
         handle.close()

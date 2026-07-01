@@ -19053,12 +19053,20 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # allow concurrent instances without tripping this guard.
     from gateway.status import (
         acquire_gateway_runtime_lock,
+        acquire_gateway_startup_lock,
         get_running_pid,
         get_process_start_time,
         release_gateway_runtime_lock,
+        release_gateway_startup_lock,
         remove_pid_file,
         terminate_pid,
     )
+    if not acquire_gateway_startup_lock():
+        logger.error(
+            "Another gateway startup/replacement is already in progress. Exiting."
+        )
+        return False
+
     existing_pid = get_running_pid()
     if existing_pid is not None and existing_pid != os.getpid():
         if replace:
@@ -19093,6 +19101,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                     clear_takeover_marker()
                 except Exception:
                     pass
+                release_gateway_startup_lock()
                 return False
             # Wait up to 10 seconds for the old process to exit.
             # ``os.kill(pid, 0)`` on Windows is NOT a no-op — use the
@@ -19139,6 +19148,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                         clear_takeover_marker()
                     except Exception:
                         pass
+                    release_gateway_startup_lock()
                     return False
             remove_pid_file()
             # remove_pid_file() is a no-op when the PID doesn't match.
@@ -19180,6 +19190,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 f"   or 'hermes gateway stop' to kill it first.\n"
                 f"   Or use 'hermes gateway run --replace' to auto-replace.\n"
             )
+            release_gateway_startup_lock()
             return False
 
     # Sync bundled skills on gateway start (fast -- skips unchanged)
@@ -19402,20 +19413,24 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             "Another gateway instance (PID %d) started during our startup. "
             "Exiting to avoid double-running.", _current_pid
         )
+        release_gateway_startup_lock()
         return False
     if not acquire_gateway_runtime_lock():
         logger.error(
             "Gateway runtime lock is already held by another instance. Exiting."
         )
+        release_gateway_startup_lock()
         return False
     try:
         write_pid_file()
     except FileExistsError:
         release_gateway_runtime_lock()
+        release_gateway_startup_lock()
         logger.error(
             "PID file race lost to another gateway instance. Exiting."
         )
         return False
+    release_gateway_startup_lock()
     atexit.register(remove_pid_file)
     atexit.register(release_gateway_runtime_lock)
 
