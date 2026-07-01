@@ -238,8 +238,8 @@ hermes --version
 Hermes honors both `$env:X` (process-scope) and User environment variables (permanent, set in System Properties → Environment Variables). Setting API keys in `%LOCALAPPDATA%\hermes\.env` (your `HERMES_HOME`) is the normal path — same as Linux:
 
 ```
-OPENROUTER_API_KEY=sk-or-...
-TELEGRAM_BOT_TOKEN=...
+OPENROUTER_API_KEY=***
+TELEGRAM_BOT_TOKEN=***
 ```
 
 Don't put secrets in User environment variables unless you specifically want every Windows process to see them (it isn't what you want).
@@ -316,6 +316,44 @@ This is unrelated to Windows but sometimes surfaces first there. Usually it mean
 
 **"Works on my other machine" encoding weirdness after `git pull`.**
 If you edited Hermes config or a skill on Windows using a non-UTF-8 editor (Notepad on older Windows versions, some Chinese IMEs), the file may have been saved with a BOM. Hermes tolerates `utf-8-sig` on most config reads, but a BOM inside a folded YAML scalar (`description: >`) silently breaks YAML parsing. Re-save the file as plain UTF-8 without BOM.
+
+## Console window & popup notes
+
+Three Windows behaviours worth knowing when Hermes is running as a background agent — not covered by `pythonw.exe` and `CREATE_NO_WINDOW` alone.
+
+### VBS zero-window wrapper
+
+`pythonw.exe` + `CREATE_NO_WINDOW` covers most cases, but edge cases remain: scheduled tasks triggered at boot, some antivirus hooks, or a PE loader briefly attaching a console before processing the subsystem flag.
+
+For those, a VBS wrapper is the only method that hits 100% zero-window:
+
+```vbscript
+' launcher.vbs — point a scheduled task or Startup shortcut at this file
+CreateObject("WScript.Shell").Run "pythonw.exe C:\path\to\script.py", 0, False
+```
+
+Run with `wscript.exe //B //Nologo launcher.vbs`. The `//B` flag suppresses all WScript dialogs (including script errors), and `Run(…, 0)` hides the window before the child process starts. Use this for startup-folder shortcuts and any scheduled task action that must never flash.
+
+### OpenWith.exe storms
+
+Windows `ShellExecute` fires `OpenWith.exe` — the "Open with…" dialog — when it encounters a file with an unrecognised extension in a scanned directory (Startup, Desktop, any auto-run location). In a tight loop or a watchdog, this floods the screen with uncloseable dialogs.
+
+The most common trigger: a renamed script left in Startup — `hermes-gateway.bat.bak`, `watchdog.py.disabled`. Windows tries to execute it at login, fails, and falls back to `OpenWith.exe`.
+
+**Prevention:**
+- Never leave renamed files in the Startup folder. Move stale files out entirely.
+- As a defensive measure, associate dangerous extensions with `txtfile`:
+
+```powershell
+New-Item -Path "HKCU:\Software\Classes\.bak" -Force | Out-Null
+Set-ItemProperty -Path "HKCU:\Software\Classes\.bak" -Name "(Default)" -Value "txtfile"
+```
+
+The `.disabled` suffix is **not** a formal Task Scheduler disable mechanism — it keeps the scheduler from loading the file but does NOT stop Explorer. Delete disabled tasks or move them out of scanned directories.
+
+### conhost lifecycle
+
+`conhost.exe` is the console host process — one instance per console-attached process. It spawns when the process starts, dies when it exits. Lingering `conhost.exe` means the parent is alive — find the parent, not conhost. Killing conhost kills the attached process. A burst of 50+ conhost instances means a console-attached process is spawning children in a loop (classic `python.exe` watchdog misconfiguration).
 
 ## Where to go next
 
