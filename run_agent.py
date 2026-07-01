@@ -1379,6 +1379,11 @@ class AIAgent:
                 # Fall back to the generic GPT-5 rule if Copilot-specific
                 # logic is unavailable for any reason.
                 pass
+            # Copilot-specific logic determined this model should NOT use
+            # Responses API (e.g. gpt-5-mini).  Do NOT fall through to the
+            # generic GPT-5 check which would incorrectly force Responses
+            # API for models that Copilot serves on chat completions.
+            return False
         return AIAgent._model_requires_responses_api(model)
 
     def _max_tokens_param(self, value: int) -> dict:
