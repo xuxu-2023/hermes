@@ -936,7 +936,10 @@ def _load_context_cache() -> Dict[str, int]:
     try:
         with open(path, encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
-        return data.get("context_lengths", {})
+        # data.get("context_lengths", {}) returns None when the key exists
+        # with a YAML null value (e.g. "context_lengths:" with no value).
+        # Use "or {}" to handle both missing keys and null values. (#47135)
+        return data.get("context_lengths") or {}
     except Exception as e:
         logger.debug("Failed to load context length cache: %s", e)
         return {}
