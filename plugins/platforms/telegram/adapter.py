@@ -542,56 +542,67 @@ class TelegramAdapter(BasePlatformAdapter):
         return {"disable_notification": True}
 
     def _is_callback_user_authorized(
-        self,
-        user_id: str,
-        *,
-        chat_id: Optional[str] = None,
-        chat_type: Optional[str] = None,
-        thread_id: Optional[str] = None,
-        user_name: Optional[str] = None,
-    ) -> bool:
-        """Return whether a Telegram inline-button caller may perform gated actions."""
-        normalized_user_id = str(user_id or "").strip()
-        if not normalized_user_id:
-            return False
+        def _is_callback_user_authorized(
+            self,
+            user_id: str,
+            *,
+            chat_id: Optional[str] = None,
+            chat_type: Optional[str] = None,
+            thread_id: Optional[str] = None,
+            user_name: Optional[str] = None,
+        ) -> bool:
+            """Return whether a Telegram inline-button caller may perform gated actions."""
+            normalized_user_id = str(user_id or "").strip()
+            if not normalized_user_id:
+                return False
 
-        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
-        auth_fn = getattr(runner, "_is_user_authorized", None)
-        if callable(auth_fn):
-            try:
-                from gateway.session import SessionSource
+            runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+            auth_fn = getattr(runner, "_is_user_authorized", None)
+            if callable(auth_fn):
+                try:
+                    from gateway.session import SessionSource
+                    normalized_chat_type = str(chat_type or "dm").strip().lower() or "dm"
+                    if normalized_chat_type == "private":
+                        normalized_chat_type = "dm"
+                    elif normalized_chat_type == "supergroup":
+                        normalized_chat_type = "forum" if thread_id is not None else "group"
 
-                normalized_chat_type = str(chat_type or "dm").strip().lower() or "dm"
-                if normalized_chat_type == "private":
-                    normalized_chat_type = "dm"
-                elif normalized_chat_type == "supergroup":
-                    normalized_chat_type = "forum" if thread_id is not None else "group"
+                    source = SessionSource(
+                        platform=Platform.TELEGRAM,
+                        chat_id=str(chat_id or normalized_user_id),
+                        chat_type=normalized_chat_type,
+                        user_id=normalized_user_id,
+                        user_name=str(user_name).strip() if user_name else None,
+                        thread_id=str(thread_id) if thread_id is not None else None,
+                    )
+                    return bool(auth_fn(source))
+                except Exception:
+                    logger.debug(
+                        "[Telegram] Falling back to env-only callback auth for user %s",
+                        normalized_user_id,
+                        exc_info=True,
+                    )
 
-                source = SessionSource(
-                    platform=Platform.TELEGRAM,
-                    chat_id=str(chat_id or normalized_user_id),
-                    chat_type=normalized_chat_type,
-                    user_id=normalized_user_id,
-                    user_name=str(user_name).strip() if user_name else None,
-                    thread_id=str(thread_id) if thread_id is not None else None,
-                )
-                return bool(auth_fn(source))
-            except Exception:
-                logger.debug(
-                    "[Telegram] Falling back to env-only callback auth for user %s",
-                    normalized_user_id,
-                    exc_info=True,
-                )
-
-        allowed_csv = os.getenv("TELEGRAM_ALLOWED_USERS", "").strip()
-        if not allowed_csv:
-            # Fail-closed: no allowlist means deny by default.
-            # The runner auth path in _is_user_authorized() handles
-            # GATEWAY_ALLOW_ALL_USERS; this fallback must not silently
-            # allow everyone (fixes #24457).
-            return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
-        allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
-        return "*" in allowed_ids or normalized_user_id in allowed_ids
+            # Check group-specific allowlist first for group chats
+            allowed_csv = None
+            if chat_type in ("group", "forum"):
+                # For groups and forums, first check TELEGRAM_GROUP_ALLOWED_USERS
+                group_allowed_csv = os.getenv("TELEGRAM_GROUP_ALLOWED_USERS", "").strip()
+                if group_allowed_csv:
+                    allowed_csv = group_allowed_csv
+        
+            # Fall back to TELEGRAM_ALLOWED_USERS for DMs and if no group-specific list
+            if allowed_csv is None:
+                allowed_csv = os.getenv("TELEGRAM_ALLOWED_USERS", "").strip()
+            
+            if not allowed_csv:
+                # Fail-closed: no allowlist means deny by default.
+                # The runner auth path in _is_user_authorized() handles
+                # GATEWAY_ALLOW_ALL_USERS; this fallback must not silently
+                # allow everyone (fixes #24457).
+                return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+            allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
+            return "*" in allowed_ids or normalized_user_id in allowed_ids
 
     def _source_from_message_for_auth(self, message: Message):
         """Build the same Telegram source shape the gateway auth path expects.
@@ -727,7 +738,18 @@ class TelegramAdapter(BasePlatformAdapter):
                     exc_info=True,
                 )
 
-        allowed_csv = os.getenv("TELEGRAM_ALLOWED_USERS", "").strip()
+        # Check group-specific allowlist first for group chats
+        allowed_csv = None
+        if source.chat_type in ("group", "forum"):
+            # For groups and forums, first check TELEGRAM_GROUP_ALLOWED_USERS
+            group_allowed_csv = os.getenv("TELEGRAM_GROUP_ALLOWED_USERS", "").strip()
+            if group_allowed_csv:
+                allowed_csv = group_allowed_csv
+        
+        # Fall back to TELEGRAM_ALLOWED_USERS for DMs and if no group-specific list
+        if allowed_csv is None:
+            allowed_csv = os.getenv("TELEGRAM_ALLOWED_USERS", "").strip()
+            
         if not allowed_csv:
             return True
         allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
