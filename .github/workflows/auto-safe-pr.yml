@@ -1,0 +1,99 @@
+name: Auto Safe PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      generator_command:
+        description: "Command that generates low-risk files. Must not require secrets."
+        required: true
+        type: string
+      add_paths:
+        description: "Newline-separated safe paths/globs to include in PR. Never use '.'."
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: auto-safe-pr-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  auto-safe-pr:
+    runs-on: ubuntu-latest
+    if: github.ref_name != 'main' && github.ref_name != 'master' && github.ref_name != 'prod' && github.ref_name != 'production' && !startsWith(github.ref_name, 'release/')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run generator
+        shell: bash
+        run: |
+          set -euo pipefail
+          ${{ inputs.generator_command }}
+
+      - name: Reject broad add paths
+        shell: bash
+        env:
+          ADD_PATHS: ${{ inputs.add_paths }}
+        run: |
+          set -euo pipefail
+          if printf '%s\n' "$ADD_PATHS" | grep -Exq '\s*\.?\s*'; then
+            echo "Refusing broad add-paths entry. Use explicit safe paths/globs."
+            exit 1
+          fi
+          if printf '%s\n' "$ADD_PATHS" | grep -E '(^|/)(\.env(\.|$)|secrets?/|credentials?/|id_rsa|id_ed25519|.*\.(pem|key|p12|pfx|keychain)$)'; then
+            echo "Risky add-path detected. Refusing PR."
+            exit 1
+          fi
+
+      - name: Reject risky changed paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          git status --porcelain=v1 --untracked-files=all > /tmp/status.txt
+          if grep -E '(^|/)(\.env(\.|$)|secrets?/|credentials?/|id_rsa|id_ed25519|.*\.(pem|key|p12|pfx|keychain)$)' /tmp/status.txt; then
+            echo "Risky path detected. Refusing PR."
+            exit 1
+          fi
+          if grep -E '(^|/)(node_modules|dist|build|target|__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache)(/|$)|\.(log|sqlite|sqlite3|db|dump|bak)$' /tmp/status.txt; then
+            echo "Build/cache/log artifact detected. Refusing PR."
+            exit 1
+          fi
+
+      - name: Diff whitespace check
+        shell: bash
+        run: git diff --check
+
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: false
+
+      - name: Create draft pull request
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: auto/safe-generated-${{ github.run_id }}
+          delete-branch: true
+          commit-message: "chore: auto-safe generated update"
+          title: "chore: auto-safe generated update"
+          body: |
+            Automated generated-file PR.
+
+            Safety gates passed:
+            - protected branch guard
+            - broad add-path rejection
+            - risky-path denylist
+            - git diff --check
+            - gitleaks scan
+            - restricted add-paths only
+
+            Human review required before merge.
+          add-paths: ${{ inputs.add_paths }}
+          labels: automated,safe-pr,needs-review
+          draft: true
