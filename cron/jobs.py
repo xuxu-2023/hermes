@@ -292,24 +292,34 @@ def ensure_dirs():
 # Schedule Parsing
 # =============================================================================
 
-def parse_duration(s: str) -> int:
+def parse_duration(s: str) -> float:
     """
-    Parse duration string into minutes.
+    Parse duration string into minutes (float, to support sub-minute durations).
     
     Examples:
         "30m" → 30
         "2h" → 120
         "1d" → 1440
+        "30s" → 0.5
+        "10sec" → 10/60
     """
     s = s.strip().lower()
-    match = re.match(r'^(\d+)\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)$', s)
+    match = re.match(
+        r'^(\d+(?:\.\d+)?)\s*'
+        r'(s|sec|secs|second|seconds'
+        r'|m|min|mins|minute|minutes'
+        r'|h|hr|hrs|hour|hours'
+        r'|d|day|days)$', s
+    )
     if not match:
-        raise ValueError(f"Invalid duration: '{s}'. Use format like '30m', '2h', or '1d'")
+        raise ValueError(
+            f"Invalid duration: '{s}'. Use format like '30s', '30m', '2h', or '1d'"
+        )
     
-    value = int(match.group(1))
-    unit = match.group(2)[0]  # First char: m, h, or d
+    value = float(match.group(1))
+    unit = match.group(2)[0]  # First char: s, m, h, or d
     
-    multipliers = {'m': 1, 'h': 60, 'd': 1440}
+    multipliers = {'s': 1 / 60, 'm': 1, 'h': 60, 'd': 1440}
     return value * multipliers[unit]
 
 
@@ -320,7 +330,7 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
     Returns dict with:
         - kind: "once" | "interval" | "cron"
         - For "once": "run_at" (ISO timestamp)
-        - For "interval": "minutes" (int)
+        - For "interval": "minutes" (float)
         - For "cron": "expr" (cron expression)
     
     Examples:
@@ -342,7 +352,7 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         return {
             "kind": "interval",
             "minutes": minutes,
-            "display": f"every {minutes}m"
+            "display": f"every {duration_str}"
         }
     
     # Check for cron expression (5 or 6 space-separated fields)

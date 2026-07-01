@@ -53,6 +53,20 @@ class TestParseDuration:
         assert parse_duration("  30m  ") == 30
         assert parse_duration("2 h") == 120
 
+    def test_seconds(self):
+        assert parse_duration("30s") == 0.5
+        assert parse_duration("10sec") == pytest.approx(10 / 60)
+        assert parse_duration("45secs") == 0.75
+        assert parse_duration("1second") == pytest.approx(1 / 60)
+        assert parse_duration("90seconds") == 1.5
+        assert parse_duration("0.5s") == pytest.approx(0.5 / 60)
+        assert parse_duration("  15s  ") == 0.25
+
+    def test_decimal_values(self):
+        assert parse_duration("1.5m") == 1.5
+        assert parse_duration("0.5h") == 30
+        assert parse_duration("0.25d") == 360
+
     def test_invalid_raises(self):
         with pytest.raises(ValueError):
             parse_duration("abc")
@@ -90,6 +104,32 @@ class TestParseSchedule:
         result = parse_schedule("Every 30m")
         assert result["kind"] == "interval"
         assert result["minutes"] == 30
+
+    def test_every_seconds_interval(self):
+        result = parse_schedule("every 30s")
+        assert result["kind"] == "interval"
+        assert result["minutes"] == pytest.approx(0.5)
+        assert result["display"] == "every 30s"
+
+    def test_seconds_one_shot(self):
+        result = parse_schedule("30s")
+        assert result["kind"] == "once"
+        assert "run_at" in result
+        run_at_str = result["run_at"]
+        assert isinstance(run_at_str, str)
+        run_at = datetime.fromisoformat(run_at_str)
+        now = datetime.now().astimezone()
+        assert run_at > now
+        assert run_at < now + timedelta(minutes=1)
+        assert "once in 30s" in result["display"]
+
+    def test_decimal_duration(self):
+        result = parse_schedule("1.5m")
+        assert result["kind"] == "once"
+        run_at = datetime.fromisoformat(result["run_at"])
+        now = datetime.now().astimezone()
+        assert run_at > now
+        assert run_at < now + timedelta(minutes=2)
 
     def test_cron_expression(self):
         pytest.importorskip("croniter")
