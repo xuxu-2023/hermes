@@ -2694,6 +2694,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                     if entry.get("api_key"):
                         fb_kwargs["explicit_api_key"] = entry["api_key"]
                     runtime = resolve_runtime_provider(**fb_kwargs)
+                    # Use the fallback entry's model if specified, instead of
+                    # keeping the primary model (which the fallback provider
+                    # may not serve).  See #47781.
+                    if entry.get("model"):
+                        model = entry["model"]
                     logger.info("Job '%s': fallback resolved to %s", job_id, runtime.get("provider"))
                     break
                 except Exception as fb_exc:
