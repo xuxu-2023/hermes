@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 
@@ -12,6 +13,19 @@ def _normalized_base_url(value: Any) -> str:
 
 
 def _iter_fallback_entries(raw: Any) -> list[dict[str, Any]]:
+    # `hermes config set fallback_providers '[{...}]'` writes a JSON-encoded
+    # *string* into config.yaml. The old parser dropped string inputs
+    # entirely, which silently emptied the fallback chain and turned a
+    # transient provider auth failure into a canned "Provider authentication
+    # failed" message. Parse the string once (recursing for double-encoded
+    # values) and continue. Non-JSON strings fall through to the original
+    # empty-chain behaviour. (#51560)
+    if isinstance(raw, str):
+        try:
+            return _iter_fallback_entries(json.loads(raw))
+        except (TypeError, ValueError):
+            return []
+
     if isinstance(raw, dict):
         candidates = [raw]
     elif isinstance(raw, list):
