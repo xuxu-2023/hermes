@@ -86,8 +86,6 @@
     return body || raw;
   }
 
-  // Order matches BOARD_COLUMNS in plugin_api.py.
-  const COLUMN_ORDER = ["triage", "todo", "ready", "running", "blocked", "done"];
   // English fallback dictionaries — used when the i18n catalog is missing
   // a key, and as defaults for the get*() helpers below so callers running
   // outside any React component (where there's no `t`) still get sane text.
@@ -106,6 +104,8 @@
     ready: "Dependencies satisfied; assign a profile to dispatch",
     running: "Claimed by a worker — in-flight",
     blocked: "Worker asked for human input",
+    scheduled: "Waiting on a scheduled time or follow-up",
+    review: "Awaiting human review before moving to done",
     done: "Completed",
     archived: "Archived",
   };
@@ -1536,6 +1536,7 @@
     const [profiles, setProfiles] = useState([]);
     const [busy, setBusy] = useState({});
     const [msg, setMsg] = useState(null);
+    const panelRef = useRef(null);
 
     const loadAll = useCallback(function () {
       Promise.all([
@@ -1555,6 +1556,20 @@
       // requiring the user to expand the panel first.
       if (settings === null) loadAll();
     }, [settings, loadAll]);
+
+    useEffect(function () {
+      // Collapse the panel when the user clicks or taps outside it.
+      function onPointerDown(event) {
+        if (!expanded || !panelRef.current) return;
+        if (!panelRef.current.contains(event.target)) {
+          setExpanded(false);
+        }
+      }
+      document.addEventListener("pointerdown", onPointerDown);
+      return function () {
+        document.removeEventListener("pointerdown", onPointerDown);
+      };
+    }, [expanded]);
 
     const saveSettings = function (patch) {
       setMsg(null);
@@ -1665,7 +1680,7 @@
       return h(SelectOption, { key: p.name, value: p.name }, p.name + tag);
     });
 
-    return h(Card, { className: "p-3" },
+    return h(Card, { ref: panelRef, className: "p-3" },
       h(CardContent, { className: "p-2 flex flex-col gap-3" },
         h("div", { className: "flex items-center justify-between" },
           h("button", {
@@ -1673,8 +1688,17 @@
             onClick: function () { setExpanded(false); },
             className: "text-sm font-medium underline-offset-2 hover:underline",
           }, headerLabel),
-          modePill,
-          h(Button, { onClick: loadAll, size: "sm" }, "Reload"),
+          h("div", { className: "flex items-center gap-2" },
+            modePill,
+            h(Button, { onClick: loadAll, size: "sm" }, "Reload"),
+            h(Button, {
+              type: "button",
+              onClick: function () { setExpanded(false); },
+              size: "sm",
+              title: "Collapse orchestration settings",
+              className: "px-2",
+            }, "✕"),
+          ),
         ),
         msg ? h("div", {
           className: msg.ok ? "hermes-kanban-msg-ok" : "hermes-kanban-msg-err",
