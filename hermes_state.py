@@ -3894,6 +3894,10 @@ class SessionDB:
         the number of rewind operations performed against the session.
         Idempotent on the ``active`` flag: re-rewinding past the same
         target is a no-op on row state but still bumps the counter.
+
+        Also reconciles ``sessions.message_count`` and
+        ``sessions.tool_call_count`` to the rows that stay active so the
+        denormalized counters keep matching the live transcript.
         """
 
         # 1) Validate target up-front (read-only, outside the write txn).
@@ -3931,10 +3935,38 @@ class SessionDB:
                     f"UPDATE messages SET active = 0 WHERE id IN ({placeholders})",
                     ids,
                 )
-            conn.execute(
-                "UPDATE sessions SET rewind_count = COALESCE(rewind_count, 0) + 1 "
-                "WHERE id = ?",
+            # Rebuild the denormalized session counters from the rows that
+            # stay active so they keep tracking the live (active=1) set after
+            # the rewind. message_count is the active-row count and
+            # tool_call_count sums each active row's tool_calls the same way
+            # append_message and _insert_message_rows do (a list's length, or
+            # one for a non-list). Without this the columns stay frozen at
+            # their pre-rewind values and every later message widens the gap,
+            # inflating the session-list counts and hiding the rewind from the
+            # cross-process agent-cache staleness check that keys off
+            # message_count.
+            active_count = 0
+            tool_calls_total = 0
+            for (tool_calls_json,) in conn.execute(
+                "SELECT tool_calls FROM messages "
+                "WHERE session_id = ? AND active = 1",
                 (session_id,),
+            ):
+                active_count += 1
+                if not tool_calls_json:
+                    continue
+                try:
+                    parsed = json.loads(tool_calls_json)
+                except (ValueError, TypeError):
+                    continue
+                if parsed is not None:
+                    tool_calls_total += (
+                        len(parsed) if isinstance(parsed, list) else 1
+                    )
+            conn.execute(
+                "UPDATE sessions SET message_count = ?, tool_call_count = ?, "
+                "rewind_count = COALESCE(rewind_count, 0) + 1 WHERE id = ?",
+                (active_count, tool_calls_total, session_id),
             )
             return ids
 
