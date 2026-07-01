@@ -2546,6 +2546,19 @@ DEFAULT_CONFIG = {
         # recent .md files and prunes older ones. 0 or negative disables
         # pruning (for operators who manage cleanup externally). Default 50.
         "output_retention": 50,
+        # Cron-wide model / provider / base_url override. When set, every cron
+        # job that does NOT carry its own per-job model override runs with
+        # these instead of the global ``model.default`` / current provider.
+        # Useful when jobs are created in natural language and never pin a
+        # model — point all scheduled work at a cheap/stable backend without
+        # affecting interactive (CLI / gateway) sessions. Empty string =
+        # disabled (fall back to the global default). A per-job model override
+        # (``cronjob action=update job_id=... model=...``) always wins.
+        # Precedence (highest first):
+        #   per-job model > cron.model > model.default > HERMES_MODEL
+        "model": "",
+        "provider": "",
+        "base_url": "",
     },
 
     # Kanban multi-agent coordination — controls the dispatcher loop that
