@@ -1880,6 +1880,7 @@ export interface ProfileInfo {
 export interface ModelsAnalyticsModelEntry {
   model: string;
   provider: string;
+  available: boolean;
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;
