@@ -4401,6 +4401,7 @@ def _chromium_installed() -> bool:
        agent-browser at a pre-installed Chrome/Chromium.
     2. System Chrome/Chromium in PATH (``google-chrome``, ``chromium``,
        ``chromium-browser``, ``chrome``).
+    2b. macOS app bundles (``/Applications/Google Chrome.app``, etc.)
     3. Playwright's browser cache (current logic) — directories containing
        ``chromium-*`` or ``chromium_headless_shell-*``.
 
@@ -4432,6 +4433,17 @@ def _chromium_installed() -> bool:
     if system_chrome:
         _cached_chromium_installed = True
         return True
+
+    # 2b. macOS app bundles (installed Chrome/Chromium not on PATH)
+    if sys.platform == "darwin":
+        _MACOS_APP_BUNDLES = [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        ]
+        for app_path in _MACOS_APP_BUNDLES:
+            if os.path.isfile(app_path):
+                _cached_chromium_installed = True
+                return True
 
     # 3. Playwright browser cache (legacy — chromium-* / chromium_headless_shell-* dirs)
     for root in _chromium_search_roots():
