@@ -54,8 +54,8 @@ except Exception:
 # This keeps startup fast for users who don't use Bedrock.
 # ---------------------------------------------------------------------------
 
-_bedrock_runtime_client_cache: Dict[str, Any] = {}
-_bedrock_control_client_cache: Dict[str, Any] = {}
+_bedrock_runtime_client_cache: Dict[Any, Any] = {}
+_bedrock_control_client_cache: Dict[Any, Any] = {}
 
 
 _MIN_BOTO3_VERSION = (1, 34, 59)
@@ -88,27 +88,64 @@ def _require_boto3():
     return boto3
 
 
+def _load_bedrock_config() -> dict:
+    """Read the ``bedrock`` section from config.yaml.
+
+    Returns the bedrock dict (may be empty if not configured).
+    """
+    try:
+        from hermes_cli.config import load_config
+        return load_config().get("bedrock", {}) or {}
+    except Exception:
+        return {}
+
+
+def _resolve_bedrock_profile() -> str:
+    """Return the configured AWS profile name, or empty string for default chain."""
+    return (_load_bedrock_config().get("profile") or "").strip()
+
+
 def _get_bedrock_runtime_client(region: str):
     """Get or create a cached ``bedrock-runtime`` client for the given region.
 
-    Uses the default AWS credential chain (env vars → profile → instance role).
+    Respects ``bedrock.profile`` from config.yaml: when set, creates a
+    ``boto3.Session(profile_name=...)`` and uses that session's client.
+    Falls back to the default credential chain (env vars → instance role)
+    when no profile is configured.
     """
-    if region not in _bedrock_runtime_client_cache:
+    profile = _resolve_bedrock_profile()
+    cache_key = (region, profile) if profile else region
+    if cache_key not in _bedrock_runtime_client_cache:
         boto3 = _require_boto3()
-        _bedrock_runtime_client_cache[region] = boto3.client(
-            "bedrock-runtime", region_name=region,
-        )
-    return _bedrock_runtime_client_cache[region]
+        if profile:
+            _bedrock_runtime_client_cache[cache_key] = boto3.Session(
+                profile_name=profile,
+            ).client("bedrock-runtime", region_name=region)
+        else:
+            _bedrock_runtime_client_cache[cache_key] = boto3.client(
+                "bedrock-runtime", region_name=region,
+            )
+    return _bedrock_runtime_client_cache[cache_key]
 
 
 def _get_bedrock_control_client(region: str):
-    """Get or create a cached ``bedrock`` control-plane client for model discovery."""
-    if region not in _bedrock_control_client_cache:
+    """Get or create a cached ``bedrock`` control-plane client for model discovery.
+
+    Respects ``bedrock.profile`` from config.yaml (see ``_get_bedrock_runtime_client``).
+    """
+    profile = _resolve_bedrock_profile()
+    cache_key = (region, profile) if profile else region
+    if cache_key not in _bedrock_control_client_cache:
         boto3 = _require_boto3()
-        _bedrock_control_client_cache[region] = boto3.client(
-            "bedrock", region_name=region,
-        )
-    return _bedrock_control_client_cache[region]
+        if profile:
+            _bedrock_control_client_cache[cache_key] = boto3.Session(
+                profile_name=profile,
+            ).client("bedrock", region_name=region)
+        else:
+            _bedrock_control_client_cache[cache_key] = boto3.client(
+                "bedrock", region_name=region,
+            )
+    return _bedrock_control_client_cache[cache_key]
 
 
 def reset_client_cache():
@@ -128,9 +165,13 @@ def invalidate_runtime_client(region: str) -> bool:
     Returns True if a cached entry was evicted, False if the region was not
     cached.
     """
-    existed = region in _bedrock_runtime_client_cache
-    _bedrock_runtime_client_cache.pop(region, None)
-    return existed
+    removed = False
+    for cache_key in list(_bedrock_runtime_client_cache):
+        cached_region = cache_key[0] if isinstance(cache_key, tuple) else cache_key
+        if cached_region == region:
+            _bedrock_runtime_client_cache.pop(cache_key, None)
+            removed = True
+    return removed
 
 
 # ---------------------------------------------------------------------------
@@ -376,7 +417,11 @@ def resolve_bedrock_region(env: Optional[Dict[str, str]] = None) -> str:
         return explicit
     try:
         import botocore.session
-        region = botocore.session.get_session().get_config_variable("region")
+        profile = _resolve_bedrock_profile()
+        if profile:
+            region = botocore.session.Session(profile=profile).get_config_variable("region")
+        else:
+            region = botocore.session.get_session().get_config_variable("region")
         if region:
             return region
     except Exception:
