@@ -8216,7 +8216,7 @@ def _install_hangup_protection(gateway_mode: bool = False):
     Protections installed:
 
     1. ``SIGHUP`` is set to ``SIG_IGN``.  POSIX preserves ``SIG_IGN``
-       across ``exec()``, so pip and git subprocesses also stop dying on
+       across an exec call, so pip and git subprocesses also stop dying on
        hangup.
     2. ``sys.stdout`` / ``sys.stderr`` are wrapped to mirror output to
        ``~/.hermes/logs/update.log`` and to silently absorb
