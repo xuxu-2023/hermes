@@ -1288,6 +1288,23 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         return False
 
+    def should_hold_streaming_for_rich(self, content: str) -> bool:
+        """Whether to suppress all streaming edits and deliver one clean rich final.
+
+        Called by the stream consumer on each tick while no message has been
+        sent yet (_message_id is None).  When True, all draft frames and edit
+        ticks are skipped until the stream finishes, then the complete content
+        is delivered as a single rich message.
+
+        Disabled: the MarkdownV2 streaming path handles partial tables
+        gracefully (incomplete tables pass through as raw text; complete tables
+        convert to bullet groups via _wrap_markdown_tables), so suppressing
+        streaming for rich content causes worse UX than partial rendering —
+        particularly after tool calls where the response starts with tables and
+        the user would see nothing until the full answer arrives.
+        """
+        return False
+
     def streaming_overflow_limit(self) -> Optional[int]:
         """Allow the stream consumer to accumulate up to the rich-message cap
         before splitting, so a reply that fits one ``sendRichMessage`` /
@@ -3650,12 +3667,34 @@ class TelegramAdapter(BasePlatformAdapter):
 
         try:
             if not finalize:
-                await self._bot.edit_message_text(
-                    chat_id=normalize_telegram_chat_id(chat_id),
-                    message_id=int(message_id),
-                    text=content,
-                )
-                return SendResult(success=True, message_id=message_id)
+                # Streaming tick: try MarkdownV2 so the message stays formatted
+                # while new content arrives.  format_message escapes unmatched
+                # markers (e.g. unclosed **bold), so it virtually never triggers
+                # a BadRequest.  Other errors (flood, network) propagate to the
+                # outer handler so the consumer can back off or enter fallback.
+                _streaming_formatted = self.format_message(content)
+                try:
+                    await self._bot.edit_message_text(
+                        chat_id=normalize_telegram_chat_id(chat_id),
+                        message_id=int(message_id),
+                        text=_streaming_formatted,
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                    )
+                    return SendResult(success=True, message_id=message_id)
+                except Exception as _mdv2_err:
+                    _mdv2_s = str(_mdv2_err).lower()
+                    if "not modified" in _mdv2_s:
+                        return SendResult(success=True, message_id=message_id)
+                    if self._is_bad_request_error(_mdv2_err):
+                        # MarkdownV2 rejected this frame — send plain text for
+                        # this tick; next tick will try MarkdownV2 again.
+                        await self._bot.edit_message_text(
+                            chat_id=normalize_telegram_chat_id(chat_id),
+                            message_id=int(message_id),
+                            text=content,
+                        )
+                        return SendResult(success=True, message_id=message_id)
+                    raise  # flood / network — propagate to outer handler
 
             formatted = self.format_message(content)
             try:
@@ -4097,13 +4136,46 @@ class TelegramAdapter(BasePlatformAdapter):
                     # Drafts have no message_id; we report success without one
                     # so the caller knows the animation frame landed.
                     return SendResult(success=True, message_id=None)
-                return SendResult(success=False, error="draft_rejected")
+                # ok=False: Bot API rejected the frame (typing action expired,
+                # unsupported client, etc.).  Suppress silently — returning
+                # success=True keeps the consumer in draft mode so it never
+                # cascades to rapid editMessageText calls that exhaust the quota.
+                logger.debug(
+                    "[%s] sendMessageDraft ok=False, frame suppressed "
+                    "(chat=%s draft_id=%s)",
+                    self.name, chat_id, draft_id,
+                )
+                return SendResult(success=True, message_id=None)
             except Exception as e:
-                # A MarkdownV2 parse failure (BadRequest "can't parse entities")
-                # is recoverable: retry once as plain text.  Any other failure
-                # (chat doesn't allow drafts, transient hiccup) — or a failure
-                # on the plain-text attempt — propagates to the caller, which
-                # treats it as "fall back to edit-based for this response".
+                # Short flood-control wait (≤5s): sleep inline and retry the
+                # same frame so this single hiccup is invisible to the caller.
+                retry_after = getattr(e, "retry_after", None)
+                if retry_after is not None:
+                    wait = float(retry_after)
+                    if wait <= 5.0:
+                        logger.debug(
+                            "[%s] sendMessageDraft flood control %.1fs, retrying "
+                            "(chat=%s draft_id=%s)",
+                            self.name, wait, chat_id, draft_id,
+                        )
+                        await asyncio.sleep(wait)
+                        try:
+                            ok = await self._bot.send_message_draft(**kwargs)
+                            if ok:
+                                return SendResult(success=True, message_id=None)
+                        except Exception:
+                            pass
+                        # Retry failed after sleeping — suppress this frame rather
+                        # than counting it as a failure and risking edit cascade.
+                        return SendResult(success=True, message_id=None)
+                    # Long wait — signal retryable so the caller doesn't count
+                    # this against the permanent-disable threshold.
+                    logger.debug(
+                        "[%s] sendMessageDraft flood control %.1fs (chat=%s draft_id=%s)",
+                        self.name, wait, chat_id, draft_id,
+                    )
+                    return SendResult(success=False, error=f"flood_control:{wait:.0f}", retryable=True)
+                # MarkdownV2 parse failure: retry once as plain text.
                 if use_markdown and self._is_bad_request_error(e):
                     logger.debug(
                         "[%s] sendMessageDraft MarkdownV2 rejected, retrying "
@@ -4111,13 +4183,17 @@ class TelegramAdapter(BasePlatformAdapter):
                         self.name, chat_id, draft_id, e,
                     )
                     continue
+                # Any other failure (expired typing action, unsupported chat,
+                # network hiccup, plain-text retry failure): suppress silently.
+                # Returning success=True keeps the consumer in draft mode and
+                # prevents the editMessageText cascade that exhausts the quota.
                 logger.debug(
-                    "[%s] sendMessageDraft failed (chat=%s draft_id=%s): %s",
+                    "[%s] sendMessageDraft suppressed (chat=%s draft_id=%s): %s",
                     self.name, chat_id, draft_id, e,
                 )
-                return SendResult(success=False, error=str(e))
+                return SendResult(success=True, message_id=None)
 
-        return SendResult(success=False, error="draft_rejected")
+        return SendResult(success=True, message_id=None)
 
     async def _send_message_with_thread_fallback(self, **kwargs):
         """Send a Telegram message, retrying once without message_thread_id
