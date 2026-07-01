@@ -2023,6 +2023,10 @@ DEFAULT_CONFIG = {
         "beep_enabled": True,         # Play record start/stop beeps in CLI voice mode
         "silence_threshold": 200,     # RMS below this = silence (0-32767)
         "silence_duration": 3.0,      # Seconds of silence before auto-stop
+        # Optional cap on spoken reply length (chars, after markdown strip).
+        # Omit or null to defer to the active TTS provider max_text_length
+        # (tts.<provider>.max_text_length or tts.providers.<provider>.max_text_length).
+        "max_tts_chars": None,
     },
     
     "human_delay": {
