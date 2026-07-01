@@ -1550,9 +1550,39 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                     needs_save = True
                     break
 
-        raw_next_run_dt = datetime.fromisoformat(next_run)
         schedule = job.get("schedule", {})
         kind = schedule.get("kind")
+
+        # A non-empty but malformed next_run_at (truncated, migrated, or
+        # hand-edited into jobs.json — e.g. "soon" or "2026-13-99") would
+        # otherwise raise ValueError here. Because this loop runs for every
+        # enabled job on every tick and the exception escapes get_due_jobs()
+        # and tick() (the tick's only try/finally just releases the file lock),
+        # a single poisoned record aborts the WHOLE tick before any due job is
+        # dispatched — and re-poisons it identically on every subsequent tick,
+        # permanently wedging all cron jobs until the file is hand-repaired.
+        # Degrade just this one job instead: recompute from its schedule when
+        # possible, otherwise skip it. Mirrors the existing poison-pill guards
+        # in _resolve_origin (#18722) and load_jobs's JSON auto-repair.
+        try:
+            raw_next_run_dt = datetime.fromisoformat(next_run)
+        except (ValueError, TypeError):
+            recovered_next = compute_next_run(schedule, now.isoformat())
+            logger.warning(
+                "Job '%s' has unparseable next_run_at=%r; %s",
+                job.get("name", job["id"]),
+                next_run,
+                f"recomputing from schedule -> {recovered_next}"
+                if recovered_next
+                else "no schedule recovery available, skipping this run",
+            )
+            if recovered_next:
+                for rj in raw_jobs:
+                    if rj["id"] == job["id"]:
+                        rj["next_run_at"] = recovered_next
+                        needs_save = True
+                        break
+            continue
 
         next_run_dt = _ensure_aware(raw_next_run_dt)
         # Migration repair: a cron job persists next_run_at as an absolute

@@ -1045,6 +1045,84 @@ class TestGetDueJobs:
         due = get_due_jobs()
         assert [j["id"] for j in due] == ["cron-same-tz"]
 
+    def test_malformed_next_run_at_does_not_wedge_other_jobs(self, tmp_cron_dir, monkeypatch):
+        """A single poisoned next_run_at must not abort the whole tick.
+
+        Before the guard, an unparseable (but non-empty) next_run_at raised
+        ValueError out of get_due_jobs()/tick(), so one corrupt record stopped
+        EVERY scheduled job from running and re-crashed identically each tick.
+        The bad record must now degrade to itself: it is recomputed/skipped
+        while sibling jobs still fire normally.
+        """
+        now = datetime(2026, 3, 18, 10, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        def _job(job_id, next_run_at):
+            return {
+                "id": job_id,
+                "name": job_id,
+                "prompt": "...",
+                "schedule": {"kind": "interval", "minutes": 60, "display": "every 60m"},
+                "schedule_display": "every 1h",
+                "repeat": {"times": None, "completed": 0},
+                "enabled": True,
+                "state": "scheduled",
+                "paused_at": None,
+                "paused_reason": None,
+                "created_at": "2026-03-18T09:00:00+00:00",
+                "next_run_at": next_run_at,
+                "last_run_at": None,
+                "last_status": None,
+                "last_error": None,
+                "deliver": "local",
+                "origin": None,
+            }
+
+        # Poisoned job is listed first so an unguarded crash would happen before
+        # the genuinely-due sibling is ever evaluated.
+        save_jobs([
+            _job("poisoned", "soon"),
+            _job("healthy", (now - timedelta(minutes=5)).isoformat()),
+        ])
+
+        due = get_due_jobs()  # must not raise
+        assert [j["id"] for j in due] == ["healthy"]
+
+        # The poisoned recurring job is repaired from its schedule rather than
+        # left to crash forever, so it can fire on a future tick.
+        repaired = get_job("poisoned")["next_run_at"]
+        assert repaired not in (None, "soon")
+        from cron.jobs import _ensure_aware
+        assert _ensure_aware(datetime.fromisoformat(repaired)) > now
+
+    def test_malformed_next_run_at_one_shot_is_skipped(self, tmp_cron_dir, monkeypatch):
+        """A one-shot job with a corrupt next_run_at can't be recomputed, so it
+        is skipped (not fired, not crashing) — and other jobs keep working."""
+        now = datetime(2026, 3, 18, 10, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        save_jobs([{
+            "id": "oneshot-bad",
+            "name": "oneshot-bad",
+            "prompt": "...",
+            "schedule": {"kind": "once", "run_at": "2026-13-99", "display": "broken"},
+            "schedule_display": "broken",
+            "repeat": {"times": 1, "completed": 0},
+            "enabled": True,
+            "state": "scheduled",
+            "paused_at": None,
+            "paused_reason": None,
+            "created_at": "2026-03-18T09:00:00+00:00",
+            "next_run_at": "2026-13-99",  # parses past the falsiness check, then fails
+            "last_run_at": None,
+            "last_status": None,
+            "last_error": None,
+            "deliver": "local",
+            "origin": None,
+        }])
+
+        assert get_due_jobs() == []  # must not raise
+
     def test_interval_job_with_stale_offset_is_unaffected(self, tmp_cron_dir, monkeypatch):
         """The offset-repair guard is cron-only; interval jobs never take it.
 
