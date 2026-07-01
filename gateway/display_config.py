@@ -21,7 +21,10 @@ config migration (version bump) automatically moves the old format into the new
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from gateway.config import StreamingConfig
 
 # ---------------------------------------------------------------------------
 # Overrideable display settings and their global defaults
@@ -220,6 +223,44 @@ def resolve_display_setting(
         return val
 
     return fallback
+
+
+def resolve_streaming_enabled(
+    user_config: dict,
+    platform_key: str,
+    scfg: "StreamingConfig",
+) -> bool:
+    """Resolve effective gateway streaming for a platform.
+
+    The global ``streaming.enabled`` flag and ``streaming.transport != "off"``
+    act as a master gate.  When the global switch is off, **no** platform
+    streams — regardless of per-platform overrides (e.g. the shipped
+    ``display.platforms.telegram.streaming: true`` default).  When the global
+    switch is on, a per-platform override may opt an individual platform out
+    (e.g. ``display.platforms.discord.streaming: false``) but cannot opt it
+    back in beyond the global setting.
+
+    Parameters
+    ----------
+    user_config : dict
+        The full parsed config.yaml dict.
+    platform_key : str
+        Platform config key (e.g. ``"telegram"``, ``"slack"``).
+    scfg : StreamingConfig
+        The resolved global streaming configuration.
+
+    Returns
+    -------
+    bool
+        Whether token streaming should be active for this platform.
+    """
+    global_enabled = bool(getattr(scfg, "enabled", False)) and getattr(
+        scfg, "transport", "auto"
+    ) != "off"
+    plat_streaming = resolve_display_setting(user_config, platform_key, "streaming")
+    if plat_streaming is None:
+        return global_enabled
+    return global_enabled and bool(plat_streaming)
 
 
 # ---------------------------------------------------------------------------
