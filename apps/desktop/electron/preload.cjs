@@ -214,5 +214,12 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   themes: {
     fetchMarketplace: id => ipcRenderer.invoke('hermes:vscode-theme:fetch', id),
     searchMarketplace: query => ipcRenderer.invoke('hermes:vscode-theme:search', query)
+  },
+  findInPage: (query, options) => ipcRenderer.invoke('hermes:find-in-page', query, options),
+  stopFindInPage: () => ipcRenderer.invoke('hermes:stop-find-in-page'),
+  onFoundInPage: callback => {
+    const listener = (_event, result) => callback(result)
+    ipcRenderer.on('hermes:found-in-page', listener)
+    return () => ipcRenderer.removeListener('hermes:found-in-page', listener)
   }
 })

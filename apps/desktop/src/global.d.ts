@@ -195,6 +195,16 @@ declare global {
         // returns the most-installed themes.
         searchMarketplace: (query: string) => Promise<DesktopMarketplaceSearchItem[]>
       }
+      // Find-in-page: delegates to Electron's webContents.findInPage so
+      // Ctrl/Cmd+F highlights matches in the rendered chat + editors.
+      findInPage: (
+        query: string,
+        options?: { forward?: boolean; findNext?: boolean }
+      ) => Promise<{ count: number }>
+      stopFindInPage: () => Promise<void>
+      onFoundInPage: (
+        callback: (result: { activeMatchOrdinal: number; count: number }) => void
+      ) => () => void
     }
   }
 }

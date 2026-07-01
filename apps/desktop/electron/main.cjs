@@ -5955,6 +5955,18 @@ function createWindow() {
 
   wireCommonWindowHandlers(mainWindow)
 
+  // Forward find-in-page match counts to the renderer so the find bar can
+  // display the active-match ordinal and total count.
+  mainWindow.webContents.on('found-in-page', (_event, result) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    const { webContents } = mainWindow
+    if (!webContents || webContents.isDestroyed()) return
+    webContents.send('hermes:found-in-page', {
+      activeMatchOrdinal: result.activeMatchOrdinal,
+      count: result.matches
+    })
+  })
+
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     rememberLog(`[renderer] render-process-gone reason=${details?.reason} exitCode=${details?.exitCode}`)
 
@@ -6663,6 +6675,26 @@ ipcMain.on('hermes:translucency', (_event, payload) => {
   for (const win of BrowserWindow.getAllWindows()) {
     applyWindowTranslucency(win)
   }
+})
+
+// ── Find-in-page (Ctrl/Cmd+F) ─────────────────────────────────────────────
+ipcMain.handle('hermes:find-in-page', (_event, query, options) => {
+  if (!mainWindow || mainWindow.isDestroyed()) return { count: 0 }
+  const { webContents } = mainWindow
+  if (!webContents || webContents.isDestroyed()) return { count: 0 }
+  const opts = options && typeof options === 'object' ? options : {}
+  webContents.findInPage(String(query || ''), {
+    forward: opts.forward !== false,
+    findNext: Boolean(opts.findNext)
+  })
+  return { count: 0 }
+})
+
+ipcMain.handle('hermes:stop-find-in-page', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  const { webContents } = mainWindow
+  if (!webContents || webContents.isDestroyed()) return
+  webContents.stopFindInPage('clearSelection')
 })
 
 ipcMain.handle('hermes:openExternal', (_event, url) => {

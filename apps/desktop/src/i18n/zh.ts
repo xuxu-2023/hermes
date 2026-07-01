@@ -234,6 +234,7 @@ export const zh: Translations = {
       'view.terminalSelection': '将终端选区发送到输入框',
       'view.closePreviewTab': '关闭预览标签',
       'view.flipPanes': '交换侧边栏位置',
+      'view.findInPage': '页面内查找',
       'appearance.toggleMode': '切换浅色/深色',
       'profile.default': '切换到默认配置',
       'profile.switch.1': '切换到配置 1',

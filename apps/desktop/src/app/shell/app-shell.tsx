@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import type { CSSProperties, ReactNode } from 'react'
 import { useSyncExternalStore } from 'react'
 
+import { FindBar } from '@/components/find-bar'
 import { NotificationStack } from '@/components/notifications'
 import { PaneShell } from '@/components/pane-shell'
 import { FloatingPet } from '@/components/pet/floating-pet'
@@ -224,6 +225,9 @@ export function AppShell({
 
       {/* Keybind map dialog (titlebar ⌨ button / ⌘/). */}
       <KeybindPanel />
+
+      {/* Ctrl/Cmd+F find-in-page overlay. */}
+      <FindBar />
 
       {/* Mounted at the shell root (after overlays) so success/error toasts
           surface above every route and overlay — not just the chat view. */}

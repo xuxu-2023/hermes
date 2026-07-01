@@ -111,6 +111,7 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   { id: 'view.closeTerminal', category: 'view', defaults: ['ctrl+shift+w'] },
   // ⌘\ — the backslash reads like a mirror line flipping the layout.
   { id: 'view.flipPanes', category: 'view', defaults: ['mod+\\'] },
+  { id: 'view.findInPage', category: 'view', defaults: ['mod+f'] },
   { id: 'appearance.toggleMode', category: 'view', defaults: ['shift+x'] },
   { id: 'keybinds.openPanel', category: 'view', defaults: ['mod+/'] }
 ]
