@@ -19,6 +19,7 @@ import asyncio
 import logging
 import os
 import platform
+import random
 import re
 import signal
 import subprocess
@@ -357,8 +358,7 @@ def check_whatsapp_requirements() -> bool:
 
 
 class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
-    """
-    WhatsApp adapter.
+    """WhatsApp adapter.
     
     This implementation uses a simple HTTP bridge pattern where:
     1. A Node.js process runs the WhatsApp Web client
@@ -383,6 +383,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     provided by ``WhatsAppBehaviorMixin`` so the Cloud API adapter can
     share it. Only transport-specific code lives here.
     """
+
+    # Baileys exposes message editing, but WhatsApp surfaces each edit/delete as
+    # protocol-message upserts. With gateway token streaming enabled this creates
+    # a spray of blank-looking bubbles / protocol events on some clients,
+    # especially with chatty streaming models. Treat WhatsApp as non-editable for
+    # Hermes streaming so gateway replies are delivered once, as final text.
+    SUPPORTS_MESSAGE_EDITING = False
 
     # Default bridge location resolved via shared helper
     _DEFAULT_BRIDGE_DIR = None  # resolved in __init__
@@ -440,8 +447,84 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         )
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
+        # Outbound "human cascade" mode: split normal assistant replies on
+        # blank-line paragraph boundaries so WhatsApp gets a few natural text
+        # bubbles instead of one big wall of text.  Long/code-heavy payloads
+        # still use truncate_message() only, preserving copy/paste blocks.
+        self._human_cascade_messages = self._coerce_bool_extra(
+            "human_cascade_messages", True, env_var="WHATSAPP_HUMAN_CASCADE_MESSAGES"
+        )
+        self._human_cascade_max_bubbles = self._coerce_int_extra(
+            "human_cascade_max_bubbles", 3, env_var="WHATSAPP_HUMAN_CASCADE_MAX_BUBBLES"
+        )
+        self._human_cascade_delay_seconds = self._coerce_float_extra(
+            "human_cascade_delay_seconds", 0.55, env_var="WHATSAPP_HUMAN_CASCADE_DELAY_SECONDS"
+        )
+        self._human_cascade_max_total_chars = self._coerce_int_extra(
+            "human_cascade_max_total_chars", 900, env_var="WHATSAPP_HUMAN_CASCADE_MAX_TOTAL_CHARS"
+        )
+        self._human_cascade_min_total_chars = self._coerce_int_extra(
+            "human_cascade_min_total_chars", 300
+        )
+        self._human_cascade_min_lead_chars = self._coerce_int_extra(
+            "human_cascade_min_lead_chars", 40
+        )
+        self._human_cascade_max_bubble_chars = self._coerce_int_extra(
+            "human_cascade_max_bubble_chars", 320, env_var="WHATSAPP_HUMAN_CASCADE_MAX_BUBBLE_CHARS"
+        )
+        self._human_cascade_max_merged_bubble_chars = self._coerce_int_extra(
+            "human_cascade_max_merged_bubble_chars",
+            640,
+            env_var="WHATSAPP_HUMAN_CASCADE_MAX_MERGED_BUBBLE_CHARS",
+        )
+        self._human_cascade_delay_jitter_seconds = self._coerce_float_extra(
+            "human_cascade_delay_jitter_seconds",
+            0.25,
+            env_var="WHATSAPP_HUMAN_CASCADE_DELAY_JITTER_SECONDS",
+        )
+        self._human_cascade_groups = self._coerce_bool_extra(
+            "human_cascade_groups", False, env_var="WHATSAPP_HUMAN_CASCADE_GROUPS"
+        )
+        self._chunk_delay_seconds = self._coerce_float_extra(
+            "chunk_delay_seconds", 0.3, env_var="WHATSAPP_CHUNK_DELAY_SECONDS"
+        )
 
-    def _coerce_float_extra(self, key: str, default: float) -> float:
+    def _coerce_bool_extra(self, key: str, default: bool, *, env_var: Optional[str] = None) -> bool:
+        """Read a boolean from platform extra/env, accepting common string forms."""
+        value = None
+        if getattr(self.config, "extra", None):
+            value = self.config.extra.get(key)
+        if value is None and env_var:
+            value = os.getenv(env_var)
+        if value is None:
+            return bool(default)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        normalized = str(value).strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off"}:
+            return False
+        return bool(default)
+
+    def _coerce_int_extra(self, key: str, default: int, *, env_var: Optional[str] = None) -> int:
+        """Read a non-negative integer from platform extra/env."""
+        value = None
+        if getattr(self.config, "extra", None):
+            value = self.config.extra.get(key)
+        if value is None and env_var:
+            value = os.getenv(env_var)
+        if value is None:
+            return int(default)
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return int(default)
+        return max(0, parsed)
+
+    def _coerce_float_extra(self, key: str, default: float, *, env_var: Optional[str] = None) -> float:
         """Read a float from ``config.extra``, guarding against bad/non-finite values.
 
         The result is fed directly to ``asyncio.sleep()``, so NaN/Inf and
@@ -450,6 +533,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         import math
 
         value = self.config.extra.get(key) if getattr(self.config, "extra", None) else None
+        if value is None and env_var:
+            value = os.getenv(env_var)
         if value is None:
             return float(default)
         try:
@@ -459,6 +544,315 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if not math.isfinite(parsed) or parsed < 0:
             return float(default)
         return parsed
+
+    @classmethod
+    def _has_approval_gate(cls, text: str) -> bool:
+        """Return True for explicit approval/control prompts that must stay intact."""
+        command = r"`?/(approve|deny|reject|confirm|cancel|stop|new|reset|always)\b"
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped or cls._looks_list_like_line(stripped):
+                continue
+            if re.search(rf"(^|\b(reply|respond|type|send)\s+){command}", stripped, re.IGNORECASE):
+                return True
+        return False
+
+    @staticmethod
+    def _looks_list_like_line(text: str) -> bool:
+        """Return True for markdown/WhatsApp-style list item lines."""
+        stripped = text.strip().lstrip("\u200b\u200c\u200d\u2060\ufeff")
+        return bool(
+            re.match(
+                r"^(?:[-*+•‣◦]\s|[-*+•‣◦][\u200b\u200c\u200d\u2060\ufeff]+\s*|\d+[.)]\s+)",
+                stripped,
+            )
+        )
+
+    @classmethod
+    def _looks_structured_outbound(cls, text: str) -> bool:
+        """Return True for reports/artifacts that should not be split mid-body."""
+        structured_lines = 0
+        artifact_lines = 0
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if re.match(r"^(#{1,6}\s+|[*_-]{3,}$|>\s+|\|.*\|$)", stripped) or cls._looks_list_like_line(stripped):
+                structured_lines += 1
+            if re.match(
+                r"^(\{\s*$|\}\s*,?$|\[\s*$|\]\s*,?$|[\"']?[A-Za-z0-9_.-]+[\"']?\s*[:=]\s*.+$|[-+]{3}\s|@@\s|[+!]\s|\$\s+|(?:sudo\s+)?(?:git|gh|npm|pnpm|yarn|python\d*|pip|uv|docker|kubectl|helm|curl|ssh|scp|rsync|systemctl|journalctl)\b|(?:TRACE|DEBUG|INFO|WARN|WARNING|ERROR|CRITICAL)\b|Traceback \(most recent call last\):|File \".+\", line \d+|[A-Za-z_][\w.]*Error:|[-*+•‣◦]\s+\[[ xX]\]\s+)",
+                stripped,
+            ):
+                artifact_lines += 1
+        if structured_lines >= 2:
+            return True
+        return artifact_lines >= 3
+
+    @staticmethod
+    def _has_copy_sensitive_outbound(text: str) -> bool:
+        """Return True when content likely needs to be copied/read as one unit."""
+        return bool(
+            re.search(
+                r"\b(copy|paste|run|send|use)\s+(this|it|the following)\s+(exactly|as-is|as is)\b",
+                text,
+                re.IGNORECASE,
+            )
+        )
+
+    @staticmethod
+    def _word_count(text: str) -> int:
+        return len(re.findall(r"\b[\w'’.-]+\b", text))
+
+    def _is_substantive_cascade_lead(self, paragraph: str) -> bool:
+        """Return True when a paragraph is worth its own WhatsApp bubble."""
+        stripped = paragraph.strip()
+        if self._looks_structured_outbound(stripped):
+            return False
+        min_lead_chars = self._human_cascade_min_lead_chars
+        if min_lead_chars <= 0:
+            return bool(stripped)
+        if len(stripped) < min_lead_chars:
+            return False
+        return self._word_count(stripped) >= 6
+
+    def _should_human_cascade(self, text: str, paragraphs: list[str], *, force: bool) -> bool:
+        """Gate human cascade on reading value, not just blank-line presence."""
+        if force:
+            return True
+        min_total = self._human_cascade_min_total_chars
+        if min_total > 0 and len(text) < min_total:
+            return False
+        if len(paragraphs) > 1 and any(self._looks_list_like_line(line) for line in paragraphs[0].splitlines()):
+            return True
+        return self._is_substantive_cascade_lead(paragraphs[0])
+
+    @staticmethod
+    def _contains_outbound_link(text: str) -> bool:
+        """Return True when a bubble contains a URL/markdown link."""
+        return bool(
+            re.search(r"https?://|www\.|\[[^\]]+\]\([^\)]+\)", text, re.IGNORECASE)
+        )
+
+    @staticmethod
+    def _contains_active_prompt(text: str) -> bool:
+        """Return True for direct user-response prompts that should stay atomic."""
+        stripped = text.strip()
+        return bool(
+            re.search(
+                r"\b(reply|respond|choose|pick|select|confirm this|approve this|deny this|send me|tell me|want me to|should i|do you want me to)\b",
+                stripped,
+                re.IGNORECASE,
+            )
+        )
+
+    @staticmethod
+    def _split_cascade_paragraphs(text: str) -> list[str]:
+        """Split on blank lines while preserving fenced code blocks."""
+        paragraphs: list[str] = []
+        current: list[str] = []
+        in_fence = False
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("```"):
+                current.append(line)
+                in_fence = not in_fence
+                continue
+            if not stripped and not in_fence:
+                if current:
+                    paragraphs.append("\n".join(current).strip())
+                    current = []
+                continue
+            current.append(line)
+        if current:
+            paragraphs.append("\n".join(current).strip())
+        return [paragraph for paragraph in paragraphs if paragraph]
+
+    def _is_action_context_paragraph(self, paragraph: str) -> bool:
+        """Return True when a paragraph should travel with an action prompt."""
+        stripped = paragraph.strip()
+        if not stripped:
+            return False
+        if "```" in stripped:
+            return True
+        if self._has_approval_gate(stripped) or self._contains_outbound_link(stripped):
+            return True
+        if re.match(r"^(risk|command|target|branch|commit|diff|verify|verified|tests?|scope)\s*:", stripped, re.IGNORECASE):
+            return True
+        return self._looks_structured_outbound(stripped)
+
+    def _protect_atomic_sections(self, paragraphs: list[str]) -> list[str]:
+        """Keep code/action/link/copy-sensitive sections atomic without disabling cascade globally."""
+        if len(paragraphs) < 2:
+            return paragraphs
+
+        protected: list[str] = []
+        idx = 0
+        while idx < len(paragraphs):
+            paragraph = paragraphs[idx]
+
+            paragraph_has_own_context = "\n" in paragraph and not paragraph.lstrip().startswith("```")
+            if (
+                ("```" in paragraph or self._contains_outbound_link(paragraph))
+                and protected
+                and not paragraph_has_own_context
+            ):
+                protected[-1] = f"{protected[-1]}\n\n{paragraph}".strip()
+                idx += 1
+                continue
+
+            starts_action = (
+                self._has_approval_gate(paragraph)
+                or self._contains_active_prompt(paragraph)
+                or self._has_copy_sensitive_outbound(paragraph)
+            )
+            if starts_action:
+                block = [paragraph]
+                idx += 1
+                copy_sensitive = self._has_copy_sensitive_outbound(paragraph)
+                if copy_sensitive and idx < len(paragraphs):
+                    block.append(paragraphs[idx])
+                    idx += 1
+                while idx < len(paragraphs) and self._is_action_context_paragraph(paragraphs[idx]):
+                    block.append(paragraphs[idx])
+                    idx += 1
+                protected.append("\n\n".join(block).strip())
+                continue
+
+            protected.append(paragraph)
+            idx += 1
+        return protected
+
+    def _merge_list_paragraphs_with_context(self, paragraphs: list[str]) -> list[str]:
+        """Attach bare list paragraphs to their immediate lead-in without collapsing later prose."""
+        merged: list[str] = []
+        for paragraph in paragraphs:
+            lines = [line for line in paragraph.splitlines() if line.strip()]
+            starts_with_list = bool(lines and self._looks_list_like_line(lines[0]))
+            if starts_with_list and merged:
+                merged[-1] = f"{merged[-1]}\n{paragraph}".strip()
+            else:
+                merged.append(paragraph)
+        return merged
+
+    def _merge_structured_tail(self, paragraphs: list[str], max_bubbles: int) -> list[str] | None:
+        """Return lead paragraphs + glued structured tail, or None if not worth cascading."""
+        lead_limit = max(1, max_bubbles - 1)
+        lead: list[str] = []
+        for paragraph in paragraphs:
+            if len(lead) >= lead_limit or self._looks_structured_outbound(paragraph):
+                break
+            lead.append(paragraph)
+        if not lead or len(lead) >= len(paragraphs):
+            return None
+        if not self._is_substantive_cascade_lead(lead[0]):
+            return None
+        tail = "\n\n".join(paragraphs[len(lead):]).strip()
+        return [*lead, tail]
+
+    def _split_outgoing_text(
+        self,
+        formatted: str,
+        *,
+        chat_id: Optional[str] = None,
+        delivery_style: str = "auto",
+    ) -> tuple[list[str], bool]:
+        """Return outbound WhatsApp bubbles plus whether the split is human-cascade.
+
+        Human cascade is intentionally conservative: only blank-line separated
+        prose gets split.  Code blocks and single-paragraph/copyable payloads
+        stay intact unless they exceed the message limit, in which case the
+        normal truncator handles safe chunking.
+        """
+        limit = self._outgoing_chunk_limit()
+        if not formatted:
+            return [], False
+        text = formatted.strip()
+        style = (delivery_style or "auto").strip().lower()
+        if style in {"single", "off", "none"}:
+            return self.truncate_message(formatted, limit), False
+        is_group = bool(chat_id and str(chat_id).lower().endswith("@g.us"))
+        if not self._human_cascade_messages:
+            return self.truncate_message(formatted, limit), False
+
+        force_cascade = style in {"cascade", "human_cascade", "human-cascade"}
+        if not force_cascade and is_group and not self._human_cascade_groups:
+            return self.truncate_message(formatted, limit), False
+
+        # Keep cascade for moderate DM-shaped replies. Very long answers fall
+        # back to one normal WhatsApp payload so they do not turn into a noisy
+        # multi-notification burst. Code/approval payloads are guarded above;
+        # report/list tails are merged below so only the prose lead-in cascades.
+        max_total = self._human_cascade_max_total_chars
+        if not force_cascade and max_total > 0 and len(text) > max_total:
+            return self.truncate_message(formatted, limit), False
+
+        paragraphs = self._split_cascade_paragraphs(text)
+        if len(paragraphs) < 2:
+            return self.truncate_message(formatted, limit), False
+
+        paragraphs = self._merge_list_paragraphs_with_context(paragraphs)
+        paragraphs = self._protect_atomic_sections(paragraphs)
+        if len(paragraphs) < 2:
+            return self.truncate_message(paragraphs[0], limit), False
+
+        max_bubbles_config = self._human_cascade_max_bubbles
+        max_bubbles = len(paragraphs) if max_bubbles_config == 0 else max_bubbles_config
+        if max_bubbles <= 1:
+            return self.truncate_message(formatted, limit), False
+        if not self._should_human_cascade(text, paragraphs, force=force_cascade):
+            return self.truncate_message(formatted, limit), False
+
+        has_list_paragraph = any(
+            any(self._looks_list_like_line(line) for line in paragraph.splitlines())
+            for paragraph in paragraphs
+        )
+        if not force_cascade and not has_list_paragraph and self._looks_structured_outbound(text):
+            merged = self._merge_structured_tail(paragraphs, max_bubbles)
+            if merged is None:
+                return self.truncate_message(formatted, limit), False
+            paragraphs = merged
+
+        if len(paragraphs) > max_bubbles and not force_cascade:
+            # Keep the human cadence without machine-gunning the chat: send the
+            # first few thoughts as separate bubbles, then fold the remainder
+            # into the final bubble.  This handles natural 5–6 paragraph chatty
+            # replies better than falling all the way back to one glued block.
+            head = paragraphs[: max_bubbles - 1]
+            tail = "\n\n".join(paragraphs[max_bubbles - 1:]).strip()
+            paragraphs = [*head, tail]
+
+        max_merged = self._human_cascade_max_merged_bubble_chars
+        if not force_cascade and max_merged > 0 and len(paragraphs[-1]) > max_merged:
+            return self.truncate_message(formatted, limit), False
+
+        max_bubble = self._human_cascade_max_bubble_chars
+        if not force_cascade and max_bubble > 0:
+            # Keep the lead-in bubbles compact; the final/tail bubble can be
+            # longer and will be chunked by WhatsApp's normal safety splitter.
+            normal_bubbles = paragraphs[:-1]
+            if any(len(paragraph) > max_bubble for paragraph in normal_bubbles):
+                return self.truncate_message(formatted, limit), False
+            # The merged tail may be long.  Keep the first bubbles human-sized
+            # and let the normal WhatsApp chunker handle the tail, instead of
+            # collapsing the whole answer into one wall of text.
+
+        chunks: list[str] = []
+        for idx, paragraph in enumerate(paragraphs):
+            if len(chunks) >= max_bubbles - 1:
+                remainder = "\n\n".join(paragraphs[idx:])
+                chunks.extend(self.truncate_message(remainder, limit))
+                break
+            chunks.extend(self.truncate_message(paragraph, limit))
+
+        return chunks, len(chunks) > 1
+
+    def _cascade_delay_seconds(self) -> float:
+        """Return a slightly jittered delay for human-cascade bubbles."""
+        delay = self._human_cascade_delay_seconds
+        jitter = self._human_cascade_delay_jitter_seconds
+        if delay <= 0 or jitter <= 0:
+            return max(0.0, delay)
+        return random.uniform(max(0.0, delay - jitter), delay + jitter)
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """
@@ -855,12 +1249,24 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         try:
             import aiohttp
 
-            # Format and chunk the message
+            # Format and split the message.  Short prose can become natural
+            # WhatsApp bubbles (human cascade); oversized/code payloads still
+            # use hard chunking that preserves code block boundaries.
             formatted = self.format_message(content)
-            chunks = self.truncate_message(formatted, self._outgoing_chunk_limit())
+            delivery_style = "auto"
+            if isinstance(metadata, dict):
+                raw_style = metadata.get("whatsapp_delivery_style") or metadata.get("delivery_style")
+                if raw_style is not None:
+                    delivery_style = str(raw_style)
+            chunks, human_cascade = self._split_outgoing_text(
+                formatted,
+                chat_id=chat_id,
+                delivery_style=delivery_style,
+            )
 
             last_message_id = None
-            for chunk in chunks:
+            sent_message_ids: list[str] = []
+            for idx, chunk in enumerate(chunks):
                 payload: Dict[str, Any] = {
                     "chatId": chat_id,
                     "message": chunk,
@@ -876,18 +1282,29 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        last_message_id = data.get("messageId")
+                        ids = data.get("messageIds") or []
+                        if not ids and data.get("messageId"):
+                            ids = [data.get("messageId")]
+                        sent_message_ids.extend(str(mid) for mid in ids if mid)
+                        if sent_message_ids:
+                            last_message_id = sent_message_ids[-1]
                     else:
                         error = await resp.text()
                         return SendResult(success=False, error=error)
 
-                # Small delay between chunks to avoid rate limiting
-                if len(chunks) > 1:
-                    await asyncio.sleep(0.3)
+                # Small delay between chunks to avoid rate limiting.  Human
+                # cascade gets a slightly longer delay so the bubbles feel
+                # deliberate instead of a bursty auto-split.
+                if len(chunks) > 1 and idx < len(chunks) - 1:
+                    await asyncio.sleep(
+                        self._cascade_delay_seconds() if human_cascade else self._chunk_delay_seconds
+                    )
 
             return SendResult(
                 success=True,
                 message_id=last_message_id,
+                continuation_message_ids=tuple(sent_message_ids[:-1]),
+                raw_response={"messageIds": sent_message_ids, "human_cascade": human_cascade},
             )
         except Exception as e:
             return SendResult(success=False, error=str(e))
