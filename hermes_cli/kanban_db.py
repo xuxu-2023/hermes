@@ -7792,8 +7792,7 @@ def _default_spawn(
     if worker_toolsets:
         cmd.extend(["--toolsets", ",".join(worker_toolsets)])
     cmd.extend([
-        "chat",
-        "-q", prompt,
+        "-z", prompt,
     ])
     # Redirect output to a per-task log under <board-root>/logs/.
     # Anchored at the board root (not the shared kanban root), so
