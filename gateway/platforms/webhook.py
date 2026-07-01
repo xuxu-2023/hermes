@@ -596,7 +596,8 @@ class WebhookAdapter(BasePlatformAdapter):
         # ── Idempotency ─────────────────────────────────────────
         # Skip duplicate deliveries (webhook retries).
         now = time.time()
-        if not self._record_delivery_id(delivery_id, now):
+        seen_at = self._seen_deliveries.get(delivery_id)
+        if seen_at is not None and now - seen_at < self._idempotency_ttl:
             logger.info(
                 "[webhook] Skipping duplicate delivery %s", delivery_id
             )
@@ -604,6 +605,8 @@ class WebhookAdapter(BasePlatformAdapter):
                 {"status": "duplicate", "delivery_id": delivery_id},
                 status=200,
             )
+        if seen_at is not None:
+            self._seen_deliveries.pop(delivery_id, None)
 
         # ── Direct delivery mode (deliver_only) ─────────────────
         # Skip the agent entirely — the rendered prompt IS the message we
@@ -641,6 +644,9 @@ class WebhookAdapter(BasePlatformAdapter):
                 )
 
             if result.success:
+                self._seen_deliveries[delivery_id] = now
+                if len(self._seen_deliveries) > max(self._rate_limit * 2, 128):
+                    self._prune_seen_deliveries(now)
                 return web.json_response(
                     {
                         "status": "delivered",
@@ -662,6 +668,10 @@ class WebhookAdapter(BasePlatformAdapter):
                 {"status": "error", "error": "Delivery failed", "delivery_id": delivery_id},
                 status=502,
             )
+
+        self._seen_deliveries[delivery_id] = now
+        if len(self._seen_deliveries) > max(self._rate_limit * 2, 128):
+            self._prune_seen_deliveries(now)
 
         # Use delivery_id in session key so concurrent webhooks on the
         # same route get independent agent runs (not queued/interrupted).
@@ -713,6 +723,25 @@ class WebhookAdapter(BasePlatformAdapter):
         task = asyncio.create_task(self.handle_message(event))
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
+        def _forget_failed_delivery(done_task: "asyncio.Task") -> None:
+            try:
+                if done_task.cancelled():
+                    return
+                exc = done_task.exception()
+            except Exception:
+                return
+            if exc is None:
+                return
+            self._seen_deliveries.pop(delivery_id, None)
+            self._delivery_info.pop(session_chat_id, None)
+            self._delivery_info_created.pop(session_chat_id, None)
+            try:
+                self._delivery_info_order = deque(
+                    item for item in self._delivery_info_order if item[1] != session_chat_id
+                )
+            except Exception:
+                pass
+        task.add_done_callback(_forget_failed_delivery)
 
         return web.json_response(
             {
