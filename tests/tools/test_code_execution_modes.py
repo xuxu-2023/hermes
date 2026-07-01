@@ -55,6 +55,8 @@ def _mock_handle_function_call(function_name, function_args, task_id=None, user_
     """Minimal mock dispatcher reused across tests."""
     if function_name == "terminal":
         return json.dumps({"output": "mock", "exit_code": 0})
+    if function_name == "web_search":
+        return json.dumps({"output": "mock", "exit_code": 0})
     if function_name == "read_file":
         return json.dumps({"content": "line1\n", "total_lines": 1})
     return json.dumps({"error": f"Unknown tool: {function_name}"})
@@ -338,13 +340,13 @@ class TestExecuteCodeModeIntegration(unittest.TestCase):
         """Regression: hermes_tools still importable from non-tmpdir CWD.
 
         This is the PYTHONPATH fix — without it, switching to session CWD
-        breaks `from hermes_tools import terminal`.
+        breaks `from hermes_tools import web_search`.
         """
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             code = (
-                "from hermes_tools import terminal\n"
-                "r = terminal('echo x')\n"
+                "from hermes_tools import web_search\n"
+                "r = web_search('test query')\n"
                 "print(r.get('output', 'MISSING'))\n"
             )
             result = self._run(code, mode="project", extra_env={"TERMINAL_CWD": td})
@@ -354,8 +356,8 @@ class TestExecuteCodeModeIntegration(unittest.TestCase):
     def test_strict_mode_can_still_import_hermes_tools(self):
         """Regression: strict mode's tmpdir CWD still works for imports."""
         code = (
-            "from hermes_tools import terminal\n"
-            "r = terminal('echo x')\n"
+            "from hermes_tools import web_search\n"
+            "r = web_search('test query')\n"
             "print(r.get('output', 'MISSING'))\n"
         )
         result = self._run(code, mode="strict")

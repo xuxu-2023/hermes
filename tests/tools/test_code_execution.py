@@ -55,7 +55,12 @@ def _mock_handle_function_call(function_name, function_args, task_id=None, user_
         cmd = function_args.get("command", "")
         return json.dumps({"output": f"mock output for: {cmd}", "exit_code": 0})
     if function_name == "web_search":
-        return json.dumps({"results": [{"url": "https://example.com", "title": "Example", "description": "A test result"}]})
+        query = function_args.get("query", "")
+        return json.dumps({
+            "output": f"mock output for: {query}",
+            "exit_code": 0,
+            "results": [{"title": f"Mock result for {query}", "url": "https://example.com", "snippet": "test"}],
+        })
     if function_name == "read_file":
         return json.dumps({"content": "line 1\nline 2\nline 3\n", "total_lines": 3})
     if function_name == "write_file":
@@ -87,9 +92,9 @@ class TestHermesToolsGeneration(unittest.TestCase):
             self.assertIn(f"def {tool}(", src)
 
     def test_generates_subset(self):
-        src = generate_hermes_tools_module(["terminal", "web_search"])
-        self.assertIn("def terminal(", src)
+        src = generate_hermes_tools_module(["web_search", "write_file"])
         self.assertIn("def web_search(", src)
+        self.assertIn("def write_file(", src)
         self.assertNotIn("def read_file(", src)
 
     def test_empty_list_generates_nothing(self):
@@ -98,12 +103,12 @@ class TestHermesToolsGeneration(unittest.TestCase):
         self.assertIn("def _call(", src)  # infrastructure still present
 
     def test_non_allowed_tools_ignored(self):
-        src = generate_hermes_tools_module(["vision_analyze", "terminal"])
-        self.assertIn("def terminal(", src)
+        src = generate_hermes_tools_module(["vision_analyze", "web_search"])
+        self.assertIn("def web_search(", src)
         self.assertNotIn("def vision_analyze(", src)
 
     def test_rpc_infrastructure_present(self):
-        src = generate_hermes_tools_module(["terminal"])
+        src = generate_hermes_tools_module(["web_search"])
         self.assertIn("HERMES_RPC_SOCKET", src)
         self.assertIn("AF_UNIX", src)
         self.assertIn("def _connect(", src)
@@ -111,7 +116,7 @@ class TestHermesToolsGeneration(unittest.TestCase):
 
     def test_convenience_helpers_present(self):
         """Verify json_parse, shell_quote, and retry helpers are generated."""
-        src = generate_hermes_tools_module(["terminal"])
+        src = generate_hermes_tools_module(["web_search"])
         self.assertIn("def json_parse(", src)
         self.assertIn("def shell_quote(", src)
         self.assertIn("def retry(", src)
@@ -259,24 +264,24 @@ class TestExecuteCode(unittest.TestCase):
         self.assertIn("hermes_constants.py", result["output"])
 
     def test_single_tool_call(self):
-        """Script calls terminal and prints the result."""
+        """Script calls web_search and prints the result."""
         code = """
-from hermes_tools import terminal
-result = terminal("echo hello")
+from hermes_tools import web_search
+result = web_search("test query")
 print(result.get("output", ""))
 """
         result = self._run(code)
         self.assertEqual(result["status"], "success")
-        self.assertIn("mock output for: echo hello", result["output"])
+        self.assertIn("mock output for: test query", result["output"])
         self.assertEqual(result["tool_calls_made"], 1)
 
     def test_multi_tool_chain(self):
         """Script calls multiple tools sequentially."""
         code = """
-from hermes_tools import terminal, read_file
-r1 = terminal("ls")
+from hermes_tools import web_search, read_file
+r1 = web_search("test query")
 r2 = read_file("test.py")
-print(f"terminal: {r1['output'][:20]}")
+print(f"search: {r1['output'][:20]}")
 print(f"file lines: {r2['total_lines']}")
 """
         result = self._run(code)
@@ -311,18 +316,18 @@ print(f"file lines: {r2['total_lines']}")
         code = '''
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from hermes_tools import terminal
+from hermes_tools import web_search
 
 N = 10
 
 def call(i):
-    r = terminal(f"echo TAG-{i}")
+    r = web_search(f"query-{i}")
     return i, r.get("output", "")
 
 with ThreadPoolExecutor(max_workers=N) as ex:
     results = list(ex.map(call, range(N)))
 
-mismatches = [(i, out) for i, out in results if f"TAG-{i}" not in out]
+mismatches = [(i, out) for i, out in results if f"query-{i}" not in out]
 if mismatches:
     print(f"MISMATCH {len(mismatches)}/{N}: {mismatches[:3]}")
 else:
@@ -331,12 +336,10 @@ else:
 
         def slow_mock(function_name, function_args, task_id=None, user_task=None):
             import time as _t
-            if function_name == "terminal":
+            if function_name == "web_search":
                 _t.sleep(0.05)  # ensure requests overlap on the socket
-                cmd = function_args.get("command", "")
-                # Echo semantics: strip leading "echo " and return the rest
-                out = cmd[5:] if cmd.startswith("echo ") else f"mock: {cmd}"
-                return json.dumps({"output": out, "exit_code": 0})
+                query = function_args.get("query", "")
+                return json.dumps({"output": f"result for: {query}", "status": "ok"})
             return _mock_handle_function_call(
                 function_name, function_args, task_id=task_id, user_task=user_task
             )
@@ -355,13 +358,13 @@ else:
     def test_excluded_tool_returns_error(self):
         """Script calling a tool not in the allow-list gets an error from RPC."""
         code = """
-from hermes_tools import terminal
-result = terminal("echo hi")
+from hermes_tools import vision_analyze
+result = vision_analyze("test.jpg")
 print(result)
 """
-        # Only enable web_search -- terminal should be excluded
+        # Only enable web_search -- vision_analyze should be excluded
         result = self._run(code, enabled_tools=["web_search"])
-        # terminal won't be in hermes_tools.py, so import fails
+        # vision_analyze won't be in hermes_tools.py, so import fails
         self.assertEqual(result["status"], "error")
 
     def test_empty_code(self):
@@ -847,7 +850,7 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
     def test_none_enabled_tools_uses_all(self):
         """When enabled_tools is None, all sandbox tools should be available."""
         code = (
-            "from hermes_tools import terminal, web_search, read_file\n"
+            "from hermes_tools import web_search, read_file, write_file\n"
             "print('all imports ok')\n"
         )
         with patch("model_tools.handle_function_call",
@@ -861,7 +864,7 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
     def test_empty_enabled_tools_uses_all(self):
         """When enabled_tools is [] (empty), all sandbox tools should be available."""
         code = (
-            "from hermes_tools import terminal, web_search\n"
+            "from hermes_tools import web_search, read_file\n"
             "print('imports ok')\n"
         )
         with patch("model_tools.handle_function_call",
@@ -876,7 +879,7 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
         """When enabled_tools has no overlap with SANDBOX_ALLOWED_TOOLS,
         should fall back to all allowed tools."""
         code = (
-            "from hermes_tools import terminal\n"
+            "from hermes_tools import web_search\n"
             "print('fallback ok')\n"
         )
         with patch("model_tools.handle_function_call",
