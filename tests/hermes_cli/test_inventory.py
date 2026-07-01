@@ -513,18 +513,18 @@ def _aggregator_row(slug: str, models: list[str]) -> dict:
     }
 
 
-def test_aggregator_dedup_removes_overlapping_models():
-    """Models served by a user-defined provider are removed from
+def test_aggregator_dedup_removes_overlapping_custom_proxy_models():
+    """Models served by a local ``custom:*`` proxy are removed from
     aggregator rows so the picker doesn't show them under the wrong
     provider.  (#45954)"""
     rows = [
-        _user_provider_row("litellm-proxy", [
+        _user_provider_row("custom:litellm-proxy", [
             "nvidia/nim/minimax-m3",
             "nvidia/nim/kimi-k2.6",
         ]),
         _aggregator_row("openrouter", [
             "minimax/minimax-m3",
-            "nvidia/nim/minimax-m3",  # overlaps with litellm-proxy
+            "nvidia/nim/minimax-m3",  # overlaps with custom proxy
             "anthropic/claude-sonnet-4.6",
         ]),
     ]
@@ -533,7 +533,9 @@ def test_aggregator_dedup_removes_overlapping_models():
         payload = build_models_payload(ctx)
 
     or_row = next(r for r in payload["providers"] if r["slug"] == "openrouter")
-    proxy_row = next(r for r in payload["providers"] if r["slug"] == "litellm-proxy")
+    proxy_row = next(
+        r for r in payload["providers"] if r["slug"] == "custom:litellm-proxy"
+    )
 
     # User-defined provider keeps all its models
     assert proxy_row["models"] == ["nvidia/nim/minimax-m3", "nvidia/nim/kimi-k2.6"]
@@ -545,10 +547,41 @@ def test_aggregator_dedup_removes_overlapping_models():
     assert or_row["total_models"] == 2
 
 
-def test_aggregator_dedup_case_insensitive():
-    """Dedup uses case-insensitive matching.  (#45954)"""
+def test_named_user_provider_does_not_dedup_independent_aggregator():
+    """Named third-party providers configured under ``providers:`` can be
+    marked ``is_user_defined=True``, but they are not local proxies.  Their
+    overlapping models must not be stripped from independent aggregators.
+    (#49126)"""
     rows = [
-        _user_provider_row("my-proxy", ["NVIDIA/NIM/MiniMax-M3"]),
+        _user_provider_row("volcengine-agent-plan", [
+            "deepseek-v4-pro",
+            "deepseek-v4-flash",
+        ]),
+        _aggregator_row("opencode-go", [
+            "deepseek-v4-pro",
+            "deepseek-v4-flash",
+            "anthropic/claude-sonnet-4.6",
+        ]),
+    ]
+    ctx = _empty_ctx()
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx)
+
+    opencode_row = next(
+        r for r in payload["providers"] if r["slug"] == "opencode-go"
+    )
+    assert opencode_row["models"] == [
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
+        "anthropic/claude-sonnet-4.6",
+    ]
+    assert opencode_row["total_models"] == 3
+
+
+def test_aggregator_dedup_case_insensitive_for_custom_proxy():
+    """Dedup uses case-insensitive matching for local custom proxies.  (#45954)"""
+    rows = [
+        _user_provider_row("custom:my-proxy", ["NVIDIA/NIM/MiniMax-M3"]),
         _aggregator_row("openrouter", ["nvidia/nim/minimax-m3", "other/model"]),
     ]
     ctx = _empty_ctx()
@@ -592,12 +625,12 @@ def test_aggregator_dedup_no_user_providers_unchanged():
     assert len(or_row["models"]) == 2
 
 
-def test_aggregator_dedup_multiple_user_providers():
-    """Models from all user-defined providers are excluded from aggregators.
+def test_aggregator_dedup_multiple_custom_proxy_providers():
+    """Models from all local custom proxy providers are excluded from aggregators.
     (#45954)"""
     rows = [
-        _user_provider_row("proxy-a", ["model-x"]),
-        _user_provider_row("proxy-b", ["model-y"]),
+        _user_provider_row("custom:proxy-a", ["model-x"]),
+        _user_provider_row("custom:proxy-b", ["model-y"]),
         _aggregator_row("openrouter", ["model-x", "model-y", "model-z"]),
     ]
     ctx = _empty_ctx()

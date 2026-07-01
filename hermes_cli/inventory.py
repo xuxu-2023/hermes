@@ -168,14 +168,15 @@ def build_models_payload(
         rows = [moa_row] + [r for r in rows if str(r.get("slug", "")).lower() != "moa"]
 
     # --- Deduplicate: remove models from aggregators that overlap with
-    # user-defined providers.  When a local proxy (e.g. litellm-proxy)
+    # local custom proxy providers.  When a local proxy (custom:<name>)
     # serves a model whose name also appears in an aggregator's curated
     # catalog, the picker would show the model under both providers.
     # Selecting it from the aggregator row sets model.provider to the
     # aggregator (e.g. openrouter) instead of the user's proxy — silently
     # breaking the call.  Filtering at the payload level keeps the
-    # aggregator rows honest: they only show models the user can't get
-    # from a more-specific provider.  (#45954)
+    # aggregator rows honest for local proxies while preserving independent
+    # named third-party providers configured under providers:.  (#45954,
+    # #49126)
     try:
         from hermes_cli.providers import is_routing_aggregator as _is_routing_aggregator
     except Exception:
@@ -184,7 +185,8 @@ def build_models_payload(
     if _is_routing_aggregator is not None:
         user_models: set[str] = set()
         for row in rows:
-            if row.get("is_user_defined"):
+            slug = row.get("slug", "")
+            if row.get("is_user_defined") and slug.startswith("custom:"):
                 user_models.update(m.lower() for m in (row.get("models") or []))
         if user_models:
             for row in rows:
