@@ -64,7 +64,7 @@ def _configured_model_label(config: dict) -> str:
     """Return the configured default model from config.yaml."""
     model_cfg = config.get("model")
     if isinstance(model_cfg, dict):
-        model = (model_cfg.get("default") or model_cfg.get("name") or "").strip()
+        model = (model_cfg.get("default") or model_cfg.get("model") or model_cfg.get("name") or "").strip()
     elif isinstance(model_cfg, str):
         model = model_cfg.strip()
     else:

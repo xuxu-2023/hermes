@@ -1,6 +1,10 @@
 from types import SimpleNamespace
 
-from hermes_cli.status import show_status
+from hermes_cli.status import _configured_model_label, show_status
+
+
+def test_configured_model_label_honors_model_alias():
+    assert _configured_model_label({"model": {"model": "gpt-5.4"}}) == "gpt-5.4"
 
 
 def test_show_status_all_does_not_print_tavily_key_value(monkeypatch, capsys, tmp_path):
