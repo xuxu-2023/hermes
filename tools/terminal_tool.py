@@ -1881,7 +1881,12 @@ _LONG_LIVED_FOREGROUND_PATTERNS = (
     re.compile(r"\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|start|serve|watch)\b", re.IGNORECASE),
     re.compile(r"\bdocker\s+compose\s+up\b", re.IGNORECASE),
     re.compile(r"\bnext\s+dev\b", re.IGNORECASE),
-    re.compile(r"\bvite(?:\s|$)", re.IGNORECASE),
+    re.compile(
+        r"(?:^|\s)(?:\./)?vite\b|"
+        r"(?:^|\s)(?:npx|pnpm\s+dlx)(?:\s+\S+)*\s+vite\b|"
+        r"(?:^|\s)(?:npm|pnpm|yarn|bun)\s+run\s+(?:\S+\s+)*vite\b",
+        re.IGNORECASE,
+    ),
     re.compile(r"\bnodemon\b", re.IGNORECASE),
     re.compile(r"\buvicorn\b", re.IGNORECASE),
     re.compile(r"\bgunicorn\b", re.IGNORECASE),
