@@ -22,6 +22,7 @@ const VISIBLE = 12
 const MIN_WIDTH = 64
 const MAX_WIDTH = 128
 const TITLE_MAX = 64
+const EMPTY_PENDING_NEW_SESSION_DRAFT = Object.freeze({ modelArg: '', prompt: '' })
 
 const STATUS_GLYPH: Record<string, string> = {
   idle: '✓',
@@ -41,6 +42,23 @@ const CTRL_OFFSET = 96
 
 const shortModel = (model = '') => model.replace(/^.*\//, '') || 'model?'
 const ctrlChar = (letter: string) => String.fromCharCode(letter.charCodeAt(0) - CTRL_OFFSET)
+
+export interface PendingNewSessionDraft {
+  modelArg: string
+  prompt: string
+}
+
+let pendingNewSessionDraft: PendingNewSessionDraft = { ...EMPTY_PENDING_NEW_SESSION_DRAFT }
+
+export const readPendingNewSessionDraft = (): PendingNewSessionDraft => ({ ...pendingNewSessionDraft })
+
+export const writePendingNewSessionDraft = (next: PendingNewSessionDraft) => {
+  pendingNewSessionDraft = { modelArg: next.modelArg, prompt: next.prompt }
+}
+
+export const clearPendingNewSessionDraft = () => {
+  pendingNewSessionDraft = { ...EMPTY_PENDING_NEW_SESSION_DRAFT }
+}
 
 export const fixedSessionColumnStyle = () => ({ flexShrink: 0 })
 
@@ -302,13 +320,14 @@ export function ActiveSessionSwitcher({
   onSelect,
   t
 }: ActiveSessionSwitcherProps) {
+  const initialDraft = readPendingNewSessionDraft()
   const [items, setItems] = useState<SessionActiveItem[]>([])
   const [history, setHistory] = useState<SessionListItem[]>([])
   const [err, setErr] = useState('')
   const [sel, setSel] = useState(0)
   const [loading, setLoading] = useState(true)
-  const [draft, setDraft] = useState('')
-  const [draftModel, setDraftModel] = useState('')
+  const [draft, setDraft] = useState(initialDraft.prompt)
+  const [draftModel, setDraftModel] = useState(initialDraft.modelArg)
   const [pickingModel, setPickingModel] = useState(false)
   const [closingId, setClosingId] = useState('')
   // When non-null, the user pressed `d` on this (history) session and we await
@@ -331,6 +350,10 @@ export function ActiveSessionSwitcher({
   const { stdout } = useStdout()
   const width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
   const promptColumns = Math.max(20, width - 11)
+
+  useEffect(() => {
+    writePendingNewSessionDraft({ modelArg: draftModel, prompt: draft })
+  }, [draft, draftModel])
 
   // Rows are [new][live…][history…]: the "+ new" row is pinned first (index 0,
   // always rendered) and the live+history list is windowed below it. `total`
@@ -461,7 +484,9 @@ export function ActiveSessionSwitcher({
         return
       }
 
+      clearPendingNewSessionDraft()
       setDraft('')
+      setDraftModel('')
       onNewPrompt(prompt, draftModel || undefined)
     },
     [draftModel, onNewPrompt]
