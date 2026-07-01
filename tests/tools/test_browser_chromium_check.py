@@ -60,8 +60,53 @@ class TestChromiumInstalled:
         (tmp_path / "chromium_headless_shell-1208").mkdir()
         assert bt._chromium_installed() is True
 
+    def test_true_when_macos_app_bundle_chrome_present(self, monkeypatch):
+        """macOS app-bundle Chrome counts even when not on PATH (#48172).
 
+        The installer's find_system_browser() already treats this exact path as
+        a usable system browser, but a .app bundle has no PATH entry, so the
+        runtime gate used to hide the browser tools on existing/source installs.
+        """
+        monkeypatch.delenv("AGENT_BROWSER_EXECUTABLE_PATH", raising=False)
+        monkeypatch.setattr(bt.sys, "platform", "darwin")
+        monkeypatch.setattr(bt.shutil, "which", lambda name: None)
+        monkeypatch.setattr(bt, "_chromium_search_roots", lambda: [])
+        chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        monkeypatch.setattr(bt.os.path, "isfile", lambda p: p == chrome)
 
+        assert bt._chromium_installed() is True
+
+    def test_true_when_macos_app_bundle_chromium_present(self, monkeypatch):
+        """macOS app-bundle Chromium counts even when not on PATH (#48172)."""
+        monkeypatch.delenv("AGENT_BROWSER_EXECUTABLE_PATH", raising=False)
+        monkeypatch.setattr(bt.sys, "platform", "darwin")
+        monkeypatch.setattr(bt.shutil, "which", lambda name: None)
+        monkeypatch.setattr(bt, "_chromium_search_roots", lambda: [])
+        chromium = "/Applications/Chromium.app/Contents/MacOS/Chromium"
+        monkeypatch.setattr(bt.os.path, "isfile", lambda p: p == chromium)
+
+        assert bt._chromium_installed() is True
+
+    def test_false_on_macos_without_app_bundle_path_or_cache(self, monkeypatch):
+        """No PATH chrome, no .app bundle, no Playwright cache → not installed."""
+        monkeypatch.delenv("AGENT_BROWSER_EXECUTABLE_PATH", raising=False)
+        monkeypatch.setattr(bt.sys, "platform", "darwin")
+        monkeypatch.setattr(bt.shutil, "which", lambda name: None)
+        monkeypatch.setattr(bt, "_chromium_search_roots", lambda: [])
+        monkeypatch.setattr(bt.os.path, "isfile", lambda p: False)
+
+        assert bt._chromium_installed() is False
+
+    def test_app_bundle_paths_ignored_off_darwin(self, monkeypatch):
+        """The /Applications fallback must only fire on macOS."""
+        monkeypatch.delenv("AGENT_BROWSER_EXECUTABLE_PATH", raising=False)
+        monkeypatch.setattr(bt.sys, "platform", "linux")
+        monkeypatch.setattr(bt.shutil, "which", lambda name: None)
+        monkeypatch.setattr(bt, "_chromium_search_roots", lambda: [])
+        chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        monkeypatch.setattr(bt.os.path, "isfile", lambda p: p == chrome)
+
+        assert bt._chromium_installed() is False
 
     def test_result_cached(self, monkeypatch, tmp_path):
         monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
