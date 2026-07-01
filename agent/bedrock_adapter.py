@@ -490,12 +490,33 @@ def convert_tools_to_converse(tools: List[Dict]) -> List[Dict]:
     return result
 
 
+def _converse_image_block_from_base64(media_type: str, data: str) -> Dict:
+    media_type = media_type or "image/jpeg"
+    return {
+        "image": {
+            "format": media_type.split("/")[-1] if "/" in media_type else "jpeg",
+            "source": {"bytes": data},
+        }
+    }
+
+
+def _convert_data_url_to_converse_image(url: str) -> Optional[Dict]:
+    if not isinstance(url, str) or not url.startswith("data:"):
+        return None
+    header, _, data = url.partition(",")
+    media_type = "image/jpeg"
+    mime_part = header[5:].split(";")[0]
+    if mime_part:
+        media_type = mime_part
+    return _converse_image_block_from_base64(media_type, data)
+
+
 def _convert_content_to_converse(content) -> List[Dict]:
     """Convert OpenAI message content (string or list) to Converse content blocks.
 
     Handles:
       - Plain text strings → [{"text": "..."}]
-      - Content arrays with text/image_url parts → mixed text/image blocks
+      - Content arrays with text/image_url/input_image/image parts → mixed text/image blocks
 
     Filters out empty text blocks — Bedrock's Converse API rejects messages
     where a text content block has an empty ``text`` field (ValidationException:
@@ -520,24 +541,31 @@ def _convert_content_to_converse(content) -> List[Dict]:
             elif part_type == "image_url":
                 image_url = part.get("image_url", {})
                 url = image_url.get("url", "") if isinstance(image_url, dict) else ""
-                if url.startswith("data:"):
-                    # data:image/jpeg;base64,/9j/4AAQ...
-                    header, _, data = url.partition(",")
-                    media_type = "image/jpeg"
-                    if header.startswith("data:"):
-                        mime_part = header[5:].split(";")[0]
-                        if mime_part:
-                            media_type = mime_part
-                    blocks.append({
-                        "image": {
-                            "format": media_type.split("/")[-1] if "/" in media_type else "jpeg",
-                            "source": {"bytes": data},
-                        }
-                    })
+                image_block = _convert_data_url_to_converse_image(url)
+                if image_block is not None:
+                    blocks.append(image_block)
                 else:
                     # Remote URL — Converse doesn't support URLs directly,
                     # include as text reference for the model.
                     blocks.append({"text": f"[Image: {url}]"})
+            elif part_type == "input_image":
+                # OpenAI Responses image part. The data URL may be carried as
+                # a direct string or in the chat-completions-style nested dict.
+                image_value = part.get("image_url", "")
+                url = image_value.get("url", "") if isinstance(image_value, dict) else image_value
+                image_block = _convert_data_url_to_converse_image(url)
+                if image_block is not None:
+                    blocks.append(image_block)
+                elif isinstance(url, str) and url:
+                    blocks.append({"text": f"[Image: {url}]"})
+            elif part_type == "image":
+                # Anthropic-native image block.
+                source = part.get("source", {})
+                if isinstance(source, dict) and source.get("type") == "base64":
+                    data = source.get("data", "")
+                    media_type = source.get("media_type", "image/jpeg")
+                    if isinstance(data, str):
+                        blocks.append(_converse_image_block_from_base64(media_type, data))
         return blocks if blocks else [{"text": " "}]
     return [{"text": str(content)}]
 

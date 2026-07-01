@@ -347,6 +347,47 @@ class TestConvertMessagesToConverse:
         assert len(image_blocks) == 1
         assert image_blocks[0]["image"]["format"] == "png"
 
+    def test_input_image_data_url_converted(self):
+        from agent.bedrock_adapter import convert_messages_to_converse
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "Describe it"},
+                {"type": "input_image", "image_url": "data:image/webp;base64,UklGRg=="},
+            ],
+        }]
+        system, msgs = convert_messages_to_converse(messages)
+        content = msgs[0]["content"]
+        image_blocks = [b for b in content if "image" in b]
+        assert system is None
+        assert len(image_blocks) == 1
+        assert image_blocks[0]["image"]["format"] == "webp"
+        assert image_blocks[0]["image"]["source"]["bytes"] == "UklGRg=="
+
+    def test_anthropic_image_source_converted(self):
+        from agent.bedrock_adapter import convert_messages_to_converse
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Describe it"},
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/gif",
+                        "data": "R0lGODlh",
+                    },
+                },
+            ],
+        }]
+        system, msgs = convert_messages_to_converse(messages)
+        content = msgs[0]["content"]
+        image_blocks = [b for b in content if "image" in b]
+        assert system is None
+        assert len(image_blocks) == 1
+        assert image_blocks[0]["image"]["format"] == "gif"
+        assert image_blocks[0]["image"]["source"]["bytes"] == "R0lGODlh"
+
     def test_multiple_system_messages_merged(self):
         from agent.bedrock_adapter import convert_messages_to_converse
         messages = [
