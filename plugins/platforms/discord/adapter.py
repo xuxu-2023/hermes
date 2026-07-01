@@ -1904,6 +1904,22 @@ class DiscordAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
+        # Guard against sending through a stale client whose internal
+        # aiohttp session was closed during a reconnect.  Without this,
+        # channel.send() raises RuntimeError("Session is closed") which
+        # bubbles up as an unhandled exception from the cron delivery
+        # path instead of a clean SendResult failure.  (issue #44541)
+        try:
+            _http = getattr(self._client, "http", None)
+            _session = getattr(_http, "session", None) if _http else None
+            if _session is not None and _session.closed:
+                return SendResult(
+                    success=False,
+                    error="Discord client HTTP session is closed (reconnect in progress)",
+                )
+        except Exception:
+            pass  # defensive — don't block sends over a probe failure
+
         try:
             # Determine target channel: thread_id in metadata takes precedence.
             thread_id = None
