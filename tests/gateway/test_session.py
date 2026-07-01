@@ -6,6 +6,7 @@ from unittest.mock import patch, MagicMock
 from gateway.config import Platform, HomeChannel, GatewayConfig, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import (
+    SessionEntry,
     SessionSource,
     SessionStore,
     build_session_context,
@@ -1580,3 +1581,68 @@ class TestGatewaySessionDbRecovery:
         assert reset.session_id != entry.session_id
         assert reset.was_auto_reset is True
         assert reset.auto_reset_reason == "idle"
+
+class TestDingTalkSessionKeySlash:
+    """Regression: DingTalk DM chat_id contains '/' which triggered
+    _is_path_unsafe() false positive (#55617)."""
+
+    def test_dingtalk_dm_chat_id_with_slash_produces_safe_key(self):
+        from gateway.session import build_session_key, _is_path_unsafe
+
+        source = SessionSource(
+            platform=Platform.DINGTALK,
+            chat_id="cidNcWXuYmxUGBIug3mN5iy/9w/Ez8547TrWG+V8QP0w/E=",
+            chat_type="dm",
+        )
+        key = build_session_key(source)
+        assert "/" not in key
+        assert "\\" not in key
+        assert not _is_path_unsafe(key)
+        assert "%2F" in key  # slash is percent-encoded
+
+    def test_dingtalk_dm_chat_id_with_slash_preserves_determinism(self):
+        """Same chat_id must always produce the same key."""
+        source1 = SessionSource(
+            platform=Platform.DINGTALK,
+            chat_id="cidNcWXuYmxUGBIug3mN5iy/9w/Ez8547TrWG+V8QP0w/E=",
+            chat_type="dm",
+        )
+        source2 = SessionSource(
+            platform=Platform.DINGTALK,
+            chat_id="cidNcWXuYmxUGBIug3mN5iy/9w/Ez8547TrWG+V8QP0w/E=",
+            chat_type="dm",
+        )
+        assert build_session_key(source1) == build_session_key(source2)
+
+    def test_session_entry_from_dict_with_slash_key_raises(self):
+        """Old unencoded keys with '/' still fail _is_path_unsafe."""
+        data = {
+            "session_key": "agent:main:dingtalk:dm:cidNcWXuYmxUGBIug3mN5iy/9w",
+            "session_id": "test-id",
+            "created_at": "2026-01-01T00:00:00",
+            "updated_at": "2026-01-01T00:00:00",
+        }
+        with pytest.raises(ValueError, match="directory traversal"):
+            SessionEntry.from_dict(data)
+
+    def test_session_entry_from_dict_with_encoded_key_succeeds(self):
+        """New encoded keys (no '/') pass _is_path_unsafe."""
+        data = {
+            "session_key": "agent:main:dingtalk:dm:cidNcWXuYmxUGBIug3mN5iy%2F9w",
+            "session_id": "test-id",
+            "created_at": "2026-01-01T00:00:00",
+            "updated_at": "2026-01-01T00:00:00",
+        }
+        entry = SessionEntry.from_dict(data)
+        assert entry.session_key == "agent:main:dingtalk:dm:cidNcWXuYmxUGBIug3mN5iy%2F9w"
+
+    def test_percent_encoded_before_slash(self):
+        """Literal '%' must be encoded first to prevent collision with %2F."""
+        from gateway.session import _sanitize_key_component
+
+        # room/a -> room%2F  (slash encoded)
+        assert _sanitize_key_component("room/a") == "room%2Fa"
+        # room%2Fa -> room%252Fa  (literal % encoded to %25, then / untouched)
+        assert _sanitize_key_component("room%2Fa") == "room%252Fa"
+        # These must NOT collide
+        assert _sanitize_key_component("room/a") != _sanitize_key_component("room%2Fa")
