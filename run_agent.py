@@ -3420,6 +3420,14 @@ class AIAgent:
         except Exception:
             pass
 
+        try:
+            codex_session = getattr(self, "_codex_session", None)
+            if codex_session is not None:
+                codex_session.close()
+                self._codex_session = None
+        except Exception:
+            pass
+
         # Close the OpenAI/httpx client to release sockets immediately.
         try:
             client = getattr(self, "client", None)
@@ -3473,6 +3481,14 @@ class AIAgent:
                     child.close()
                 except Exception:
                     pass
+        except Exception:
+            pass
+
+        try:
+            codex_session = getattr(self, "_codex_session", None)
+            if codex_session is not None:
+                codex_session.close()
+                self._codex_session = None
         except Exception:
             pass
 
