@@ -2762,6 +2762,28 @@ class SlackAdapter(BasePlatformAdapter):
             channel_type = "im"
         is_dm = channel_type in {"im", "mpim"}  # Both 1:1 and group DMs
 
+        # Reject unauthorized users before thread lookups, name resolution,
+        # or file downloads.  The final gateway runner auth check happens
+        # after MessageEvent construction, so adapter-side media fetches need
+        # the same auth chain up front.
+        _runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        _auth_fn = getattr(_runner, "_is_user_authorized", None)
+        if user_id and callable(_auth_fn):
+            _source = self.build_source(
+                chat_id=channel_id,
+                chat_name="",
+                chat_type="dm" if is_dm else "group",
+                user_id=user_id,
+                user_name="",
+            )
+            if not _auth_fn(_source):
+                logger.warning(
+                    "[Slack] Early reject of unauthorized user %s in channel %s",
+                    user_id,
+                    channel_id,
+                )
+                return
+
         # Build thread_ts for session keying.
         # In channels: fall back to ts so each top-level @mention starts a
         #   new thread/session (the bot always replies in a thread).
