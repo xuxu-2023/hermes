@@ -53,6 +53,7 @@ interface GatewayBootOptions {
     connection: Awaited<ReturnType<NonNullable<typeof window.hermesDesktop>['getConnection']>> | null
   ) => void
   onGatewayReady: (gateway: HermesGateway | null) => void
+  refreshActiveSession?: () => Promise<void>
   refreshHermesConfig: () => Promise<void>
   refreshSessions: () => Promise<void>
 }
@@ -61,6 +62,7 @@ export function useGatewayBoot({
   handleGatewayEvent,
   onConnectionReady,
   onGatewayReady,
+  refreshActiveSession,
   refreshHermesConfig,
   refreshSessions
 }: GatewayBootOptions) {
@@ -68,6 +70,7 @@ export function useGatewayBoot({
     handleGatewayEvent,
     onConnectionReady,
     onGatewayReady,
+    refreshActiveSession,
     refreshHermesConfig,
     refreshSessions
   })
@@ -76,6 +79,7 @@ export function useGatewayBoot({
     handleGatewayEvent,
     onConnectionReady,
     onGatewayReady,
+    refreshActiveSession,
     refreshHermesConfig,
     refreshSessions
   }
@@ -108,6 +112,7 @@ export function useGatewayBoot({
     let reconnecting = false
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let reconnectAttempt = 0
+    const recoverableDisconnectAttempt = 6
     // Surface "sign in again" once per disconnect episode, not on every backoff
     // tick — a stale OAuth ticket fails every attempt and would otherwise stack
     // identical error toasts (and their haptics). Reset on the next clean open.
@@ -167,8 +172,12 @@ export function useGatewayBoot({
 
         reconnectAttempt = 0
         // Resync state that may have moved on the backend while we were asleep.
+        // In addition to the sidebar/config, rehydrate the active transcript:
+        // any deltas/completion events emitted while the WebSocket was down are
+        // otherwise missing from the renderer until a full app restart.
         await callbacksRef.current.refreshHermesConfig().catch(() => undefined)
         await callbacksRef.current.refreshSessions().catch(() => undefined)
+        await callbacksRef.current.refreshActiveSession?.().catch(() => undefined)
       } catch (err) {
         // OAuth session expired mid-reconnect: surface the actionable "sign in
         // again" message once instead of silently looping the backoff against a
@@ -177,6 +186,8 @@ export function useGatewayBoot({
         if (!cancelled && isGatewayReauthRequired(err) && !reauthNotified) {
           reauthNotified = true
           notifyError(err, translateNow('boot.errors.gatewaySignInRequired'))
+        } else if (!cancelled && bootCompleted && reconnectAttempt >= recoverableDisconnectAttempt) {
+          failDesktopBoot('Hermes gateway connection was lost. Retrying in the background…')
         }
       } finally {
         reconnecting = false
