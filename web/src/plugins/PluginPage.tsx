@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react";
+import { useState, useEffect } from "react";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import {
   getPluginComponent,
@@ -12,18 +12,21 @@ import type { Translations } from "@/i18n/types";
 /** Renders a plugin tab once its bundle has called `register()`. */
 export function PluginPage({ name }: { name: string }) {
   const { t } = useI18n();
-  // Subscribe in render (via useSyncExternalStore) so we never miss
-  // `register()` if the script loads before a useEffect would run.
-  const Component = useSyncExternalStore(
-    (onChange) => onPluginRegistered(onChange),
+  // Lazy initialisers capture plugins already registered at mount time;
+  // the effect subscribes to future registrations without useSyncExternalStore
+  // tearing-detection re-renders (which caused React error #301).
+  const [Component, setComponent] = useState<React.ComponentType | null>(
     () => getPluginComponent(name) ?? null,
-    () => null,
   );
-  const loadError = useSyncExternalStore(
-    (onChange) => onPluginRegistered(onChange),
+  const [loadError, setLoadError] = useState<string | null>(
     () => getPluginLoadError(name) ?? null,
-    () => null,
   );
+  useEffect(() => {
+    return onPluginRegistered(() => {
+      setComponent(() => getPluginComponent(name) ?? null);
+      setLoadError(getPluginLoadError(name) ?? null);
+    });
+  }, [name]);
 
   if (Component) {
     return <Component />;
