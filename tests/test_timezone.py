@@ -383,3 +383,56 @@ class TestCronTimezone:
 
         next_run = datetime.fromisoformat(job["next_run_at"])
         assert next_run.tzinfo is not None
+
+class TestHermesTimezoneYamlResolution:
+    """Verify that hermes_time._resolve_timezone_name correctly reads from YAML config."""
+
+    def test_resolve_timezone_from_yaml(self, tmp_path, monkeypatch):
+        """When HERMES_TIMEZONE is empty, it reads timezone from config.yaml."""
+        import yaml
+        from hermes_time import _resolve_timezone_name
+        monkeypatch.setenv("HERMES_TIMEZONE", "")
+        config_path = tmp_path / "config.yaml"
+        with open(config_path, "w") as f:
+            yaml.dump({"timezone": "America/New_York"}, f)
+
+        monkeypatch.setattr("hermes_time.get_config_path", lambda: config_path)
+        tz_name = _resolve_timezone_name()
+        assert tz_name == "America/New_York"
+
+    def test_resolve_timezone_yaml_invalid(self, tmp_path, monkeypatch):
+        """When timezone in yaml is not a string, returns empty string."""
+        import yaml
+        from hermes_time import _resolve_timezone_name
+        monkeypatch.setenv("HERMES_TIMEZONE", "")
+        config_path = tmp_path / "config.yaml"
+        with open(config_path, "w") as f:
+            yaml.dump({"timezone": {"invalid": "dict"}}, f)
+
+        monkeypatch.setattr("hermes_time.get_config_path", lambda: config_path)
+        tz_name = _resolve_timezone_name()
+        assert tz_name == ""
+
+    def test_resolve_timezone_yaml_missing(self, tmp_path, monkeypatch):
+        """When config.yaml does not exist, returns empty string."""
+        from hermes_time import _resolve_timezone_name
+        monkeypatch.setenv("HERMES_TIMEZONE", "")
+        config_path = tmp_path / "config.yaml"
+
+        monkeypatch.setattr("hermes_time.get_config_path", lambda: config_path)
+        tz_name = _resolve_timezone_name()
+        assert tz_name == ""
+
+    def test_resolve_timezone_yaml_error(self, tmp_path, monkeypatch):
+        """When reading config.yaml raises an error, ignores and returns empty string."""
+        from hermes_time import _resolve_timezone_name
+        monkeypatch.setenv("HERMES_TIMEZONE", "")
+        config_path = tmp_path / "config.yaml"
+
+        # Intentionally bad YAML to trigger exception
+        with open(config_path, "w") as f:
+            f.write("{ invalid yaml")
+
+        monkeypatch.setattr("hermes_time.get_config_path", lambda: config_path)
+        tz_name = _resolve_timezone_name()
+        assert tz_name == ""
