@@ -3401,7 +3401,11 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 return json.dumps({
                     "error": _sanitize_error(
                         error_text or "MCP tool returned an error"
-                    )
+                    ),
+                    # Mark as business error so the circuit breaker
+                    # handler doesn't count it as a server failure.
+                    # See #47830, #47851.
+                    "_isBusinessError": True,
                 }, ensure_ascii=False)
 
             # Collect text from content blocks. MCP tool results can also
@@ -3448,7 +3452,14 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             try:
                 parsed = json.loads(result)
                 if "error" in parsed:
-                    _bump_server_error(server_name)
+                    # Don't bump circuit breaker for business-logic errors
+                    # (result.isError = true) — those are the tool's own
+                    # validation/user-facing errors, not server failures.
+                    # Only bump for transport/infra errors (JSON parse
+                    # failures, timeouts, connection drops, etc.).
+                    # See #47830, #47851.
+                    if not parsed.get("_isBusinessError"):
+                        _bump_server_error(server_name)
                 else:
                     _reset_server_error(server_name)  # success — reset
             except (json.JSONDecodeError, TypeError):
