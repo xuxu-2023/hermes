@@ -6307,6 +6307,21 @@ def _dispatch_all_via_service_manager_if_s6(action: str) -> bool:
 
 
 
+def gateway_self_lifecycle_guard_message(action: str) -> str:
+    """Return the user-facing block message for self-targeting gateway lifecycle commands."""
+    command = f"hermes gateway {action}"
+    return (
+        f"Refusing to {action} the gateway from inside the gateway process.\n"
+        "This command was blocked to prevent restart loops.\n"
+        f"Run `{command}` from a separate shell outside the running gateway.\n"
+        "If multiple profile services are fighting with unmanaged `gateway run --replace` "
+        "children, inspect with `systemctl --user list-units 'hermes-gateway*' --all` "
+        "and `ps -eo pid,ppid,cmd | grep 'hermes.*gateway'`, then stop/disable only "
+        "the conflicting profile unit from a separate SSH shell before restarting the "
+        "intended dedicated profile service."
+    )
+
+
 def gateway_command(args):
     """Handle gateway subcommands."""
     try:
@@ -6686,11 +6701,7 @@ def _gateway_command_inner(args):
         # Defense: refuse self-targeting gateway stop from inside the gateway.
         # Prevents agent-initiated kill loops when combined with supervisor KeepAlive.
         if os.getenv("_HERMES_GATEWAY") == "1":
-            print_error(
-                "Refusing to stop the gateway from inside the gateway process.\n"
-                "This command was blocked to prevent restart loops.\n"
-                "Use `hermes gateway stop` from a shell outside the running gateway."
-            )
+            print_error(gateway_self_lifecycle_guard_message("stop"))
             sys.exit(1)
 
         stop_all = getattr(args, "all", False)
@@ -6779,11 +6790,7 @@ def _gateway_command_inner(args):
         # Defense: refuse self-targeting gateway restart from inside the gateway.
         # Prevents agent-initiated kill loops when combined with supervisor KeepAlive.
         if os.getenv("_HERMES_GATEWAY") == "1":
-            print_error(
-                "Refusing to restart the gateway from inside the gateway process.\n"
-                "This command was blocked to prevent restart loops.\n"
-                "Use `hermes gateway restart` from a shell outside the running gateway."
-            )
+            print_error(gateway_self_lifecycle_guard_message("restart"))
             sys.exit(1)
 
         # Try service first, fall back to killing and restarting

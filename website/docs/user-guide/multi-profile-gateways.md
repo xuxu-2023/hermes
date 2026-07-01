@@ -280,6 +280,46 @@ never clash:
 The default profile keeps the historical names: `ai.hermes.gateway.plist` /
 `hermes-gateway.service`.
 
+## Recover from duplicate profile gateways
+
+If a profile gateway was started manually with `gateway run --replace` while
+its LaunchAgent/systemd service is also enabled, the service manager can get
+stuck in a loop like `Gateway already running`. This is not fixed by running
+`hermes gateway restart` from inside a gateway chat: that command is blocked
+because the gateway would kill the child command before it can complete.
+
+On Linux, diagnose the owner processes from a separate SSH shell:
+
+```bash
+systemctl --user list-units 'hermes-gateway*' --all
+ps -eo pid,ppid,cmd | grep 'hermes.*gateway' | grep -v grep
+```
+
+Then stop or disable only the conflicting profile unit, terminate the unmanaged
+`gateway run --replace` child for that same profile, reset failed state, and
+start the intended dedicated profile service. Leave unrelated healthy profile
+services running.
+
+```bash
+# Example: default is not used and hari should run as its own service.
+systemctl --user disable --now hermes-gateway.service
+systemctl --user stop hermes-gateway-hari.service
+
+# Review these PIDs before killing them.
+ps -eo pid,ppid,cmd | grep -E 'hermes .*--profile (hari|default) gateway run --replace' | grep -v grep
+kill <hari-or-default-replace-child-pid> [...]
+
+systemctl --user reset-failed hermes-gateway.service hermes-gateway-hari.service
+systemctl --user start hermes-gateway-hari.service
+```
+
+If you are already inside a gateway session and cannot open SSH, run the repair
+as a detached service-manager job rather than as a child of the gateway process:
+
+```bash
+systemd-run --user --collect --unit=hermes-gateway-repair /path/to/repair.sh
+```
+
 ## Viewing logs
 
 Each profile writes to its own log files:
