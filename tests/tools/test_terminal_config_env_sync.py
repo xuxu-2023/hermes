@@ -322,3 +322,20 @@ def test_docker_forward_env_is_bridged_everywhere():
     assert "docker_forward_env" in _gateway_env_map_keys()
     assert "docker_forward_env" in _save_config_env_sync_keys()
     assert "TERMINAL_DOCKER_FORWARD_ENV" in _terminal_tool_env_var_names()
+
+
+def test_docker_extra_args_is_bridged_everywhere():
+    """Regression pin for ``terminal.docker_extra_args`` being silently ignored.
+
+    ``terminal.docker_extra_args`` in config.yaml specifies extra flags passed
+    verbatim to ``docker run`` (e.g. ``--gpus=all``).  The key was present in
+    terminal_tool._get_env_config (via _parse_env_var) and in
+    TERMINAL_CONFIG_ENV_MAP (hermes_cli/config.py), but missing from both
+    cli.py's env_mappings and gateway/run.py's _terminal_env_map.  So the
+    value was never bridged to TERMINAL_DOCKER_EXTRA_ARGS at startup, and the
+    flags were silently dropped regardless of what the user set.
+    """
+    assert "docker_extra_args" in _cli_env_map_keys()
+    assert "docker_extra_args" in _gateway_env_map_keys()
+    assert "docker_extra_args" in _save_config_env_sync_keys()
+    assert "TERMINAL_DOCKER_EXTRA_ARGS" in _terminal_tool_env_var_names()
