@@ -853,8 +853,16 @@ class ShellFileOperations(FileOperations):
         if ext in BINARY_EXTENSIONS:
             return True
         
-        # Content analysis: >30% non-printable chars = binary
+        # Content analysis
         if content_sample:
+            # Magic-number check: PDFs start with %PDF- but have < 30%
+            # non-printable chars in the first 1000 bytes (the ASCII header
+            # is long enough to skew the ratio).  Detect by prefix so that
+            # renamed/misnamed PDFs are still caught.  See #43059.
+            if content_sample.startswith("%PDF-"):
+                return True
+
+            # >30% non-printable chars = binary
             non_printable = sum(1 for c in content_sample[:1000]
                                if ord(c) < 32 and c not in '\n\r\t')
             return non_printable / min(len(content_sample), 1000) > 0.30
