@@ -10281,9 +10281,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if reset_reason == "suspended":
                 context_note = "[System note: The user's previous session was stopped and suspended. This is a fresh conversation with no prior context.]"
             elif reset_reason == "daily":
-                context_note = "[System note: The user's session was automatically reset by the daily schedule. This is a fresh conversation with no prior context.]"
+                context_note = "[System note: The user's session was automatically reset by the daily schedule. Use session_search to look up what was discussed in the previous session, then naturally continue the conversation based on that context.]"
             else:
-                context_note = "[System note: The user's previous session expired due to inactivity. This is a fresh conversation with no prior context.]"
+                context_note = "[System note: The user's session expired due to inactivity. Use session_search to look up what was discussed in the previous session, then naturally continue the conversation based on that context.]"
             context_prompt = context_note + "\n\n" + context_prompt
 
             # Send a user-facing notification explaining the reset, unless:
