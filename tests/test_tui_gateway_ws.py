@@ -162,3 +162,23 @@ def test_ws_write_loop_stall_does_not_latch_transport(monkeypatch):
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=2)
         loop.close()
+
+
+def test_ws_write_timeout_env_var_override(monkeypatch):
+    import importlib
+    import tui_gateway.ws as ws_local
+    monkeypatch.setenv("HERMES_TUI_WS_WRITE_TIMEOUT_S", "30")
+    importlib.reload(ws_local)
+    assert ws_local._WS_WRITE_TIMEOUT_S == 30.0
+    monkeypatch.delenv("HERMES_TUI_WS_WRITE_TIMEOUT_S", raising=False)
+    importlib.reload(ws_local)
+
+
+def test_ws_write_timeout_env_var_invalid_falls_back(monkeypatch):
+    import importlib
+    import tui_gateway.ws as ws_local
+    monkeypatch.setenv("HERMES_TUI_WS_WRITE_TIMEOUT_S", "not_a_number")
+    importlib.reload(ws_local)
+    assert ws_local._WS_WRITE_TIMEOUT_S == 10.0
+    monkeypatch.delenv("HERMES_TUI_WS_WRITE_TIMEOUT_S", raising=False)
+    importlib.reload(ws_local)

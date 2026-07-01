@@ -37,8 +37,13 @@ _log = logging.getLogger(__name__)
 
 # Max seconds a pool-dispatched handler will block waiting for the event loop
 # to flush a WS frame before we mark the transport dead. Protects handler
-# threads from a wedged socket.
-_WS_WRITE_TIMEOUT_S = 10.0
+# threads from a wedged socket. Configurable via HERMES_TUI_WS_WRITE_TIMEOUT_S.
+import os
+try:
+    _ws_write_timeout = float(os.environ.get("HERMES_TUI_WS_WRITE_TIMEOUT_S") or "10")
+except (ValueError, TypeError):
+    _ws_write_timeout = 10.0
+_WS_WRITE_TIMEOUT_S = max(1.0, _ws_write_timeout)
 _WS_LOG_PAYLOAD_PREVIEW = 240
 
 # Per-token streaming frames are coalesced: buffered and flushed as a batch on
