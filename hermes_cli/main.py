@@ -9277,15 +9277,19 @@ def _cmd_update_impl(args, gateway_mode: bool):
     if sys.platform == "win32":
         git_cmd = ["git", "-c", "windows.appendAtomically=false"]
 
-    # Discard npm lockfile churn before any stash/branch logic. npm rewrites
-    # tracked package-lock.json files non-deterministically at install/build
-    # time (platform-specific optional deps, ideallyInert annotations, etc.),
-    # which is never an intentional edit on a managed install but leaves the
-    # tree dirty — forcing an autostash on every update and making branch
-    # switches fragile. Restoring them first lets the common case (only
-    # lockfile churn) update with a clean tree.
-    _discard_lockfile_churn(git_cmd, PROJECT_ROOT)
-
+    # NOTE: `_discard_lockfile_churn` is intentionally called *after* the
+    # successful git pull (see below). Running it here, before pull, would
+    # discard a lockfile that a previous `npm install` legitimately
+    # regenerated to match the then-current `package.json`. After a pull
+    # that bumps a transitive dep's range, the now-stale committed
+    # lockfile would no longer satisfy the new `package.json`, and the
+    # subsequent `npm ci` would fail with EUSAGE
+    # ("lock file's X does not satisfy Y"), forcing a slow fallback
+    # `npm install` on every update. Disposing of churn on the *post-pull*
+    # tree — where the committed lockfile already matches the new
+    # `package.json` — makes the common case a clean no-op and avoids
+    # the spurious autostash on every run.
+    #
     # Detect if we're updating from a fork (before any branch logic)
     origin_url = _get_origin_url(git_cmd, PROJECT_ROOT)
     is_fork = _is_fork(origin_url)
@@ -9564,6 +9568,19 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         prompt_user=prompt_for_restore,
                         input_fn=gw_input_fn,
                     )
+
+        # Discard npm lockfile churn *after* a successful pull. npm rewrites
+        # tracked package-lock.json files non-deterministically at
+        # install/build time (platform-specific optional deps, idealTree
+        # annotations, etc.); on a managed install those diffs are never
+        # intentional, so we restore the just-pulled committed lockfile
+        # before downstream steps (Python install, web UI build) see the
+        # tree. Doing it here — on a known-good post-pull tree — makes
+        # the common case (no churn) a no-op and avoids the spurious
+        # autostash that used to fire on every run. Skip on a failed pull
+        # so the user keeps whatever the local tree had for debugging.
+        if update_succeeded:
+            _discard_lockfile_churn(git_cmd, PROJECT_ROOT)
 
         _invalidate_update_cache()
 
