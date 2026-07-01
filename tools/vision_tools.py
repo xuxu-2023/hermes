@@ -1228,6 +1228,13 @@ def check_vision_requirements() -> bool:
     Without the auto-fallback step the tool would disappear from the model's
     tool list whenever the explicit provider name was unresolvable, even
     when the auto chain would have served the request (issue #31179).
+
+    When the auxiliary/auto resolver can't find a backend, the function
+    also checks whether the main model itself is vision-capable (the native
+    fast path).  This avoids false-positive "system dependency not met"
+    warnings in ``hermes doctor`` when the user's main model handles images
+    natively on a provider the auxiliary resolver doesn't recognise (issue
+    #47153).
     """
     try:
         from agent.auxiliary_client import resolve_vision_provider_client
@@ -1240,9 +1247,24 @@ def check_vision_requirements() -> bool:
         # Same fallback to "auto" that call_llm performs when the configured
         # provider can't be resolved.
         _provider, client, _model = resolve_vision_provider_client(provider="auto")
-        return client is not None
+        if client is not None:
+            return True
     except Exception:
-        return False
+        pass
+    # The auxiliary resolver may not recognise the user's main provider
+    # (e.g. custom OAuth providers, local vLLM endpoints), even though
+    # the main model is itself vision-capable and images would work via
+    # the native fast path (#47153).
+    try:
+        from agent.auxiliary_client import _main_model_supports_vision
+        from agent.auxiliary_client import _read_main_provider, _read_main_model
+        main_provider = _read_main_provider()
+        main_model = _read_main_model()
+        if main_provider and main_provider not in {"auto", ""}:
+            return _main_model_supports_vision(main_provider, main_model)
+    except Exception:
+        pass
+    return False
 
 
 
