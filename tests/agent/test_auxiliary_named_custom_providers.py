@@ -59,7 +59,10 @@ class TestNormalizeVisionProvider:
 
     def test_custom_colon_named_provider_preserved(self):
         from agent.auxiliary_client import _normalize_vision_provider
-        assert _normalize_vision_provider("custom:beans") == "beans"
+        # ``custom:`` prefix is now preserved so named-custom resolution
+        # can distinguish user-declared custom_providers entries from
+        # built-in providers (#44349).
+        assert _normalize_vision_provider("custom:beans") == "custom:beans"
 
     def test_codex_alias_still_works(self):
         from agent.auxiliary_client import _normalize_vision_provider
@@ -491,3 +494,38 @@ class TestCustomProviderAliasCollision:
         assert isinstance(client, OpenAI)
         assert "override.example.com" in str(client.base_url)
         assert client.api_key == "override-key"
+
+    def test_custom_prefix_preserves_name_through_resolution(self, tmp_path):
+        """``custom:minimax`` with a custom_providers entry named ``minimax``
+        must resolve to the user's custom endpoint, not the built-in minimax
+        provider (#44349).
+
+        This tests the full resolution chain: _normalize_aux_provider must
+        preserve the ``custom:`` prefix so _get_named_custom_provider can
+        skip the built-in guard and match the user's custom entry.
+        """
+        _write_config(tmp_path, {
+            "model": {"provider": "openrouter", "default": "anthropic/claude-sonnet-4.6"},
+            "custom_providers": [
+                {
+                    "name": "minimax",
+                    "base_url": "https://my-custom-minimax.example.com/v1",
+                    "api_key": "my-custom-minimax-key",
+                    "api_mode": "chat_completions",
+                },
+            ],
+        })
+        from agent.auxiliary_client import resolve_provider_client
+        from openai import OpenAI
+        # Passing ``custom:minimax`` — this should route to the user's
+        # custom entry, not the built-in minimax provider.
+        client, _ = resolve_provider_client("custom:minimax", raw_codex=True)
+        assert client is not None, (
+            "resolve_provider_client('custom:minimax') returned None — "
+            "custom prefix was likely stripped before named-custom lookup"
+        )
+        assert isinstance(client, OpenAI)
+        assert "my-custom-minimax.example.com" in str(client.base_url), (
+            f"Expected custom base_url, got {client.base_url}"
+        )
+        assert client.api_key == "my-custom-minimax-key"

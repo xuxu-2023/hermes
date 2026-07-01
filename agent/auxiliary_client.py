@@ -280,7 +280,14 @@ def _normalize_aux_provider(provider: Optional[str]) -> str:
         suffix = normalized.split(":", 1)[1].strip()
         if not suffix:
             return "custom"
-        normalized = suffix
+        # Preserve the full ``custom:<name>`` form so that downstream
+        # resolution (resolve_provider_client, _get_named_custom_provider)
+        # can correctly distinguish a user-declared custom_providers entry
+        # from a built-in provider that happens to share the same name
+        # (e.g. ``custom:minimax`` vs the built-in ``minimax`` provider).
+        # Stripping the prefix here causes the named-custom lookup to be
+        # short-circuited by the built-in provider branch (#44349).
+        return normalized
     if normalized == "codex":
         return "openai-codex"
     if normalized == "main":

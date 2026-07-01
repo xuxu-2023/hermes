@@ -288,6 +288,19 @@ class TestNormalizeAuxProvider:
         assert _normalize_aux_provider("github-copilot-acp") == "copilot-acp"
         assert _normalize_aux_provider("copilot-acp-agent") == "copilot-acp"
 
+    def test_preserves_custom_prefix(self):
+        """``custom:<name>`` must stay as-is so named-custom resolution
+        can distinguish a user-declared custom_providers entry from a
+        built-in provider with the same name (#44349)."""
+        assert _normalize_aux_provider("custom:minimax") == "custom:minimax"
+        assert _normalize_aux_provider("custom:localchat") == "custom:localchat"
+        assert _normalize_aux_provider("custom:kimi") == "custom:kimi"
+
+    def test_bare_custom_prefix_empty_suffix_returns_custom(self):
+        """``custom:`` with empty suffix resolves to bare ``custom``."""
+        assert _normalize_aux_provider("custom:") == "custom"
+        assert _normalize_aux_provider("custom:  ") == "custom"
+
 
 class TestReadCodexAccessToken:
     def test_valid_auth_store(self, tmp_path, monkeypatch):
