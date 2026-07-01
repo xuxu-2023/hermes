@@ -1003,6 +1003,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "retain_context", "description": "Context label for retained memories", "default": "conversation between Hermes Agent and the User"},
             {"key": "recall_max_tokens", "description": "Maximum tokens for recall results", "default": 4096},
             {"key": "recall_max_input_chars", "description": "Maximum input query length for auto-recall", "default": 800},
+            {"key": "prefetch_join_timeout", "description": "Seconds to wait for background prefetch recall before returning empty (0 disables prefetch)", "default": 5.0},
             {"key": "recall_prompt_preamble", "description": "Custom preamble for recalled memories in context"},
             {"key": "timeout", "description": "API request timeout in seconds", "default": _DEFAULT_TIMEOUT},
             {"key": "idle_timeout", "description": "Embedded daemon idle timeout in seconds (0 disables auto-shutdown)", "default": _DEFAULT_IDLE_TIMEOUT, "when": {"mode": "local_embedded"}},
@@ -1351,6 +1352,10 @@ class HindsightMemoryProvider(MemoryProvider):
             self._recall_types = list(configured_types) or ["observation"]
         self._recall_prompt_preamble = self._config.get("recall_prompt_preamble", "")
         self._recall_max_input_chars = int(self._config.get("recall_max_input_chars", 800))
+        self._prefetch_join_timeout = float(self._config.get(
+            "prefetch_join_timeout",
+            os.environ.get("HINDSIGHT_PREFETCH_JOIN_TIMEOUT", 5.0)
+        ))
         self._retain_async = self._config.get("retain_async", True)
 
         _client_version = "unknown"
@@ -1466,7 +1471,7 @@ class HindsightMemoryProvider(MemoryProvider):
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             logger.debug("Prefetch: waiting for background thread to complete")
-            self._prefetch_thread.join(timeout=3.0)
+            self._prefetch_thread.join(timeout=self._prefetch_join_timeout)
         with self._prefetch_lock:
             result = self._prefetch_result
             self._prefetch_result = ""
@@ -1883,7 +1888,7 @@ class HindsightMemoryProvider(MemoryProvider):
         # 2. Drain any in-flight prefetch from the old session and drop
         # its cached result so the new session doesn't see stale recall.
         if self._prefetch_thread and self._prefetch_thread.is_alive():
-            self._prefetch_thread.join(timeout=3.0)
+            self._prefetch_thread.join(timeout=self._prefetch_join_timeout)
         with self._prefetch_lock:
             self._prefetch_result = ""
 
