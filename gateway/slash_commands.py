@@ -1449,6 +1449,34 @@ class GatewaySlashCommandsMixin:
             current_base_url = override.get("base_url", current_base_url)
             current_api_key = override.get("api_key", current_api_key)
 
+        # If a fallback model is active on the cached agent, reflect it
+        # so /model shows the *actually serving* model, not the config
+        # default that failed. (#45970)
+        _fallback_agent = None
+        if session_key in self._running_agents:
+            _fallback_agent = self._running_agents[session_key]
+        else:
+            _cache_lock = getattr(self, "_agent_cache_lock", None)
+            _cache = getattr(self, "_agent_cache", None)
+            if _cache_lock and _cache is not None:
+                with _cache_lock:
+                    _cached = _cache.get(session_key)
+                    if _cached:
+                        _fallback_agent = _cached[0] if isinstance(_cached, tuple) else _cached if _cached else None
+        if _fallback_agent and _fallback_agent is not None and hasattr(_fallback_agent, "model"):
+            _fb_model = getattr(_fallback_agent, "model", None)
+            _fb_provider = getattr(_fallback_agent, "provider", None)
+            _fb_base_url = getattr(_fallback_agent, "base_url", "")
+            if _fb_model and _fb_model != current_model:
+                # The agent's model differs from config/override — a fallback
+                # was activated.  Use the agent's live model/provider so the
+                # user sees what's actually serving their requests.
+                current_model = _fb_model
+                if _fb_provider:
+                    current_provider = _fb_provider
+                if _fb_base_url:
+                    current_base_url = _fb_base_url
+
         # No args: show interactive picker (Telegram/Discord) or text list
         if not model_input and not explicit_provider:
             # Try interactive picker if the platform supports it
