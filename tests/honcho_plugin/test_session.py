@@ -297,6 +297,73 @@ class TestPeerLookupHelpers:
             search_query="assistant",
         )
 
+    def test_search_context_falls_back_to_target_self_context_when_directional_empty(self):
+        # In directional mode the observer->target slot (assistant-about-user)
+        # is often empty because conclusions are auto-derived onto the target
+        # peer's own self-representation, not written through the directional
+        # path. Mirror the get_peer_card fallback: when the directional fetch
+        # yields no representation and no card, refetch the target peer's own
+        # self-context so honcho_search still returns results.
+        mgr, session = self._make_cached_manager()
+        assistant_peer = MagicMock()
+        assistant_peer.context.return_value = SimpleNamespace(
+            representation="",  # directional observer->target slot empty
+            peer_card=[],
+        )
+        assistant_peer.representation.return_value = ""
+        assistant_peer.get_card.return_value = None  # directional card slot empty
+        user_peer = MagicMock()
+        user_peer.context.return_value = SimpleNamespace(
+            representation="Robert runs neuralancer",
+            peer_card=["Location: Melbourne"],
+        )
+
+        def _peer(peer_id: str) -> MagicMock:
+            return assistant_peer if peer_id == session.assistant_peer_id else user_peer
+
+        mgr._get_or_create_peer = MagicMock(side_effect=_peer)
+
+        result = mgr.search_context(session.key, "neuralancer")
+
+        assert "Robert runs neuralancer" in result
+        assert "- Location: Melbourne" in result
+        # Directional fetch attempted first against the user target...
+        assistant_peer.context.assert_called_once_with(
+            target=session.user_peer_id,
+            search_query="neuralancer",
+        )
+        # ...then fell back to the target peer's own self-context.
+        user_peer.context.assert_called_once_with(search_query="neuralancer")
+
+    def test_search_context_does_not_fall_back_when_directional_slot_populated(self):
+        # Guard the happy path: when the observer->target directional fetch
+        # returns data, search_context must NOT make a second fetch against
+        # the target peer. Protects against regressing existing behavior and
+        # against a redundant network call.
+        mgr, session = self._make_cached_manager()
+        assistant_peer = MagicMock()
+        assistant_peer.context.return_value = SimpleNamespace(
+            representation="Robert runs neuralancer",
+            peer_card=["Location: Melbourne"],
+        )
+        user_peer = MagicMock()
+
+        def _peer(peer_id: str) -> MagicMock:
+            return assistant_peer if peer_id == session.assistant_peer_id else user_peer
+
+        mgr._get_or_create_peer = MagicMock(side_effect=_peer)
+
+        result = mgr.search_context(session.key, "neuralancer")
+
+        assert "Robert runs neuralancer" in result
+        assert "- Location: Melbourne" in result
+        # Directional fetch served the result; the target peer was never touched.
+        assistant_peer.context.assert_called_once_with(
+            target=session.user_peer_id,
+            search_query="neuralancer",
+        )
+        user_peer.context.assert_not_called()
+
     def test_get_prefetch_context_fetches_user_and_ai_from_peer_api(self):
         mgr, session = self._make_cached_manager()
         user_peer = MagicMock()
