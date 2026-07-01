@@ -475,6 +475,21 @@ function renderNodeToOutput(
       const fy = Math.floor(y)
       const fw = Math.floor(width)
       const fh = Math.floor(height)
+
+      // Re-emit noSelect before blitting so gutter exclusion tracks the
+      // current Yoga rect even when this subtree is React-clean. Blit copies
+      // cells from prevScreen but the noSelect op must reflect layout now.
+      if (node.style.noSelect) {
+        const boxX = fx
+        const fromEdge = node.style.noSelect === 'from-left-edge'
+        output.noSelect({
+          x: fromEdge ? 0 : boxX,
+          y: fy,
+          width: fromEdge ? boxX + fw : fw,
+          height: fh
+        })
+      }
+
       output.blit(prevScreen, fx, fy, fw, fh)
 
       if (node.style.position === 'absolute') {
@@ -644,9 +659,8 @@ function renderNodeToOutput(
       // selection). noSelect ops are applied AFTER blits/writes in
       // output.get(), so this wins regardless of what's rendered into
       // the region — including blits from prevScreen when the box is
-      // clean (the op is emitted on both the dirty-render path here
-      // AND on the blit fast-path at line ~235 since blitRegion copies
-      // the noSelect bitmap alongside cells).
+      // clean (the op is emitted on both the dirty-render path below
+      // AND on the blit fast-path above, before blitRegion copies cells).
       //
       // 'from-left-edge' extends the exclusion from col 0 so any
       // upstream indentation (tool prefix, tree lines) is covered too
