@@ -1931,6 +1931,35 @@ def _parse_wake_gate(script_output: str) -> bool:
     return gate.get("wakeAgent", True) is not False
 
 
+def _extract_context_payload_from_job_output(raw_output: str) -> str:
+    """Reduce stored cron markdown to the most useful downstream context payload.
+
+    For chained cron jobs, the downstream agent usually needs the upstream
+    model/script result, not the full wrapper with repeated prompts and schedule
+    metadata. Prefer the ``## Response`` body, then ``## Error`` for failed runs,
+    otherwise fall back to the full stored text.
+    """
+    text = (raw_output or "").strip()
+    if not text:
+        return ""
+
+    for header in ("## Response", "## Error"):
+        idx = text.find(header)
+        if idx == -1:
+            continue
+        payload = text[idx + len(header):].lstrip()
+        if payload:
+            return payload
+    return text
+
+
+def _truncate_context_payload(text: str, max_chars: int = 8000) -> str:
+    """Clamp injected cron context without dropping the response header entirely."""
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "\n\n[... output truncated ...]"
+
+
 def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     """Build the effective prompt for a cron job, optionally loading one or more skills first.
 
@@ -2009,11 +2038,9 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                 )
                 if not output_files:
                     continue  # silent skip — no output yet
-                latest_output = output_files[0].read_text(encoding="utf-8").strip()
-                # Truncate to 8K characters to avoid prompt bloat
-                _MAX_CONTEXT_CHARS = 8000
-                if len(latest_output) > _MAX_CONTEXT_CHARS:
-                    latest_output = latest_output[:_MAX_CONTEXT_CHARS] + "\n\n[... output truncated ...]"
+                latest_output = output_files[0].read_text(encoding="utf-8")
+                latest_output = _extract_context_payload_from_job_output(latest_output)
+                latest_output = _truncate_context_payload(latest_output)
                 if latest_output:
                     prompt = (
                         f"## Output from job '{source_job_id}'\n"
