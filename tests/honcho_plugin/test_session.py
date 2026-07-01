@@ -365,6 +365,8 @@ class TestPeerLookupHelpers:
         scope.create.assert_called_once_with([{
             "content": "User prefers dark mode",
             "session_id": session.honcho_session_id,
+            "observer_id": session.assistant_peer_id,
+            "observed_id": session.user_peer_id,
         }])
 
     def test_create_conclusion_can_target_ai_peer(self):
@@ -381,6 +383,8 @@ class TestPeerLookupHelpers:
         scope.create.assert_called_once_with([{
             "content": "Assistant prefers terse summaries",
             "session_id": session.honcho_session_id,
+            "observer_id": session.assistant_peer_id,
+            "observed_id": session.assistant_peer_id,
         }])
 
     def test_create_conclusion_accepts_explicit_user_peer_id(self):
@@ -397,6 +401,28 @@ class TestPeerLookupHelpers:
         scope.create.assert_called_once_with([{
             "content": "Robert prefers vinyl",
             "session_id": session.honcho_session_id,
+            "observer_id": session.assistant_peer_id,
+            "observed_id": session.user_peer_id,
+        }])
+
+
+    def test_create_conclusion_user_observe_self_when_ai_observe_others_disabled(self):
+        mgr, session = self._make_cached_manager()
+        mgr._ai_observe_others = False
+        target_peer = MagicMock()
+        scope = MagicMock()
+        target_peer.conclusions_of.return_value = scope
+        mgr._get_or_create_peer = MagicMock(return_value=target_peer)
+
+        ok = mgr.create_conclusion(session.key, "User prefers dark mode")
+
+        assert ok is True
+        target_peer.conclusions_of.assert_called_once_with(session.user_peer_id)
+        scope.create.assert_called_once_with([{
+            "content": "User prefers dark mode",
+            "session_id": session.honcho_session_id,
+            "observer_id": session.user_peer_id,
+            "observed_id": session.user_peer_id,
         }])
 
 

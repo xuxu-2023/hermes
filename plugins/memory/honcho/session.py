@@ -1180,16 +1180,24 @@ class HonchoSessionManager:
             if target_peer_id == session.assistant_peer_id:
                 assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
                 conclusions_scope = assistant_peer.conclusions_of(session.assistant_peer_id)
+                observer_id = session.assistant_peer_id
+                observed_id = session.assistant_peer_id
             elif self._ai_observe_others:
                 assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
                 conclusions_scope = assistant_peer.conclusions_of(target_peer_id)
+                observer_id = session.assistant_peer_id
+                observed_id = target_peer_id
             else:
                 target_peer = self._get_or_create_peer(target_peer_id)
                 conclusions_scope = target_peer.conclusions_of(target_peer_id)
+                observer_id = target_peer_id
+                observed_id = target_peer_id
 
             conclusions_scope.create([{
                 "content": content.strip(),
                 "session_id": session.honcho_session_id,
+                "observer_id": observer_id,
+                "observed_id": observed_id,
             }])
             logger.info("Created conclusion about %s for %s: %s", target_peer_id, session_key, content[:80])
             return True
