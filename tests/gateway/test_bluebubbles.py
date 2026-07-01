@@ -263,6 +263,47 @@ class TestBlueBubblesMentionGating:
         assert [event.text for event in handled] == ["hello from a dm"]
 
 
+class TestBlueBubblesSelfEchoGuard:
+    @staticmethod
+    def _dm(guid):
+        return _FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": guid,
+                "text": "hello from a dm",
+                "handle": {"address": "user@example.com"},
+                "isFromMe": False,
+                "chatGuid": "iMessage;-;user@example.com",
+                "chatIdentifier": "user@example.com",
+            },
+        })
+
+    @pytest.mark.asyncio
+    async def test_self_sent_echo_is_dropped_by_guid(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+
+        # A normal inbound message (a GUID we did not send) is dispatched.
+        resp1 = await adapter._handle_webhook(self._dm("inbound-1"))
+        await asyncio.sleep(0)
+        assert resp1.status == 200
+        assert len(handled) == 1
+
+        # The webhook echo of a message WE sent comes back with isFromMe unset
+        # (same shape as a real inbound). It must be dropped by GUID so the agent
+        # does not reply to itself in a loop.
+        adapter._remember_self_sent("our-send-1")
+        resp2 = await adapter._handle_webhook(self._dm("our-send-1"))
+        await asyncio.sleep(0)
+        assert resp2.status == 200
+        assert len(handled) == 1  # unchanged — the echo was ignored
+
+
 class TestBlueBubblesWebhookParsing:
     def test_webhook_prefers_chat_guid_over_message_guid(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
