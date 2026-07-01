@@ -1,0 +1,5 @@
+name: umans-ai-provider
+kind: model-provider
+version: 1.0.0
+description: Umans AI
+author: Nous Research

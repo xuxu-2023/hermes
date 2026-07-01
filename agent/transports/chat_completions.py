@@ -160,6 +160,10 @@ class ChatCompletionsTransport(ProviderTransport):
           gateways (e.g. opencode-go, codex.nekos.me) reject with
           ``Extra inputs are not permitted, field: 'messages[N]._empty_recovery_synthetic'``,
           which then poisons every subsequent request in the session.
+        - ``timestamp`` — added to message dicts by the session persistence
+          layer (loaded back from SQLite on session resume). Most providers
+          silently ignore it, but strict gateways (e.g. Umans AI) reject it
+          with ``Extra inputs are not permitted, field: 'messages[N].timestamp'``.
         """
         strip_extra_content = not _model_consumes_thought_signature(
             kwargs.get("model")

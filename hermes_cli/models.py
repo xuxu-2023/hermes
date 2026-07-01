@@ -526,6 +526,13 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "deepseek/deepseek-r1-0528",
         "qwen/qwen3-235b-a22b-fp8",
     ],
+    "umans-ai": [
+        "umans-glm-5.2",
+        "umans-glm-5.1",
+        "umans-kimi-k2.7",
+        "umans-coder",
+        "umans-flash",
+    ],
 }
 
 # ---------------------------------------------------------------------------
@@ -1260,6 +1267,7 @@ _PROVIDER_ALIASES = {
     "nvidia-nim": "nvidia",
     "build-nvidia": "nvidia",
     "nemotron": "nvidia",
+    "umans": "umans-ai",
     "lmstudio": "lmstudio",
     "lm-studio": "lmstudio",
     "lm_studio": "lmstudio",

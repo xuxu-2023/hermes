@@ -207,6 +207,10 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",  # default; overridden by api_mode in config
         base_url_env_var="AZURE_FOUNDRY_BASE_URL",
     ),
+    "umans-ai": HermesOverlay(
+        transport="openai_chat",
+        base_url_env_var="UMANS_BASE_URL",
+    ),
     "bedrock": HermesOverlay(
         transport="bedrock_converse",
         auth_type="aws_sdk",
