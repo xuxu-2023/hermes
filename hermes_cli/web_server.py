@@ -8277,6 +8277,166 @@ async def prune_sessions_endpoint(body: SessionPrune):
 
 
 # ---------------------------------------------------------------------------
+# File attachment upload + authenticated static serve
+#
+# Provides a multipart upload endpoint for third-party clients that cannot
+# use the base64 /api/files/upload path (e.g. due to memory constraints or
+# streaming requirements), and a corresponding authenticated download route.
+# ---------------------------------------------------------------------------
+
+_UPLOADS_DIR = Path(os.path.expanduser("~/.hermes/uploads"))
+_UPLOADS_MAX_BYTES = 100 * 1024 * 1024  # 100 MB
+
+# Ensure the uploads directory exists with mode 0700 at import time.
+_UPLOADS_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+try:
+    _UPLOADS_DIR.chmod(0o700)
+except OSError:
+    pass
+
+
+def _sanitize_upload_filename(raw: str) -> str:
+    """Return a safe filename derived from *raw*.
+
+    Steps:
+    - Strip leading/trailing whitespace, then take basename only.
+    - Remove path separators and ASCII control characters (0x00–0x1f, 0x7f).
+    - Collapse to 'upload.bin' when nothing usable remains.
+    """
+    name = os.path.basename(raw.strip().replace("\\", "/"))
+    name = re.sub(r"[/\\\x00-\x1f\x7f]", "", name)
+    name = name.strip(". ")
+    return name or "upload.bin"
+
+
+def _resolve_upload_path(name: str) -> Path:
+    """Return a collision-free path under *_UPLOADS_DIR* for *name*.
+
+    If *name* already exists, append ``-1``, ``-2``, … before the extension.
+    """
+    stem = Path(name).stem
+    suffix = Path(name).suffix
+    candidate = _UPLOADS_DIR / name
+    counter = 1
+    while candidate.exists():
+        candidate = _UPLOADS_DIR / f"{stem}-{counter}{suffix}"
+        counter += 1
+    return candidate
+
+
+@app.post("/api/files/attachment-upload")
+async def upload_attachment_file(request: Request):
+    """Upload a file via multipart/form-data (field: ``file``).
+
+    Intended for third-party clients that stream binary payloads and cannot
+    encode them as base64 data-URLs.  Files are stored in
+    ``~/.hermes/uploads/`` and retrievable via ``GET /files/{name}``.
+
+    Auth: Bearer session token (same as all other ``/api/`` routes).
+    The explicit ``_require_token`` call below is belt-and-suspenders for
+    ``--insecure`` / non-loopback binds where the auth middleware defers to
+    the OAuth gate middleware instead of the session-token path.
+
+    Size limit: 100 MB.
+    """
+    _require_token(request)
+
+    form = await request.form()
+    upload = form.get("file")
+    if upload is None or not hasattr(upload, "filename"):
+        raise HTTPException(status_code=422, detail="Missing 'file' field in form")
+
+    safe_name = _sanitize_upload_filename(upload.filename or "upload.bin")
+    dest = _resolve_upload_path(safe_name)
+
+    stored_bytes = 0
+    try:
+        with open(dest, "wb") as fh:
+            while True:
+                chunk = await upload.read(65536)  # 64 KB chunks
+                if not chunk:
+                    break
+                stored_bytes += len(chunk)
+                if stored_bytes > _UPLOADS_MAX_BYTES:
+                    fh.close()
+                    try:
+                        dest.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    raise HTTPException(
+                        status_code=413,
+                        detail="Upload exceeds 100 MB limit",
+                    )
+                fh.write(chunk)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        try:
+            dest.unlink(missing_ok=True)
+        except OSError:
+            pass
+        _log.exception("File upload failed")
+        raise HTTPException(status_code=500, detail=f"Upload failed: {exc}")
+
+    stored_name = dest.name
+    return JSONResponse({
+        "name": stored_name,
+        "path": str(dest),
+        "url": f"/files/{stored_name}",
+        "size": stored_bytes,
+    })
+
+
+@app.get("/files/{name}")
+async def serve_uploaded_file(name: str, request: Request, token: Optional[str] = None):
+    """Serve a file from the uploads directory.
+
+    Auth: Bearer header OR ``?token=`` query parameter.  The query-parameter
+    path exists because some HTTP clients (e.g. Android ``DownloadManager``)
+    cannot set custom headers on download requests.  Both paths use
+    ``hmac.compare_digest`` to prevent timing attacks.
+
+    Path traversal is blocked by resolving the path and verifying it is
+    strictly inside ``_UPLOADS_DIR``.
+    """
+    # Authenticate: accept Bearer header (same as all /api/ routes) or ?token=.
+    authed = False
+    bearer = request.headers.get("authorization", "")
+    expected_bearer = f"Bearer {_SESSION_TOKEN}"
+    if hmac.compare_digest(bearer.encode(), expected_bearer.encode()):
+        authed = True
+    if not authed and token is not None:
+        if hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
+            authed = True
+    if not authed:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    # Path traversal guard: resolve and assert parent is uploads dir.
+    try:
+        target = (_UPLOADS_DIR / name).resolve()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    if not target.is_relative_to(_UPLOADS_DIR.resolve()):
+        raise HTTPException(status_code=404, detail="Not found")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="Not found")
+
+    # Determine media type.
+    import mimetypes as _mimetypes
+    suffix = target.suffix.lower()
+    if suffix == ".apk":
+        media_type = "application/vnd.android.package-archive"
+    elif suffix == ".json":
+        media_type = "application/json"
+    else:
+        guessed, _ = _mimetypes.guess_type(str(target))
+        media_type = guessed or "application/octet-stream"
+
+    return FileResponse(str(target), media_type=media_type)
+
+
+# ---------------------------------------------------------------------------
 # Log viewer endpoint
 # ---------------------------------------------------------------------------
 
