@@ -213,6 +213,49 @@ class TestClawHubSource(unittest.TestCase):
         self.assertEqual(meta.tags, ["automation"])
 
     @patch("tools.skills_hub.httpx.get")
+    def test_inspect_captures_owner_from_detail_api(self, mock_get):
+        """inspect() fetches the detail API which includes owner — capture it."""
+        mock_get.return_value = _MockResponse(
+            status_code=200,
+            json_data={
+                "skill": {
+                    "slug": "apple-docs",
+                    "displayName": "Apple Docs",
+                    "summary": "Documentation reader",
+                    "tags": {"latest": "1.0.0"},
+                },
+                "latestVersion": {"version": "1.0.0"},
+                "owner": {"handle": "thesethrose", "displayName": "Seth Rose"},
+            },
+        )
+
+        meta = self.src.inspect("apple-docs")
+
+        self.assertIsNotNone(meta)
+        self.assertEqual(meta.extra.get("owner"), "thesethrose")
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_inspect_tolerates_missing_owner(self, mock_get):
+        """inspect() should still work when the API omits owner."""
+        mock_get.return_value = _MockResponse(
+            status_code=200,
+            json_data={
+                "skill": {
+                    "slug": "some-skill",
+                    "displayName": "Some Skill",
+                    "summary": "A skill",
+                    "tags": {"latest": "1.0.0"},
+                },
+                "latestVersion": {"version": "1.0.0"},
+            },
+        )
+
+        meta = self.src.inspect("some-skill")
+
+        self.assertIsNotNone(meta)
+        self.assertNotIn("owner", meta.extra or {})
+
+    @patch("tools.skills_hub.httpx.get")
     def test_fetch_resolves_latest_version_and_downloads_raw_files(self, mock_get):
         def side_effect(url, *args, **kwargs):
             if url.endswith("/skills/caldav-calendar"):
