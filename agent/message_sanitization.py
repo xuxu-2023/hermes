@@ -203,7 +203,22 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
         logger.warning("Sanitized Python-None tool_call arguments for %s", tool_name)
         return "{}"
 
-    # Repair pass 0: llama.cpp backends sometimes emit literal control
+    # Repair pass 0: strip leading {} prefix from streaming tool call
+    # deltas. DeepSeek models (and other reasoning-capable models) emit
+    # an empty reasoning-content delimiter "{}" as the first tool_call
+    # arguments chunk in streaming mode, producing "{}{...valid json...}".
+    # The prefix is only stripped when content follows — a lone "{}"
+    # (valid empty object) is left untouched.
+    if raw_stripped.startswith("{}") and len(raw_stripped) > 2:
+        stripped = raw_stripped[2:]
+        logger.warning(
+            "Stripped leading {} reasoning delimiter from streaming "
+            "tool_call arguments for %s: %s → %s",
+            tool_name, raw_stripped[:80], stripped[:80],
+        )
+        raw_stripped = stripped
+
+    # Repair pass 1: llama.cpp backends sometimes emit literal control
     # characters (tabs, newlines) inside JSON string values. json.loads
     # with strict=False accepts these and lets us re-serialise the
     # result into wire-valid JSON without any string surgery. This is
