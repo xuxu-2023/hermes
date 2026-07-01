@@ -541,6 +541,23 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
           !knownPath && window.hermesDesktop?.getPathForFile ? window.hermesDesktop.getPathForFile(file) : ''
 
         const filePath = knownPath || fallbackPath || ''
+
+        // Detect OS-dropped directories — the browser File API does not expose
+        // isDirectory, so we check via the Electron IPC stat call.
+        if (filePath && window.hermesDesktop?.isDirectory) {
+          try {
+            const isDir = await window.hermesDesktop.isDirectory(filePath)
+
+            if (isDir && attachContextFolderPath(filePath)) {
+              attached = true
+
+              continue
+            }
+          } catch {
+            // Fall through to normal file handling.
+          }
+        }
+
         const isImage = file.type.startsWith('image/') || isImagePath(file.name) || (filePath && isImagePath(filePath))
 
         if (isImage) {
