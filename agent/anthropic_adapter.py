@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import platform
+import re
 import secrets
 import stat
 import subprocess
@@ -2526,13 +2527,27 @@ def build_anthropic_kwargs(
 
         # 2. Sanitize system prompt — replace product name references
         #    to avoid Anthropic's server-side content filters.
+        #    IMPORTANT: Do NOT replace "hermes-agent" inside URLs — the
+        #    replacement produces dead links (NXDOMAIN) and confuses the
+        #    agent.  Preserve http(s)://... URLs by extracting and restoring
+        #    them after the blanket name swap.
         for block in system:
             if isinstance(block, dict) and block.get("type") == "text":
                 text = block.get("text", "")
+                # Extract URLs so the blanket replace below doesn't clobber them
+                _url_placeholder = "\x00URL{}URL\x00"
+                _urls: list[str] = []
+                def _save_url(m: re.Match) -> str:
+                    _urls.append(m.group(0))
+                    return _url_placeholder.format(len(_urls) - 1)
+                text = re.sub(r"https?://[^\s<>\"')]+", _save_url, text)
                 text = text.replace("Hermes Agent", "Claude Code")
                 text = text.replace("Hermes agent", "Claude Code")
                 text = text.replace("hermes-agent", "claude-code")
                 text = text.replace("Nous Research", "Anthropic")
+                # Restore preserved URLs
+                for _i, _url in enumerate(_urls):
+                    text = text.replace(_url_placeholder.format(_i), _url)
                 block["text"] = text
 
         # 3. Normalize tool names so NOTHING goes on the OAuth wire with a
