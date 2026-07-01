@@ -251,6 +251,12 @@ TOOLSETS = {
     # "honcho" toolset removed — Honcho is now a memory provider plugin.
     # Tools are injected via MemoryManager, not the toolset system.
 
+    "attractions": {
+        "description": "景点 demo 工具（send_attraction_card 推卡片，agent 自生成数据）",
+        "tools": ["send_attraction_card"],
+        "includes": []
+    },
+
     "homeassistant": {
         "description": "Home Assistant smart home control and monitoring",
         "tools": ["ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service"],
@@ -395,7 +401,7 @@ TOOLSETS = {
     },
 
     "hermes-api-server": {
-        "description": "OpenAI-compatible API server — full agent tools accessible via HTTP (no interactive UI tools like clarify or send_message)",
+        "description": "OpenAI-compatible API server — full agent tools accessible via HTTP (clarify wired to POST /v1/runs/{id}/clarify for AskUserQuestion; no send_message)",
         "tools": [
             # Web
             "web_search", "web_extract",
@@ -416,12 +422,16 @@ TOOLSETS = {
             "todo", "memory",
             # Session history search
             "session_search",
+            # AskUserQuestion (clarify) — blocks agent thread, resolved via POST /v1/runs/{id}/clarify
+            "clarify",
             # Code execution + delegation
             "execute_code", "delegate_task",
             # Cronjob management
             "cronjob",
             # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
             "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
+            # Attractions demo (send_attraction_card 推卡片，agent 自生成数据)
+            "send_attraction_card",
 
         ],
         "includes": []
