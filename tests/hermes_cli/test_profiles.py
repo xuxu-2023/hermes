@@ -943,6 +943,27 @@ class TestFindAliasForProfile:
         (wrapper_dir / "pip").write_text("#!/bin/sh\nexec python -m pip \"$@\"\n")
         assert find_alias_for_profile("steve") is None
 
+    def test_skips_large_foreign_binaries(self, profile_env, monkeypatch):
+        # ~/.local/bin is also the default install target for uv tools, so it
+        # holds multi-MB extensionless binaries. Reading them as text blocks
+        # the dashboard event loop for seconds per file per profile — the size
+        # guard must skip them without reading, even if their bytes happen to
+        # contain the wrapper needle.
+        monkeypatch.setattr("sys.platform", "darwin")
+        from hermes_cli.profiles import (
+            _get_wrapper_dir,
+            create_wrapper_script,
+            find_alias_for_profile,
+        )
+        wrapper_dir = _get_wrapper_dir()
+        wrapper_dir.mkdir(parents=True, exist_ok=True)
+        big = wrapper_dir / "fakebinary"
+        big.write_bytes(b"\x00" * (64 * 1024) + b"hermes -p steve\n")
+        assert find_alias_for_profile("steve") is None
+        # A real (small) wrapper alongside the binary still resolves.
+        create_wrapper_script("steve")
+        assert find_alias_for_profile("steve") == "steve"
+
     def test_custom_alias_on_windows(self, profile_env, monkeypatch):
         monkeypatch.setattr("sys.platform", "win32")
         from hermes_cli.profiles import create_wrapper_script, find_alias_for_profile
