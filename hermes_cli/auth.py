@@ -6206,6 +6206,18 @@ def get_codex_auth_status() -> Dict[str, Any]:
             "api_key": creds.get("api_key"),
         }
     except AuthError as exc:
+        # Last-ditch check: pool credentials may be available even when
+        # the singleton store is incomplete (e.g. after partial re-auth).
+        # _pool_codex_access_token reads directly from auth.json, while
+        # the pool-entry check above uses getattr on the entry object.
+        pool_token = _pool_codex_access_token()
+        if pool_token:
+            return {
+                "logged_in": True,
+                "auth_store": str(_auth_file_path()),
+                "source": "credential_pool",
+                "auth_mode": "chatgpt",
+            }
         return {
             "logged_in": False,
             "auth_store": str(_auth_file_path()),
