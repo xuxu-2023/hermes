@@ -53,6 +53,10 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # live, just cleaned up after success so the chat doesn't fill up with
     # stale breadcrumbs. Failed runs leave bubbles in place as breadcrumbs.
     "cleanup_progress": False,
+    # Per-turn credit notices ("• Grant spent · $X top-up left" and usage-band
+    # warnings). On by default; per-message-cost platforms (SMS/iMessage) can opt
+    # down. Depletion / restored notices ignore this and always deliver.
+    "show_credits": True,
 }
 
 # ---------------------------------------------------------------------------
@@ -71,6 +75,7 @@ _TIER_HIGH = {
     "interim_assistant_messages": True,
     "long_running_notifications": True,
     "busy_ack_detail": True,
+    "show_credits": True,
 }
 
 _TIER_MEDIUM = {
@@ -81,6 +86,7 @@ _TIER_MEDIUM = {
     "interim_assistant_messages": True,
     "long_running_notifications": True,
     "busy_ack_detail": True,
+    "show_credits": True,
 }
 
 _TIER_LOW = {
@@ -91,6 +97,7 @@ _TIER_LOW = {
     "interim_assistant_messages": False,
     "long_running_notifications": False,
     "busy_ack_detail": False,
+    "show_credits": False,
 }
 
 _TIER_MINIMAL = {
@@ -101,6 +108,7 @@ _TIER_MINIMAL = {
     "interim_assistant_messages": False,
     "long_running_notifications": False,
     "busy_ack_detail": False,
+    "show_credits": False,
 }
 
 _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
@@ -222,6 +230,34 @@ def resolve_display_setting(
     return fallback
 
 
+# Credit notices that always deliver regardless of show_credits: the agent stops
+# (or resumes) responding on these, so a muted platform still needs to know.
+_ALWAYS_DELIVER_CREDIT_KEYS = frozenset({"credits.depleted", "credits.restored"})
+
+
+def should_show_credit_notice(
+    user_config: dict,
+    platform_key: str,
+    notice_key: str,
+) -> bool:
+    """Whether a notice should be rendered for a platform, honoring show_credits.
+
+    The single gating decision shared by the gateway and CLI render paths:
+
+    * Non-credit notices (key not starting ``credits.``) are never gated.
+    * ``credits.depleted`` / ``credits.restored`` always deliver: the agent
+      stops or resumes responding on these, so even a muted platform needs them.
+    * Routine credit notices (grant-spent footer, usage-band warnings) follow the
+      resolved ``show_credits`` setting for the platform.
+    """
+    key = notice_key or ""
+    if not key.startswith("credits."):
+        return True
+    if key in _ALWAYS_DELIVER_CREDIT_KEYS:
+        return True
+    return bool(resolve_display_setting(user_config, platform_key, "show_credits", True))
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -240,6 +276,7 @@ def _normalise(setting: str, value: Any) -> Any:
         "interim_assistant_messages",
         "long_running_notifications",
         "busy_ack_detail",
+        "show_credits",
     }:
         if isinstance(value, str):
             return value.lower() in {"true", "1", "yes", "on"}
