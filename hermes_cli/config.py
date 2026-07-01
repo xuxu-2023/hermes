@@ -3392,7 +3392,7 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
     },
     "DASHSCOPE_BASE_URL": {
-        "description": "Custom DashScope base URL (default: coding-intl OpenAI-compat endpoint)",
+        "description": "Custom DashScope base URL (default: coding OpenAI-compat endpoint (domestic))",
         "prompt": "DashScope Base URL",
         "url": "",
         "password": False,
