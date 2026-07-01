@@ -4187,6 +4187,19 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
+    # ── Google Gemini OAuth (google-gemini-cli → Cloud Code Assist) ──
+    if provider == "google-gemini-cli":
+        from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
+        from hermes_cli.auth import DEFAULT_GEMINI_CLOUDCODE_BASE_URL
+        base_url = DEFAULT_GEMINI_CLOUDCODE_BASE_URL
+        client = GeminiCloudCodeClient(base_url=base_url)
+        final_model = _normalize_resolved_model(
+            model or "gemini-2.5-flash", provider
+        )
+        logger.debug("resolve_provider_client: google-gemini-cli (%s)", final_model)
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
+
     # ── Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY) ───────────
     if provider == "custom":
         if explicit_base_url:
@@ -4641,6 +4654,8 @@ def resolve_provider_client(
             return resolve_provider_client("openai-codex", model, async_mode)
         if provider == "xai-oauth":
             return resolve_provider_client("xai-oauth", model, async_mode)
+        if provider == "google-gemini-cli":
+            return resolve_provider_client("google-gemini-cli", model, async_mode)
         # Other OAuth providers not directly supported
         if provider not in _LOGGED_UNSUPPORTED_OAUTH_KEYS:
             _LOGGED_UNSUPPORTED_OAUTH_KEYS.add(provider)
