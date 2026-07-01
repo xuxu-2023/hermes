@@ -12564,7 +12564,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 duration_str = f"{minutes}m {seconds}s"
             else:
                 duration_str = f"{seconds}s"
-            
+
             # Look up session title for resume-by-name hint
             session_title = None
             if self._session_db:
