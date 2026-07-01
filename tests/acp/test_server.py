@@ -1706,6 +1706,115 @@ class TestSlashCommands:
 
 
 # ---------------------------------------------------------------------------
+# _resolve_model_selection — provider/model slash-format parsing (#53545)
+# ---------------------------------------------------------------------------
+
+
+class TestModelNameSlashSplit:
+    """ACP model names with ``provider/model`` or ``custom:name/model`` format.
+
+    External clients (e.g. Multica) pass the provider and model together
+    separated by ``/``.  ``_resolve_model_selection`` must split these
+    correctly while preserving existing ``provider:model`` colon syntax and
+    not breaking aggregator model slugs (e.g. OpenRouter's
+    ``anthropic/claude-sonnet-4.5``).
+    """
+
+    def test_custom_named_provider_with_slash(self, monkeypatch):
+        """``custom:zai/glm-5.2`` → (``custom:zai``, ``glm-5.2``) when *zai*
+        is a configured custom provider."""
+        monkeypatch.setattr(
+            "hermes_cli.config.get_compatible_custom_providers",
+            lambda config=None: [{"name": "zai", "base_url": "https://api.z.ai/v4"}],
+        )
+        provider, model = HermesACPAgent._resolve_model_selection(
+            "custom:zai/glm-5.2", "deepseek"
+        )
+        assert provider == "custom:zai"
+        assert model == "glm-5.2"
+
+    def test_native_provider_with_slash(self):
+        """``zai/glm-5.2`` → (``zai``, ``glm-5.2``) for a known native provider."""
+        provider, model = HermesACPAgent._resolve_model_selection(
+            "zai/glm-5.2", "deepseek"
+        )
+        assert provider == "zai"
+        assert model == "glm-5.2"
+
+    def test_default_model_unchanged(self):
+        """``deepseek-v4-pro`` → unchanged model on current provider."""
+        provider, model = HermesACPAgent._resolve_model_selection(
+            "deepseek-v4-pro", "deepseek"
+        )
+        assert model == "deepseek-v4-pro"
+
+    def test_openrouter_slug_not_split(self):
+        """``anthropic/claude-sonnet-4.5`` on OpenRouter must NOT split — the
+        ``/`` is part of the model slug, not a provider delimiter."""
+        provider, model = HermesACPAgent._resolve_model_selection(
+            "anthropic/claude-sonnet-4.5", "openrouter"
+        )
+        assert model == "anthropic/claude-sonnet-4.5"
+
+    def test_custom_unknown_provider_no_split(self, monkeypatch):
+        """``custom:unknown/model`` where *unknown* is NOT a configured custom
+        provider must fall through to existing parsing (not split)."""
+        monkeypatch.setattr(
+            "hermes_cli.config.get_compatible_custom_providers",
+            lambda config=None: [{"name": "zai", "base_url": "https://api.z.ai/v4"}],
+        )
+        provider, model = HermesACPAgent._resolve_model_selection(
+            "custom:unknown/glm-5.2", "deepseek"
+        )
+        # Must NOT have split unknown into a custom:unknown provider
+        assert provider != "custom:unknown"
+        assert "glm-5.2" in model
+
+    @pytest.mark.asyncio
+    async def test_provider_model_via_set_session_model(self, tmp_path, monkeypatch):
+        """Integration: ``set_session_model`` with ``zai/glm-5.2`` routes to
+        the ``zai`` provider with the bare model name."""
+
+        def fake_resolve_runtime_provider(requested=None, **kwargs):
+            return {
+                "provider": requested or "openrouter",
+                "api_mode": "chat_completions",
+                "base_url": f"https://{requested or 'default'}.example/v1",
+                "api_key": "test-key",
+                "command": None,
+                "args": [],
+            }
+
+        def fake_agent(**kwargs):
+            return SimpleNamespace(
+                model=kwargs.get("model"),
+                provider=kwargs.get("provider"),
+                base_url=kwargs.get("base_url"),
+                api_mode=kwargs.get("api_mode"),
+            )
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
+            "model": {"provider": "deepseek", "default": "deepseek-v4-pro"}
+        })
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+        manager = SessionManager(db=SessionDB(tmp_path / "state.db"))
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            acp_agent = HermesACPAgent(session_manager=manager)
+            state = manager.create_session(cwd="/tmp")
+            await acp_agent.set_session_model(
+                model_id="zai/glm-5.2",
+                session_id=state.session_id,
+            )
+
+        assert state.model == "glm-5.2"
+        assert state.agent.provider == "zai"
+
+
+# ---------------------------------------------------------------------------
 # _register_session_mcp_servers
 # ---------------------------------------------------------------------------
 

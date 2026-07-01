@@ -107,6 +107,25 @@ _TEXT_RESOURCE_MIME_TYPES = {
 }
 
 
+def _is_configured_custom_provider(name: str) -> bool:
+    """Return ``True`` when *name* matches a configured ``custom_providers`` entry.
+
+    Used by :meth:`HermesACPAgent._resolve_model_selection` to decide whether
+    ``custom:<name>/model`` should be split into a named custom provider.
+    """
+    try:
+        from hermes_cli.config import get_compatible_custom_providers, load_config
+
+        target = name.strip().lower().replace(" ", "-")
+        for entry in get_compatible_custom_providers(load_config()):
+            entry_name = str(entry.get("name", "") or "").strip().lower().replace(" ", "-")
+            if entry_name == target:
+                return True
+    except Exception:
+        logger.debug("Could not check custom provider names", exc_info=True)
+    return False
+
+
 def _resource_display_name(uri: str, name: str | None = None, title: str | None = None) -> str:
     """Human-readable attachment name for prompt context."""
     raw_name = (name or "").strip()
@@ -644,9 +663,59 @@ class HermesACPAgent(acp.Agent):
 
     @staticmethod
     def _resolve_model_selection(raw_model: str, current_provider: str) -> tuple[str, str]:
-        """Resolve ``provider:model`` input into the provider and normalized model id."""
+        """Resolve model input into the provider and normalized model id.
+
+        Handles the following formats (in priority order):
+
+        - ``custom:name/model`` or ``custom:name:model`` — named custom
+          provider with the model separated by ``/`` or ``:``.  Some ACP
+          clients (e.g. Multica) use ``/`` instead of ``:``.
+        - ``provider/model`` — native provider and model separated by ``/``.
+          Only fires when there is no colon (colon means ``provider:model``
+          is intended) and the current provider is not an aggregator that
+          uses ``vendor/model`` slugs (e.g. OpenRouter's
+          ``anthropic/claude-sonnet-4.5``).
+        - ``provider:model`` — delegated to :func:`parse_model_input`.
+        """
         target_provider = current_provider
         new_model = raw_model.strip()
+
+        if not new_model:
+            return target_provider, new_model
+
+        # --- custom:name/model — slash separator for named custom providers ---
+        # ``parse_model_input`` already handles ``custom:name:model`` (colon).
+        # Here we extend it to also accept ``custom:name/model`` (slash), which
+        # is what external clients like Multica send.  Only split when the name
+        # matches a *configured* custom provider so model names that happen to
+        # contain ``/`` on a bare custom endpoint are preserved.
+        if new_model.startswith("custom:"):
+            rest = new_model[len("custom:"):]
+            slash_pos = rest.find("/")
+            if slash_pos > 0:
+                candidate = rest[:slash_pos].strip()
+                actual = rest[slash_pos + 1:].strip()
+                if candidate and actual and _is_configured_custom_provider(candidate):
+                    return (f"custom:{candidate}", actual)
+
+        # --- provider/model — native providers with slash separator ---
+        # Only when there is no colon (colon ⇒ provider:model syntax) and the
+        # current provider is not an aggregator whose model IDs are
+        # vendor/model slugs.
+        if ":" not in new_model and "/" in new_model:
+            try:
+                from hermes_cli.models import _AGGREGATOR_PROVIDERS, _KNOWN_PROVIDER_NAMES, normalize_provider
+            except ImportError:
+                _AGGREGATOR_PROVIDERS = frozenset()
+                _KNOWN_PROVIDER_NAMES = set()
+                normalize_provider = lambda x: x  # noqa: E731
+
+            if current_provider not in _AGGREGATOR_PROVIDERS:
+                left, _, right = new_model.partition("/")
+                left_norm = left.strip().lower()
+                right = right.strip()
+                if left_norm and right and left_norm in _KNOWN_PROVIDER_NAMES:
+                    return (normalize_provider(left_norm), right)
 
         try:
             from hermes_cli.models import detect_provider_for_model, parse_model_input
