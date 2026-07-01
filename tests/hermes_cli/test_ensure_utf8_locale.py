@@ -13,6 +13,7 @@ report: latin-1 locale → UnicodeEncodeError before the wizard could start.
 
 import io
 import os
+import subprocess
 import sys
 
 import hermes_cli
@@ -125,6 +126,30 @@ def test_repair_does_not_override_explicit_env(monkeypatch):
     monkeypatch.delenv("PYTHONUTF8", raising=False)
     _run_with_streams(monkeypatch, _FakeStream("latin-1"), _FakeStream("latin-1"))
     assert os.environ["PYTHONIOENCODING"] == "utf-16"
+
+
+def test_text_mode_subprocess_defaults_to_utf8_replace(monkeypatch):
+    """Text-mode subprocess pipes must not use the Windows locale codec."""
+    calls = []
+
+    def fake_popen_init(self, args, *popen_args, **kwargs):
+        calls.append(dict(kwargs))
+
+    monkeypatch.setattr(subprocess.Popen, "__init__", fake_popen_init)
+    hermes_cli._ensure_utf8()
+
+    subprocess.Popen.__init__(object(), ["cmd"], text=True)
+    subprocess.Popen.__init__(
+        object(), ["cmd"], text=True, encoding="cp936", errors="strict"
+    )
+    subprocess.Popen.__init__(object(), ["cmd"], stdout=subprocess.PIPE)
+
+    assert calls[0]["encoding"] == "utf-8"
+    assert calls[0]["errors"] == "replace"
+    assert calls[1]["encoding"] == "cp936"
+    assert calls[1]["errors"] == "strict"
+    assert "encoding" not in calls[2]
+    assert "errors" not in calls[2]
 
 
 def test_fallback_when_reconfigure_unavailable(monkeypatch, tmp_path):

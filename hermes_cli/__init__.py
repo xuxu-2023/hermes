@@ -12,6 +12,7 @@ Provides subcommands for:
 """
 
 import os
+import subprocess
 import sys
 
 __version__ = "0.18.0"
@@ -87,6 +88,39 @@ def _ensure_utf8():
     if repaired:
         os.environ.setdefault("PYTHONUTF8", "1")
         os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+
+    _ensure_subprocess_text_mode_utf8()
+
+
+def _ensure_subprocess_text_mode_utf8():
+    """Default text-mode subprocess pipes to UTF-8 with replacement errors.
+
+    ``subprocess.Popen(..., text=True)`` decodes pipes with the process locale
+    unless a caller passes ``encoding``/``errors`` explicitly. On Windows that
+    locale is often cp936/cp1252, which can crash daemon reader threads when a
+    child emits UTF-8 or mixed-encoding output. Keep the compatibility shim
+    narrow: only text/universal-newlines calls are touched, and explicit caller
+    choices win.
+    """
+    current_init = subprocess.Popen.__init__
+    if getattr(current_init, "_hermes_text_mode_utf8", False):
+        return
+
+    def _hermes_popen_init(self, args, *popen_args, **kwargs):
+        text_mode = kwargs.get("text") is True or kwargs.get("universal_newlines") is True
+        # ``universal_newlines`` can still be supplied positionally.
+        if len(popen_args) > 10 and popen_args[10] is True:
+            text_mode = True
+        if text_mode:
+            if kwargs.get("encoding") is None:
+                kwargs["encoding"] = "utf-8"
+            if kwargs.get("errors") is None:
+                kwargs["errors"] = "replace"
+        return current_init(self, args, *popen_args, **kwargs)
+
+    _hermes_popen_init.__wrapped__ = current_init
+    _hermes_popen_init._hermes_text_mode_utf8 = True
+    subprocess.Popen.__init__ = _hermes_popen_init
 
 
 _ensure_utf8()
