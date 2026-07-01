@@ -185,6 +185,10 @@ VALID_HOOKS: Set[str] = {
     #   choice: "once" | "session" | "always" | "deny" | "timeout"
     "pre_approval_request",
     "post_approval_response",
+    # Transform assistant message content before it is written to the session DB.
+    # Plugins return a string to replace the persisted content, or None to keep original.
+    # First non-None string wins. Useful for PII restoration, artifact cleanup.
+    "transform_persisted_assistant",
     # Kanban task lifecycle hooks. Fired by hermes_cli.kanban_db when a task
     # transitions state, AFTER the change is committed to the board DB (so the
     # hook always sees durable state and a slow plugin can never hold the
