@@ -145,7 +145,9 @@ async def test_gateway_stop_systemd_service_restart_uses_tempfail(tmp_path, monk
     monkeypatch.setenv("INVOCATION_ID", "systemd-test")
     runner._launch_systemd_restart_shortcut = MagicMock()
 
-    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+    with patch("gateway.run.sys.platform", "linux"), patch(
+        "gateway.status.remove_pid_file"
+    ), patch("gateway.status.write_runtime_status"):
         await runner.stop(restart=True, service_restart=True)
 
     runner._launch_systemd_restart_shortcut.assert_called_once_with()
@@ -170,6 +172,38 @@ async def test_gateway_stop_launchd_service_restart_keeps_nonzero_exit(tmp_path,
         await runner.stop(restart=True, service_restart=True)
 
     assert runner._exit_code == GATEWAY_SERVICE_RESTART_EXIT_CODE
+
+
+def test_finalize_gateway_exit_force_exits_launchd_service_restart(monkeypatch):
+    runner = MagicMock()
+    runner.exit_code = GATEWAY_SERVICE_RESTART_EXIT_CODE
+    runner._restart_via_service = True
+    forced_codes = []
+
+    def fake_exit(code):
+        forced_codes.append(code)
+        raise RuntimeError("hard-exit")
+
+    monkeypatch.setattr(gateway_run.sys, "platform", "darwin")
+    monkeypatch.setattr(gateway_run.os, "_exit", fake_exit)
+
+    with pytest.raises(RuntimeError, match="hard-exit"):
+        gateway_run._finalize_gateway_exit(runner)
+
+    assert forced_codes == [GATEWAY_SERVICE_RESTART_EXIT_CODE]
+
+
+def test_finalize_gateway_exit_keeps_regular_system_exit_off_launchd(monkeypatch):
+    runner = MagicMock()
+    runner.exit_code = GATEWAY_SERVICE_RESTART_EXIT_CODE
+    runner._restart_via_service = True
+
+    monkeypatch.setattr(gateway_run.sys, "platform", "linux")
+
+    with pytest.raises(SystemExit) as excinfo:
+        gateway_run._finalize_gateway_exit(runner)
+
+    assert excinfo.value.code == GATEWAY_SERVICE_RESTART_EXIT_CODE
 
 
 @pytest.mark.asyncio

@@ -19025,6 +19025,25 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     InProcessCronScheduler().start(stop_event, adapters=adapters, loop=loop, interval=interval)
 
 
+def _finalize_gateway_exit(runner: "GatewayRunner") -> None:
+    """Exit the gateway process after teardown completed."""
+    exit_code = runner.exit_code
+    if exit_code is None:
+        return
+    if (
+        sys.platform == "darwin"
+        and exit_code == GATEWAY_SERVICE_RESTART_EXIT_CODE
+        and getattr(runner, "_restart_via_service", False)
+    ):
+        logger.warning(
+            "launchd service restart teardown finished; forcing os._exit(%s) "
+            "so KeepAlive observes the process death",
+            exit_code,
+        )
+        os._exit(exit_code)
+    raise SystemExit(exit_code)
+
+
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:
     """
     Start the gateway and run until interrupted.
@@ -19540,7 +19559,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         pass
 
     if runner.exit_code is not None:
-        raise SystemExit(runner.exit_code)
+        _finalize_gateway_exit(runner)
 
     # When an unexpected SIGTERM caused the shutdown and it wasn't a planned
     # restart (/restart, /update, SIGUSR1), exit non-zero so systemd's
