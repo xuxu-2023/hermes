@@ -3078,14 +3078,18 @@ def run_conversation(
                             )
                         elif classified.reason == FailoverReason.billing:
                             agent._buffer_status(
-                                "⚠️ Billing or credits exhausted — switching to fallback provider..."
+                                "⚠️ Billing or credits exhausted — switching to fallback provider...",
+                                emit_on_success=True,
                             )
                         elif _is_transport_failure:
                             agent._buffer_status(
                                 "⚠️ Provider unreachable — switching to fallback provider..."
                             )
                         else:
-                            agent._buffer_status("⚠️ Rate limited — switching to fallback provider...")
+                            agent._buffer_status(
+                                "⚠️ Rate limited — switching to fallback provider...",
+                                emit_on_success=True,
+                            )
                         if agent._try_activate_fallback(reason=classified.reason):
                             active_system_prompt = _sync_failover_system_message(
                                 agent, api_messages, active_system_prompt)
@@ -4905,9 +4909,10 @@ def run_conversation(
                 # Reset retry counter/signature on successful content
                 agent._empty_content_retries = 0
                 agent._thinking_prefill_retries = 0
-                # Successful content reached — drop any buffered retry
-                # status from earlier failed attempts in this turn.
-                agent._clear_status_buffer()
+                # Successful content reached — surface fallback notices that
+                # change the user's active backend, but still drop ordinary
+                # retry noise from earlier failed attempts in this turn.
+                agent._flush_recovery_status_buffer()
 
                 from agent.agent_runtime_helpers import (
                     intent_ack_continuation_mode,
