@@ -11,8 +11,11 @@ Arcee models like trinity-large-preview or trinity-mini.
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 
+from run_agent import AIAgent
 from agent.auxiliary_client import (
     _compression_threshold_for_model,
     _fixed_temperature_for_model,
@@ -157,3 +160,47 @@ def test_compression_threshold_opt_out_does_not_disable_trinity() -> None:
         )
         == 0.75
     )
+
+
+def test_codex_gpt55_autoraise_does_not_seed_gateway_warning(monkeypatch) -> None:
+    """The autoraise tip is informational, not a replayed gateway warning."""
+    monkeypatch.setattr("run_agent.get_tool_definitions", lambda **kw: [])
+    monkeypatch.setattr("run_agent.check_toolset_requirements", lambda: {})
+
+    class _FakeOpenAI:
+        def __init__(self, **kw):
+            self.api_key = kw.get("api_key")
+            self.base_url = kw.get("base_url")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("run_agent.OpenAI", _FakeOpenAI)
+
+    with patch("hermes_cli.config.load_config") as mock_load_config:
+        mock_load_config.return_value = {
+            "model": {
+                "default": "gpt-5.5",
+                "provider": "openai-codex",
+                "context_length": 272_000,
+            },
+            "compression": {
+                "enabled": True,
+                "threshold": 0.50,
+                "codex_gpt55_autoraise": True,
+            },
+        }
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://chatgpt.com/backend-api/codex",
+            provider="openai-codex",
+            api_mode="codex_responses",
+            model="gpt-5.5",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    assert agent.context_compressor.threshold_tokens == int(272_000 * 0.85)
+    assert agent._compression_threshold_autoraised == {"from": 0.50, "to": 0.85}
+    assert agent._compression_warning is None
