@@ -13570,7 +13570,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # /approve & /deny — explicit dangerous-command approval
     # ------------------------------------------------------------------
 
-    _APPROVAL_TIMEOUT_SECONDS = 300  # 5 minutes
+    _APPROVAL_TIMEOUT_SECONDS = 1800  # 30 minutes
 
 
 

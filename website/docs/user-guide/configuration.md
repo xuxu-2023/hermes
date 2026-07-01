@@ -1879,6 +1879,13 @@ Control how Hermes handles potentially dangerous commands:
 ```yaml
 approvals:
   mode: manual   # manual | smart | off
+  timeout: 60    # CLI/interactive approval timeout (seconds)
+  gateway_timeout: 1800 # Gateway/email approval timeout (seconds, default 1800)
+                        # IMPORTANT: This timeout is NOT extended by normal chat
+                        # messages — only /approve or /deny releases the pending
+                        # approval. Set high enough to account for email polling
+                        # intervals. Recommended: match agent.gateway_timeout (1800s).
+  cron_mode: deny # deny | approve — auto-behaviour for cron tasks
 ```
 
 | Mode | Behavior |
