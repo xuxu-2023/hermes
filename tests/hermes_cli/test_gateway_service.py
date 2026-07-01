@@ -855,7 +855,9 @@ class TestLaunchdServiceRecovery:
 
         assert calls == [
             ("term", 321, False),
-            ["launchctl", "kickstart", "-k", target],
+            ["launchctl", "bootout", target],
+            ["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(gateway_cli.get_launchd_plist_path())],
+            ["launchctl", "kickstart", target],
         ]
         # The drain can silently hold for the full budget (180s default); the
         # desktop updater streams this output as its only progress feedback,
@@ -1101,7 +1103,7 @@ class TestLaunchdServiceRecovery:
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
 
         def fake_run(cmd, check=False, **kwargs):
-            if cmd == ["launchctl", "kickstart", "-k", target]:
+            if cmd == ["launchctl", "kickstart", target]:
                 raise gateway_cli.subprocess.CalledProcessError(
                     5, cmd, stderr="Input/output error"
                 )

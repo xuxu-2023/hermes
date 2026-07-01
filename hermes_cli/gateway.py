@@ -4272,7 +4272,30 @@ def launchd_restart():
                     print(
                         f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart"
                     )
-        subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
+        # Use bootout + bootstrap instead of kickstart -k to avoid the race
+        # where kickstart kills the process, launchd sees the exit and restarts
+        # via KeepAlive, while kickstart also starts a new instance — causing
+        # two gateway processes.  bootout unloads the service (preventing
+        # KeepAlive respawn), then bootstrap reloads it fresh.  See #42446.
+        plist_path = get_launchd_plist_path()
+        try:
+            subprocess.run(
+                ["launchctl", "bootout", target],
+                check=True,
+                timeout=30,
+            )
+        except subprocess.CalledProcessError as e:
+            # Job already unloaded (3/113/125) — that's fine for restart.
+            if not _launchd_error_indicates_unloaded(e):
+                raise
+        # Bootstrap the service definition fresh (launchd picks up the plist).
+        subprocess.run(
+            ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
+            check=True,
+            timeout=30,
+        )
+        # Kickstart (without -k) to start the service.
+        subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
         print("✓ Service restarted")
         _clear_launchd_unsupported_marker()
     except subprocess.CalledProcessError as e:
