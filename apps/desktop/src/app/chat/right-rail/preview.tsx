@@ -112,6 +112,7 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
     >
       <div className="group/rail-tabs flex h-(--titlebar-height) shrink-0 border-b border-(--ui-stroke-tertiary) bg-(--ui-sidebar-surface-background)">
         <div
+          aria-label={t.preview.tab}
           className="flex min-w-0 flex-1 overflow-x-auto overflow-y-hidden overscroll-x-contain [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
           role="tablist"
         >
@@ -120,6 +121,8 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
             const hasOthers = tabs.length > 1
             const hasTabsToRight = index < tabs.length - 1
             const dirty = Boolean(dirtyPreviewUrls[tab.target.url])
+            const tabButtonId = `preview-tab-${tab.id}`
+            const tabPanelId = `preview-panel-${tab.id}`
 
             return (
               <ContextMenu key={tab.id}>
@@ -153,10 +156,13 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
                     )}
                     <Tip label={tab.target.path || tab.target.url || tab.label}>
                       <button
+                        aria-controls={tabPanelId}
                         aria-selected={active}
-                        className="flex h-full min-w-0 max-w-full items-center overflow-hidden pl-3 pr-2 text-left outline-none"
+                        className="flex h-full min-w-0 max-w-full items-center overflow-hidden rounded-sm pl-3 pr-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+                        id={tabButtonId}
                         onClick={() => selectRightRailTab(tab.id)}
                         role="tab"
+                        tabIndex={active ? 0 : -1}
                         type="button"
                       >
                         <span className="block min-w-0 truncate">{tab.label}</span>
@@ -214,7 +220,12 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
         </button>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-hidden">
+      <div
+        aria-labelledby={`preview-tab-${activeTab.id}`}
+        className="min-h-0 flex-1 overflow-hidden"
+        id={`preview-panel-${activeTab.id}`}
+        role="tabpanel"
+      >
         <PreviewPane
           embedded
           onRestartServer={isPreview ? onRestartServer : undefined}
