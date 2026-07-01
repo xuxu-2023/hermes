@@ -1504,6 +1504,61 @@ class TestQuickSnapshot:
         snaps = list_quick_snapshots(limit=100, hermes_home=hermes_home)
         assert len(snaps) <= _QUICK_DEFAULT_KEEP
 
+    def test_restore_cron_jobs_serialized_under_scheduler_lock(self, hermes_home, monkeypatch):
+        """`/snapshot restore` rewrites cron/jobs.json, which the gateway's cron scheduler also
+        writes (under cron.jobs._jobs_lock). The restore must take that same cross-process lock so
+        it can't lost-update — or be lost-updated by — a concurrent scheduler write. Without the
+        fix, restore copies the file without ever entering the lock and this spy stays at 0."""
+        import contextlib
+        import cron.jobs as cron_jobs
+        from hermes_cli.backup import create_quick_snapshot, restore_quick_snapshot
+
+        (hermes_home / "cron" / "jobs.json").write_text('{"jobs": [{"id": "a"}]}\n')
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        # Live file diverges from the snapshot, so the restore actually rewrites it.
+        (hermes_home / "cron" / "jobs.json").write_text('{"jobs": []}\n')
+
+        entered = {"n": 0}
+
+        @contextlib.contextmanager
+        def _spy_lock():
+            entered["n"] += 1
+            yield
+
+        monkeypatch.setattr(cron_jobs, "_jobs_lock", _spy_lock)
+
+        assert restore_quick_snapshot(snap_id, hermes_home=hermes_home) is True
+        assert entered["n"] >= 1, "cron/jobs.json restore must run under cron.jobs._jobs_lock"
+        data = json.loads((hermes_home / "cron" / "jobs.json").read_text())
+        assert [j["id"] for j in data["jobs"]] == ["a"]
+
+    def test_restore_cron_jobs_if_emptied_serialized_under_scheduler_lock(self, hermes_home, monkeypatch):
+        """The post-update empty-jobs safety net also rewrites cron/jobs.json in place, so it must
+        hold the scheduler's lock for the same reason."""
+        import contextlib
+        import cron.jobs as cron_jobs
+        from hermes_cli.backup import create_quick_snapshot, restore_cron_jobs_if_emptied
+
+        (hermes_home / "cron" / "jobs.json").write_text('{"jobs": [{"id": "a"}, {"id": "b"}]}\n')
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        # Simulate a migration that emptied the live jobs file post-update.
+        (hermes_home / "cron" / "jobs.json").write_text('{"jobs": []}\n')
+
+        entered = {"n": 0}
+
+        @contextlib.contextmanager
+        def _spy_lock():
+            entered["n"] += 1
+            yield
+
+        monkeypatch.setattr(cron_jobs, "_jobs_lock", _spy_lock)
+
+        result = restore_cron_jobs_if_emptied(snap_id, hermes_home=hermes_home)
+        assert result and result["restored"] is True
+        assert entered["n"] >= 1, "emptied-jobs restore must run under cron.jobs._jobs_lock"
+        data = json.loads((hermes_home / "cron" / "jobs.json").read_text())
+        assert {j["id"] for j in data["jobs"]} == {"a", "b"}
+
     def test_manual_prune(self, hermes_home):
         from hermes_cli.backup import create_quick_snapshot, prune_quick_snapshots, list_quick_snapshots
         for i in range(10):

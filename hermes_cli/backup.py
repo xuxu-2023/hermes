@@ -980,6 +980,11 @@ def restore_quick_snapshot(
                 shutil.copy2(src, tmp)
                 dst.unlink(missing_ok=True)
                 shutil.move(str(tmp), str(dst))
+            elif rel == _CRON_JOBS_REL:
+                # cron/jobs.json is also written by the live cron scheduler, so
+                # serialize this restore under the scheduler's lock and replace
+                # atomically (see _restore_jobs_file).
+                _restore_jobs_file(src, dst)
             else:
                 shutil.copy2(src, dst)
             restored += 1
@@ -993,6 +998,55 @@ def restore_quick_snapshot(
 # Relative path of the cron job database inside HERMES_HOME. Kept in sync with
 # the entry in ``_QUICK_STATE_FILES`` and with ``cron/jobs.py``'s ``JOBS_FILE``.
 _CRON_JOBS_REL = "cron/jobs.json"
+
+
+def _restore_jobs_file(src: Path, dst: Path) -> None:
+    """Restore ``cron/jobs.json`` serialized against the live cron scheduler.
+
+    ``cron/jobs.json`` is also written by the gateway's cron scheduler
+    (``tick`` -> ``mark_job_run`` / ``advance_next_run``), which serializes its
+    load->modify->save cycles with ``cron.jobs._jobs_lock`` — an in-process lock
+    plus a cross-process advisory flock. A restore that overwrites the file
+    without that lock can lost-update, or be lost-updated by, a concurrent
+    scheduler write (for example ``/snapshot restore`` while the gateway is
+    running). Hold the same lock and replace atomically so neither side clobbers
+    the other.
+
+    Falls back to a plain atomic copy when the cron module is unavailable, so a
+    standalone restore still succeeds (mirrors ``_jobs_lock``'s own graceful
+    degradation).
+    """
+
+    # Ensure the destination directory exists before acquiring the lock so the
+    # locked critical section only does the copy+replace.
+    dst.parent.mkdir(parents=True, exist_ok=True)
+
+    def _atomic_copy() -> None:
+        tmp = dst.parent / f".{dst.name}.restore_tmp"
+        shutil.copy2(src, tmp)
+        os.replace(tmp, dst)
+
+    try:
+        from cron.jobs import _jobs_lock
+    except ModuleNotFoundError as exc:
+        # Only a genuinely absent cron package degrades to an unlocked restore
+        # (minimal install), mirroring _jobs_lock's own flock fallback — but
+        # loudly. An import-time failure *inside* cron.jobs (a broken dependency,
+        # a removed symbol) must NOT silently drop the lock and reopen the
+        # lost-update race, so anything other than "cron is missing" propagates.
+        if exc.name not in ("cron", "cron.jobs"):
+            raise
+        logger.warning(
+            "cron module unavailable (%s); restoring %s without the "
+            "cross-process scheduler lock",
+            exc,
+            dst.name,
+        )
+        _atomic_copy()
+        return
+
+    with _jobs_lock():
+        _atomic_copy()
 
 
 def _count_cron_jobs(path: Path) -> Optional[int]:
@@ -1079,8 +1133,8 @@ def restore_cron_jobs_if_emptied(
         return None
 
     try:
-        live_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(snap_path, live_path)
+        # Serialize against the live cron scheduler (see _restore_jobs_file).
+        _restore_jobs_file(snap_path, live_path)
     except (OSError, PermissionError) as exc:
         logger.error(
             "Cron jobs were emptied during update but auto-restore failed: %s", exc
