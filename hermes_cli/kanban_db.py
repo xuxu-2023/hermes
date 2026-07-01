@@ -5694,6 +5694,17 @@ class DispatchResult:
     promoted: int = 0
     spawned: list[tuple[str, str, str]] = field(default_factory=list)
     """List of ``(task_id, assignee, workspace_path)`` triples."""
+    concurrent_claimed: list[tuple[str, str, str, Optional[int]]] = field(
+        default_factory=list
+    )
+    """Tasks that were ready/review when this tick scanned the queue but were
+    already claimed by another dispatcher before our CAS could win.
+
+    Entries are ``(task_id, assignee, status, worker_pid)``. This bucket keeps
+    cockpit JSON honest in multi-dispatcher races: ``spawned=[]`` no longer
+    implies no progress happened when a gateway tick claimed the same task a
+    moment earlier.
+    """
     skipped_unassigned: list[str] = field(default_factory=list)
     """Ready task ids skipped because they have no assignee at all.
     Operator-actionable — usually a misfiled task waiting for routing."""
@@ -6929,6 +6940,35 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     return False
 
 
+def _concurrent_claim_snapshot(
+    conn: sqlite3.Connection, task_id: str,
+) -> Optional[tuple[str, str, str, Optional[int]]]:
+    """Return a compact snapshot when a dispatcher lost the claim CAS.
+
+    ``dispatch_once`` reads ready/review rows, then atomically claims each row.
+    Another dispatcher can win the CAS in that small window. Previously we
+    silently continued, so JSON output looked idle even though the task moved to
+    ``running`` and may already have a worker pid. Surface that race explicitly
+    without pretending this dispatcher spawned the worker.
+    """
+    row = conn.execute(
+        "SELECT id, assignee, status, worker_pid FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    status = row["status"] or ""
+    if status not in {"running", "review", "done", "blocked"}:
+        return None
+    pid = row["worker_pid"]
+    return (
+        row["id"],
+        row["assignee"] or "",
+        status,
+        int(pid) if pid is not None else None,
+    )
+
+
 def dispatch_once(
     conn: sqlite3.Connection,
     *,
@@ -7254,6 +7294,8 @@ def _dispatch_once_locked(
             continue
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
+            if snapshot := _concurrent_claim_snapshot(conn, row["id"]):
+                result.concurrent_claimed.append(snapshot)
             continue
         try:
             resolved_branch_name = None
@@ -7346,6 +7388,8 @@ def _dispatch_once_locked(
             continue
         claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
+            if snapshot := _concurrent_claim_snapshot(conn, row["id"]):
+                result.concurrent_claimed.append(snapshot)
             continue
         try:
             resolved_branch_name = None
