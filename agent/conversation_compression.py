@@ -572,6 +572,28 @@ def compress_context(
             except Exception as _rel_err:
                 logger.debug("compression lock release failed: %s", _rel_err)
 
+    # The lock prevents simultaneous compression, but a stale agent can arrive
+    # just after the winner released it while still holding the old parent
+    # session_id. If the parent is already ended by compression, sit out rather
+    # than creating a second child from the same transcript.
+    if _lock_db is not None and _lock_sid and _lock_holder:
+        try:
+            _session_row = _lock_db.get_session(_lock_sid)
+        except Exception as _session_err:
+            logger.debug("compression stale-parent check failed: %s", _session_err)
+            _session_row = None
+        if isinstance(_session_row, dict) and _session_row.get("end_reason") == "compression":
+            logger.warning(
+                "compression skipped: session=%s was already compressed by another path — "
+                "returning messages unchanged to avoid a second child session",
+                _lock_sid,
+            )
+            _release_lock()
+            _existing_sp = getattr(agent, "_cached_system_prompt", None)
+            if not _existing_sp:
+                _existing_sp = agent._build_system_prompt(system_message)
+            return messages, _existing_sp
+
     # Notify external memory provider before compression discards context
     if agent._memory_manager:
         try:
