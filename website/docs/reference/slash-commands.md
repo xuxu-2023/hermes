@@ -200,6 +200,9 @@ Commands support prefix matching: typing `/h` resolves to `/help`, `/mod` resolv
 
 ## Messaging slash commands
 
+> **Slack Thread Workaround:**
+> Slack does not allow standard slash commands inside message threads. If you are communicating with Hermes inside a Slack thread, you must use the `!` prefix instead of `/` (for example: `!stop`, `!new`, `!status`). The gateway will automatically translate it for you.
+
 The messaging gateway supports the following built-in commands inside Telegram, Discord, Slack, WhatsApp, Signal, Email, Home Assistant, and Teams chats:
 
 | Command | Description |
