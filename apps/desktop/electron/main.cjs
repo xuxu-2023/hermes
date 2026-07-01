@@ -2245,6 +2245,12 @@ async function applyUpdates(opts = {}) {
       env: {
         ...process.env,
         HERMES_HOME,
+        ...(IS_WINDOWS
+          ? {
+              // Let the updater wait for this GUI PID to fully exit before relaunching.
+              HERMES_DESKTOP_PID: String(process.pid)
+            }
+          : {}),
         PATH: pathWithHermesManagedNode(venvBin)
       },
       detached: true,
@@ -2304,6 +2310,12 @@ async function handOffWindowsBootstrapRecovery(reason) {
     env: {
       ...process.env,
       HERMES_HOME,
+      ...(IS_WINDOWS
+        ? {
+            // Let the updater wait for this GUI PID to fully exit before relaunching.
+            HERMES_DESKTOP_PID: String(process.pid)
+          }
+        : {}),
       PATH: pathWithHermesManagedNode(venvBin)
     },
     detached: true,
