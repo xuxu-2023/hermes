@@ -27,6 +27,37 @@ import os
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 
 
+def _goal_active_for_session(session_id: str | None) -> bool:
+    """Best-effort check for whether a /goal loop is active on this session."""
+    if not session_id:
+        return False
+    try:
+        from hermes_cli.goals import GoalManager
+
+        return GoalManager(session_id=session_id).is_active()
+    except Exception:
+        return False
+
+
+def _should_spawn_background_review(
+    *,
+    final_response: str | None,
+    interrupted: bool,
+    should_review_memory: bool,
+    should_review_skills: bool,
+    session_id: str | None,
+) -> bool:
+    """Return whether post-turn memory/skill review should start."""
+    if not final_response or interrupted:
+        return False
+    if not (should_review_memory or should_review_skills):
+        return False
+    # In the TUI/gateway path, the /goal judge and continuation are wired by
+    # the caller after finalize_turn() returns. Starting background review first
+    # can claim the same session and race the synthetic goal continuation.
+    return not _goal_active_for_session(session_id)
+
+
 def finalize_turn(
     agent,
     *,
@@ -469,7 +500,13 @@ def finalize_turn(
 
     # Background memory/skill review — runs AFTER the response is delivered
     # so it never competes with the user's task for model attention.
-    if final_response and not interrupted and (_should_review_memory or _should_review_skills):
+    if _should_spawn_background_review(
+        final_response=final_response,
+        interrupted=interrupted,
+        should_review_memory=_should_review_memory,
+        should_review_skills=_should_review_skills,
+        session_id=agent.session_id,
+    ):
         try:
             agent._spawn_background_review(
                 messages_snapshot=list(messages),

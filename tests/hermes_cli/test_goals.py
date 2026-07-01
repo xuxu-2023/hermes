@@ -301,6 +301,28 @@ class TestGoalManager:
         assert mgr2.state.goal == "do the thing"
         assert mgr2.is_active()
 
+    def test_child_session_inherits_active_parent_goal(self, hermes_home):
+        """Compression/resume child sessions must keep the parent's /goal loop."""
+        from hermes_state import SessionDB
+        from hermes_cli.goals import GoalManager, load_goal
+
+        db = SessionDB()
+        db.create_session("goal-parent", "tui")
+        db.create_session("goal-child", "tui", parent_session_id="goal-parent")
+
+        parent_mgr = GoalManager(session_id="goal-parent", default_max_turns=7)
+        parent_mgr.set("continue this objective")
+
+        child_mgr = GoalManager(session_id="goal-child", default_max_turns=7)
+        assert child_mgr.state is not None
+        assert child_mgr.state.goal == "continue this objective"
+        assert child_mgr.is_active()
+
+        copied = load_goal("goal-child")
+        assert copied is not None
+        assert copied.goal == "continue this objective"
+        assert copied.status == "active"
+
     def test_evaluate_after_turn_done(self, hermes_home):
         """Judge says done → status=done, no continuation."""
         from hermes_cli import goals

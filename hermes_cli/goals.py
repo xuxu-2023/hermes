@@ -544,6 +544,50 @@ def load_goal(session_id: str) -> Optional[GoalState]:
         return None
 
 
+def _load_inheritable_goal_from_ancestors(session_id: str) -> Optional[GoalState]:
+    """Find the nearest active/paused goal in this session's parent chain.
+
+    TUI sessions can rotate into child sessions during compression, recovery,
+    or resume/fork flows. Because /goal state is keyed by session id, a child
+    with no direct ``goal:<sid>`` row would otherwise look goal-less and stop
+    auto-continuing. Copy the closest active/paused ancestor goal onto the
+    child so subsequent checks use the exact current session id.
+    """
+    if not session_id:
+        return None
+    db = _get_session_db()
+    if db is None:
+        return None
+
+    seen = {session_id}
+    try:
+        row = db.get_session(session_id)
+        parent_id = (row or {}).get("parent_session_id")
+    except Exception as exc:
+        logger.debug("GoalManager: get_session failed while inheriting goal: %s", exc)
+        return None
+
+    while parent_id and parent_id not in seen:
+        seen.add(parent_id)
+        state = load_goal(parent_id)
+        if state is not None and state.status in {"active", "paused"}:
+            save_goal(session_id, state)
+            logger.info(
+                "GoalManager: inherited %s goal from ancestor %s to %s",
+                state.status,
+                parent_id,
+                session_id,
+            )
+            return state
+        try:
+            row = db.get_session(parent_id)
+            parent_id = (row or {}).get("parent_session_id")
+        except Exception as exc:
+            logger.debug("GoalManager: parent walk failed while inheriting goal: %s", exc)
+            break
+    return None
+
+
 def save_goal(session_id: str, state: GoalState) -> None:
     """Persist a goal to SessionDB. No-op if DB unavailable."""
     if not session_id:
@@ -1095,6 +1139,8 @@ class GoalManager:
         self.session_id = session_id
         self.default_max_turns = int(default_max_turns or DEFAULT_MAX_TURNS)
         self._state: Optional[GoalState] = load_goal(session_id)
+        if self._state is None:
+            self._state = _load_inheritable_goal_from_ancestors(session_id)
 
     # --- introspection ------------------------------------------------
 
