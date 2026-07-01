@@ -15876,6 +15876,39 @@ def main(
                             except Exception as _goal_exc:
                                 logger.debug("kanban goal loop failed: %s", _goal_exc)
 
+                        # If this dispatcher-spawned worker hit a real error
+                        # (e.g. an inference/model-config failure) without having
+                        # called kanban_complete / kanban_block, stamp the error
+                        # onto its still-open run so the dispatcher surfaces the
+                        # real cause instead of an opaque reap message. Covers
+                        # both exit paths below: ``failed`` runs exit rc=1 (reaped
+                        # as a crash) and ``partial`` runs exit rc=0 (reaped as a
+                        # "protocol violation") — detect_crashed_workers enriches
+                        # both. No-op outside a kanban worker, after a terminal
+                        # transition, or when the run carried no error.
+                        #
+                        # Skip rate-limit / billing failures: those exit with the
+                        # quota sentinel and are reaped as a ``rate_limited``
+                        # requeue (NOT a failure), where the dispatcher
+                        # deliberately ignores any stamped worker error and
+                        # _end_run overwrites it anyway. Stamping there is a
+                        # pure waste, so don't.
+                        if (
+                            isinstance(result, dict)
+                            and result.get("error")
+                            and result.get("failure_reason")
+                            not in ("rate_limit", "billing")
+                        ):
+                            try:
+                                from tools.kanban_tools import (
+                                    record_worker_error_from_env,
+                                )
+                                record_worker_error_from_env(str(result.get("error")))
+                            except Exception as _rec_exc:
+                                logger.debug(
+                                    "kanban worker error-record failed: %s", _rec_exc
+                                )
+
                         # Session ID goes to stderr so piped stdout is clean.
                         print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
 
