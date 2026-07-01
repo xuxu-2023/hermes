@@ -80,6 +80,7 @@ class TestBundledPluginsRegister:
             "ddgs",
             "exa",
             "firecrawl",
+            "oxylabs",
             "parallel",
             "searxng",
             "tavily",
