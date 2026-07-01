@@ -41,14 +41,60 @@ logger = logging.getLogger("gateway.stream_consumer")
 
 # Sentinel to signal the stream is complete
 _DONE = object()
-
-# Sentinel to signal a tool boundary — finalize current message and start a
-# new one so that subsequent text appears below tool progress messages.
 _NEW_SEGMENT = object()
-
-# Queue marker for a completed assistant commentary message emitted between
-# API/tool iterations (for example: "I'll inspect the repo first.").
 _COMMENTARY = object()
+
+
+def ensure_closed_code_fences(text: str) -> str:
+    """Append a closing `` ``` `` fence and/or `` ` `` if the text has
+    orphaned code-block or inline-code markers.
+
+    When model output is truncated mid-code-block (e.g. by token limits
+    or a finish_reason="length"), the resulting message has an unclosed
+    code fence.  On Discord, Slack, and other platforms this causes
+    everything after the orphaned fence to render as a single code block.
+    The same problem applies to inline-code spans closed by a single
+    backtick: an orphaned `` ` `` makes the remainder of the message
+    render as inline code.
+
+    Triple-backtick: count `` ``` `` occurrences.  If odd, append a
+    closing fence on its own line.  This is safe because nested
+    triple-backtick fences (e.g. a literal `` ``` `` inside a code block)
+    are exceedingly rare in model output and, when they do appear, the
+    extra closing fence just creates a brief empty code block at the end
+    of the message — far less harmful than the entire message being one
+    giant code block.
+
+    Single backtick: after balancing triple-backtick fences, strip all
+    complete `` ```…``` `` regions and count remaining standalone `` ` ``.
+    If odd, append a closing inline-code backtick.  Same trade-off: a
+    stray closing backtick may produce a brief empty inline-code span,
+    which is far less harmful than the rest of the message being rendered
+    as inline code.
+
+    Returns:
+        The input text with closing markers appended if needed, or the
+        input text unchanged.
+    """
+    if not isinstance(text, str) or not text:
+        return text
+
+    # Step 1: fix triple-backtick code-block fences (existing logic)
+    if text.count("```") % 2 == 1:
+        text = text.rstrip("\n") + "\n```"
+
+    # Step 2: fix single-backtick inline-code spans
+    # Remove complete ```…``` regions so their internal backticks don't
+    # pollute the standalone count.  Also remove any trailing unclosed
+    # ``` that leaks through (defence in depth).
+    import re
+    without_fences = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
+    without_fences = re.sub(r"```[^`]*$", "", without_fences)
+
+    if without_fences.count("`") % 2 == 1:
+        text = text + "`"
+
+    return text
 
 
 @dataclass
@@ -979,6 +1025,10 @@ class GatewayStreamConsumer:
         Retries each chunk once on flood-control failures with a short delay.
         """
         final_text = self._clean_for_display(text)
+        # Ensure balanced code fences before computing continuation,
+        # so the closing fence reaches the user even when the fallback
+        # only delivers the tail after mid-stream edits failed.
+        final_text = ensure_closed_code_fences(final_text)
         continuation = self._continuation_text(final_text)
         self._fallback_final_send = False
         if not continuation.strip():
@@ -1504,6 +1554,12 @@ class GatewayStreamConsumer:
         # Media files are delivered as native attachments after the stream
         # finishes (via _deliver_media_from_response in gateway/run.py).
         text = self._clean_for_display(text)
+        # Ensure code fences are balanced before send/edit.  Model output
+        # truncated mid-code-block (e.g. finish_reason="length") leaves an
+        # orphaned ``` which, on Discord/Slack/Matrix, causes the entire
+        # remaining output to render as a single code block.  This covers
+        # the streaming edit path (G2) and first-send path alike.
+        text = ensure_closed_code_fences(text)
         # A bare streaming cursor is not meaningful user-visible content and
         # can render as a stray tofu/white-box message on some clients.
         visible_without_cursor = text
