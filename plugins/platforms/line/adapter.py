@@ -75,6 +75,7 @@ import tempfile
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote as _urlquote
@@ -441,6 +442,7 @@ def _allowed_for_source(
 # ---------------------------------------------------------------------------
 # LINE Reply / Push HTTP client
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 
 class _LineClient:
     """Thin async wrapper around the LINE Messaging API.
@@ -736,6 +738,9 @@ class LineAdapter(BasePlatformAdapter):
         # button per chat at a time. Postback cache request_id keyed by chat_id.
         self._pending_buttons: Dict[str, str] = {}
 
+        # Mention gating — compiled regex patterns for group wake-word triggers.
+        self._mention_patterns: List[re.Pattern] = self._compile_mention_patterns()
+
     # ------------------------------------------------------------------
     # Connection lifecycle
     # ------------------------------------------------------------------
@@ -856,6 +861,355 @@ class LineAdapter(BasePlatformAdapter):
             self._lock_key = None
 
     # ------------------------------------------------------------------
+    # Mention gating (aligned with Telegram pattern)
+    # ------------------------------------------------------------------
+
+    def _line_require_mention(self) -> bool:
+        """Return whether group/room chats require explicit bot trigger."""
+        configured = self.config.extra.get("require_mention")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in {"true", "1", "yes", "on"}
+            return bool(configured)
+        return os.getenv("LINE_REQUIRE_MENTION", "false").lower() in {"true", "1", "yes", "on"}
+
+    def _line_observe_unmentioned_group_messages(self) -> bool:
+        """Return whether skipped unmentioned group messages are stored as context."""
+        configured = self.config.extra.get("observe_unmentioned_group_messages")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in {"true", "1", "yes", "on"}
+            return bool(configured)
+        return os.getenv("LINE_OBSERVE_UNMENTIONED_GROUP_MESSAGES", "false").lower() in {"true", "1", "yes", "on"}
+
+    def _line_exclusive_bot_mentions(self) -> bool:
+        """Return whether explicit bot mentions exclusively route group messages."""
+        configured = self.config.extra.get("exclusive_bot_mentions")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in {"true", "1", "yes", "on"}
+            return bool(configured)
+        return os.getenv("LINE_EXCLUSIVE_BOT_MENTIONS", "true").lower() in {"true", "1", "yes", "on"}
+
+    def _line_free_response_channels(self) -> set:
+        """Return set of group/room IDs that bypass mention requirement."""
+        raw = self.config.extra.get("free_response_channels")
+        if raw is None:
+            raw = os.getenv("LINE_FREE_RESPONSE_CHANNELS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        return {part.strip() for part in str(raw).split(",") if part.strip()}
+
+    def _compile_mention_patterns(self) -> List[re.Pattern]:
+        """Compile optional regex wake-word patterns for group triggers."""
+        import json as _json
+        patterns = self.config.extra.get("mention_patterns")
+        if patterns is None:
+            raw = os.getenv("LINE_MENTION_PATTERNS", "").strip()
+            if raw:
+                try:
+                    loaded = _json.loads(raw)
+                except Exception:
+                    loaded = [part.strip() for part in raw.splitlines() if part.strip()]
+                    if not loaded:
+                        loaded = [part.strip() for part in raw.split(",") if part.strip()]
+                patterns = loaded
+        if patterns is None:
+            return []
+        if isinstance(patterns, str):
+            patterns = [patterns]
+        if not isinstance(patterns, list):
+            logger.warning("LINE: mention_patterns must be a list or string; got %s", type(patterns).__name__)
+            return []
+        compiled: List[re.Pattern] = []
+        for pattern in patterns:
+            if not isinstance(pattern, str) or not pattern.strip():
+                continue
+            try:
+                compiled.append(re.compile(pattern, re.IGNORECASE))
+            except re.error:
+                logger.warning("LINE: ignoring invalid mention pattern %r", pattern)
+        return compiled
+
+    def _is_line_group_chat(self, source: Dict) -> bool:
+        """Treat both 'group' and 'room' as group-like for mention gating."""
+        return source.get("type", "") in ("group", "room")
+
+    def _line_message_mentions_bot(self, event: Dict) -> bool:
+        """Check LINE native mentionees[].isSelf or type=all."""
+        message = event.get("message") or {}
+        mentionees = message.get("mention", {}).get("mentionees", [])
+        return any(m.get("isSelf") or m.get("type") == "all" for m in mentionees)
+
+    def _line_message_matches_mention_patterns(self, text: str) -> bool:
+        """Check text against compiled regex wake-word patterns."""
+        if not self._mention_patterns:
+            return False
+        return any(p.search(text) for p in self._mention_patterns)
+
+    def _is_reply_to_line_bot(self, event: Dict) -> bool:
+        """Best-effort: check if message is a reply to bot's own message.
+
+        LINE webhook may not always provide enough fields to confirm this.
+        Conservative: return False when uncertain.
+        """
+        # LINE messages may have quote metadata but it's not always populated.
+        # Best-effort: needs further investigation of LINE webhook reply fields.
+        return False
+
+    def _line_bot_mention_excludes_self(self, event: Dict) -> bool:
+        """Check if another bot is explicitly mentioned (exclusive_bot_mentions).
+
+        LINE's mention metadata does not distinguish human users from other
+        bots — both report ``type="user"``.  Returning ``True`` here would
+        silently drop any message that @mentions another person, which is
+        worse than the false negative of occasionally processing a message
+        meant for another bot.  Therefore this helper always returns ``False``
+        for LINE.
+
+        If LINE ever adds bot-identification metadata, this can be revisited.
+        """
+        return False
+
+    def _should_process_line_message(self, event: Dict) -> bool:
+        """Apply LINE group trigger rules.
+
+        DMs remain unrestricted. Group/room messages are accepted when:
+        - require_mention is disabled
+        - chat is in free_response_channels
+        - bot is @mentioned (native)
+        - text matches mention_patterns (regex)
+        - message is a reply to bot (best-effort)
+        """
+        source = event.get("source") or {}
+        msg = event.get("message") or {}
+        msg_type = msg.get("type", "")
+        msg_text = msg.get("text", "") if msg_type == "text" else ""
+        mentionees = msg.get("mention", {}).get("mentionees", [])
+        if not self._is_line_group_chat(source):
+            return True
+
+        chat_id, _ = _resolve_chat(source)
+
+        if self._line_exclusive_bot_mentions() and self._line_bot_mention_excludes_self(event):
+            return False
+
+        if chat_id in self._line_free_response_channels():
+            return True
+        if not self._line_require_mention():
+            return True
+        if self._line_message_mentions_bot(event):
+            return True
+
+        msg = event.get("message") or {}
+        text = msg.get("text", "") if msg.get("type") == "text" else ""
+        if text and self._line_message_matches_mention_patterns(text):
+            return True
+
+        if self._is_reply_to_line_bot(event):
+            return True
+
+        return False
+
+    def _should_observe_unmentioned_line_group_message(self, event: Dict) -> bool:
+        """Return True when a group message should be stored but not dispatched."""
+        if not self._line_observe_unmentioned_group_messages():
+            return False
+
+        source = event.get("source") or {}
+        if not self._is_line_group_chat(source):
+            return False
+
+        if self._line_exclusive_bot_mentions() and self._line_bot_mention_excludes_self(event):
+            return False
+
+        chat_id, _ = _resolve_chat(source)
+        if chat_id in self._line_free_response_channels():
+            return False
+        if not self._line_require_mention():
+            return False
+
+        # Only observe messages skipped by the mention gate
+        msg = event.get("message") or {}
+        if msg.get("type") == "text":
+            if self._line_message_mentions_bot(event):
+                return False
+            text = msg.get("text", "")
+            if self._line_message_matches_mention_patterns(text):
+                return False
+
+        # Require explicit chat allowlist for shared observed history
+        allowed = self._line_observe_allowed_chats()
+        if not allowed or chat_id not in allowed:
+            return False
+
+        return True
+
+    def _line_group_observe_shared_source(self, source_obj):
+        """Return a chat-scoped source for observed LINE group context.
+
+        Removes user_id so observed history is shared at chat scope,
+        preventing per-user memory pollution.
+        """
+        import dataclasses
+        return dataclasses.replace(source_obj, user_id=None, user_name=None, user_id_alt=None)
+
+    def _line_group_observe_attributed_text(self, event_obj) -> str:
+        """Format observed message with sender attribution."""
+        user_id = event_obj.source.user_id or "unknown"
+        sender = event_obj.source.user_name or user_id
+        return f"[{sender}|{user_id}]\n{event_obj.text or ''}"
+
+    def _line_group_observe_channel_prompt(self) -> str:
+        """Return observation mode channel prompt for LINE."""
+        return (
+            "You are handling a LINE group chat message.\n"
+            "- Treat only the current new message as addressed to you.\n"
+            "- The observed group context is available when relevant for understanding "
+            "the current message, but do not answer old observed messages as separate requests.\n"
+            "(observed LINE group context)"
+        )
+
+    def _line_group_allowed_chats(self) -> set[str]:
+        """Return LINE chats authorized at group scope for gateway auth."""
+        raw = self.config.extra.get("group_allowed_chats")
+        if raw is None:
+            raw = os.getenv("LINE_GROUP_ALLOWED_CHATS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        return {part.strip() for part in str(raw).split(",") if part.strip()}
+
+    def _line_observe_allowed_chats(self) -> set[str]:
+        """Chats where observed group context may use a shared source.
+
+        ``group_allowed_chats`` is the gateway authorization allowlist for
+        user-less group sources.  ``allowed_groups`` remains an optional
+        response gate; when set, observed context must satisfy both lists.
+        """
+        group_allowed = self._line_group_allowed_chats()
+        if not group_allowed:
+            return set()
+        if self.allowed_groups:
+            return group_allowed & self.allowed_groups
+        return group_allowed
+
+    def _apply_line_group_observe_attribution(self, event_obj):
+        """Align triggered group turns with observed-history attribution.
+
+        Mirror of Telegram's _apply_telegram_group_observe_attribution:
+        redirect agent to the shared observation session so it can read
+        previously observed context when answering a @mention.
+        """
+        if not self._line_observe_unmentioned_group_messages():
+            return event_obj
+        source = getattr(event_obj, "source", None)
+        if not source:
+            return event_obj
+        if not self._is_line_group_chat({"type": getattr(source, "chat_type", "")}):
+            return event_obj
+        chat_id = getattr(source, "chat_id", None)
+        allowed = self._line_observe_allowed_chats()
+        if not allowed or chat_id not in allowed:
+            return event_obj
+        shared_source = self._line_group_observe_shared_source(source)
+        observe_prompt = self._line_group_observe_channel_prompt()
+        import dataclasses
+        channel_prompt = f"{event_obj.channel_prompt}\n\n{observe_prompt}" if event_obj.channel_prompt else observe_prompt
+        # Do NOT prefix text with attribution for commands — it breaks is_command()
+        if event_obj.message_type == MessageType.COMMAND:
+            return dataclasses.replace(
+                event_obj,
+                source=shared_source,
+                channel_prompt=channel_prompt,
+            )
+        return dataclasses.replace(
+            event_obj,
+            text=self._line_group_observe_attributed_text(event_obj),
+            source=shared_source,
+            channel_prompt=channel_prompt,
+        )
+
+    def _clean_line_bot_trigger_text(self, text: str) -> str:
+        """Strip trigger noise from dispatched text after mention match."""
+        if not text:
+            return text
+        cleaned = text
+        for pattern in self._mention_patterns:
+            cleaned = pattern.sub("", cleaned)
+        return cleaned.strip()
+
+    def _observe_unmentioned_line_group_message(self, event: Dict, event_obj) -> None:
+        """Append skipped LINE group chatter to session transcript without dispatching."""
+        store = getattr(self, "_session_store", None)
+        if not store:
+            return
+        try:
+            shared_source = self._line_group_observe_shared_source(event_obj.source)
+            session_entry = store.get_or_create_session(shared_source)
+            entry = {
+                "role": "user",
+                "content": self._line_group_observe_attributed_text(event_obj),
+                "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+                "observed": True,
+            }
+            if event_obj.message_id:
+                entry["message_id"] = str(event_obj.message_id)
+            if event_obj.media_urls:
+                entry["media_urls"] = event_obj.media_urls
+            store.append_to_transcript(session_entry.session_id, entry)
+            logger.info(
+                "LINE: group message observed (no bot trigger): chat=%s from=%s",
+                event_obj.source.chat_id or "unknown",
+                event_obj.source.user_id or "unknown",
+            )
+        except Exception as exc:
+            logger.warning("LINE: Failed to observe group message: %s", exc)
+
+    async def _cache_observed_line_media(self, msg: Dict, event_obj, max_bytes: int = 5 * 1024 * 1024) -> None:
+        """Cache an unmentioned LINE group attachment.
+
+        Uses cache_media_bytes() for proper image/video/audio/document classification.
+        Size limit: 5MB for passive observation (vs 200MB for active processing).
+        """
+        from gateway.platforms.base import cache_media_bytes
+
+        msg_type = msg.get("type", "")
+        message_id = msg.get("id", "")
+        if msg_type not in {"image", "audio", "video", "file"}:
+            return
+        if not self._client or not message_id:
+            return
+
+        try:
+            data = await self._client.fetch_content(message_id)
+        except Exception as exc:
+            logger.warning("LINE: failed to fetch observed %s content: %s", msg_type, exc)
+            return
+
+        if len(data) > max_bytes:
+            event_obj.text = f"{event_obj.text or ''}\n[observed {msg_type}: too large, not cached]"
+            return
+
+        ext_map = {"image": ".jpg", "audio": ".m4a", "video": ".mp4", "file": ".txt"}
+        ext = ext_map.get(msg_type, ".txt")
+        mime_map = {"image": "image/jpeg", "audio": "audio/m4a", "video": "video/mp4"}
+        mime = mime_map.get(msg_type, "")
+        # cache_media_bytes expects "image"/"video"/"audio"/"document" as default_kind
+        kind = "document" if msg_type == "file" else msg_type
+
+        try:
+            cached = cache_media_bytes(data, filename=f"observed{ext}", mime_type=mime, default_kind=kind)
+        except Exception as exc:
+            logger.warning("LINE: failed to cache observed %s: %s", msg_type, exc)
+            return
+
+        if cached:
+            event_obj.media_urls = [cached.path]
+            event_obj.media_types = [cached.media_type]
+            event_obj.text = f"{event_obj.text or ''}\n{cached.context_note()}"
+            logger.info("LINE: Cached observed group %s at %s", msg_type, cached.path)
+
+    # ------------------------------------------------------------------
     # Webhook handlers
     # ------------------------------------------------------------------
 
@@ -945,8 +1299,38 @@ class LineAdapter(BasePlatformAdapter):
                 time.time() + LINE_REPLY_TOKEN_TTL_SECONDS,
             )
 
-        # Handle media inbound — fetch the binary, cache it, and surface a
-        # vision-tool-friendly local path on the MessageEvent.
+        # ── Mention gating BEFORE media download ──
+        if not self._should_process_line_message(event):
+            if self._should_observe_unmentioned_line_group_message(event):
+                # Build minimal event for observation (no media download yet)
+                text = ""
+                if msg_type == "text":
+                    text = msg.get("text", "") or ""
+                elif msg_type == "sticker":
+                    keywords = msg.get("keywords") or []
+                    text = f"[sticker: {', '.join(keywords)}]" if keywords else "[sticker]"
+                elif msg_type == "location":
+                    title = msg.get("title", "")
+                    address = msg.get("address", "")
+                    text = f"[location: {title} {address}]".strip()
+                else:
+                    text = f"[{msg_type}]"
+
+                source_obj = self.build_source(
+                    chat_id=chat_id, chat_type=chat_type,
+                    user_id=user_id, user_name=user_id, chat_name=chat_id,
+                )
+                event_obj = MessageEvent(
+                    text=text,
+                    message_type=_LINE_MESSAGE_TYPES.get(msg_type, MessageType.TEXT),
+                    source=source_obj, raw_message=event, message_id=message_id,
+                )
+                # Cache media ONLY when observe gate passes (5MB limit)
+                await self._cache_observed_line_media(msg, event_obj)
+                self._observe_unmentioned_line_group_message(event, event_obj)
+            return
+
+        # ── Normal flow: download media + dispatch ──
         media_urls: List[str] = []
         media_types: List[str] = []
         text = ""
@@ -991,7 +1375,15 @@ class LineAdapter(BasePlatformAdapter):
             media_types=media_types,
         )
 
-        await self.handle_message(event_obj)
+        # Clean trigger text first, then apply observation attribution
+        # (matches Telegram's order: _clean_bot_trigger_text → _apply_telegram_group_observe_attribution)
+        event_obj.text = self._clean_line_bot_trigger_text(event_obj.text)
+        event_obj = self._apply_line_group_observe_attribution(event_obj)
+
+        try:
+            await self.handle_message(event_obj)
+        except Exception as exc:
+            logger.exception("LINE: handle_message FAILED: %s", exc)
 
     async def _handle_postback_event(self, event: Dict[str, Any]) -> None:
         """User tapped the slow-LLM postback button — deliver cached payload."""

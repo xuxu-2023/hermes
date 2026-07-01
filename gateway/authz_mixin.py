@@ -312,6 +312,9 @@ class GatewayAuthorizationMixin:
                 Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS",
                 Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
             }.get(source.platform, "")
+            # LINE is a plugin platform (no Platform.LINE enum); use value check.
+            if not chat_allowlist_env and getattr(source.platform, "value", "") == "line":
+                chat_allowlist_env = "LINE_GROUP_ALLOWED_CHATS"
             if chat_allowlist_env:
                 raw_chat_allowlist = os.getenv(chat_allowlist_env, "").strip()
                 if raw_chat_allowlist:

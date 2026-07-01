@@ -19,6 +19,7 @@ import hashlib
 import hmac
 import base64
 import json
+import re
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -674,3 +675,311 @@ class TestMessageTypeMapping:
     def test_unknown_type_falls_back_to_text(self):
         MessageType = _line.MessageType
         assert _line._LINE_MESSAGE_TYPES.get("flex", MessageType.TEXT) == MessageType.TEXT
+
+
+# ---------------------------------------------------------------------------
+# 9. Mention gating + observation mode
+# ---------------------------------------------------------------------------
+
+class TestMentionGating:
+
+    @pytest.fixture
+    def adapter(self, monkeypatch):
+        monkeypatch.delenv("LINE_CHANNEL_ACCESS_TOKEN", raising=False)
+        monkeypatch.delenv("LINE_CHANNEL_SECRET", raising=False)
+        monkeypatch.delenv("LINE_REQUIRE_MENTION", raising=False)
+        monkeypatch.delenv("LINE_OBSERVE_UNMENTIONED_GROUP_MESSAGES", raising=False)
+        monkeypatch.delenv("LINE_FREE_RESPONSE_CHANNELS", raising=False)
+        monkeypatch.delenv("LINE_MENTION_PATTERNS", raising=False)
+        monkeypatch.delenv("LINE_EXCLUSIVE_BOT_MENTIONS", raising=False)
+        from gateway.config import PlatformConfig
+        cfg = PlatformConfig(enabled=True, extra={
+            "channel_access_token": "tok",
+            "channel_secret": "sec",
+        })
+        ad = LineAdapter(cfg)
+        ad._client = MagicMock()
+        return ad
+
+    # --- _is_line_group_chat ---
+
+    def test_group_is_group_chat(self, adapter):
+        assert adapter._is_line_group_chat({"type": "group"})
+
+    def test_room_is_group_chat(self, adapter):
+        assert adapter._is_line_group_chat({"type": "room"})
+
+    def test_user_is_not_group_chat(self, adapter):
+        assert not adapter._is_line_group_chat({"type": "user"})
+
+    # --- _line_require_mention ---
+
+    def test_require_mention_default_false(self, adapter):
+        assert not adapter._line_require_mention()
+
+    def test_require_mention_from_extra(self, adapter):
+        adapter.config.extra["require_mention"] = True
+        assert adapter._line_require_mention()
+
+    def test_require_mention_from_env(self, adapter, monkeypatch):
+        monkeypatch.setenv("LINE_REQUIRE_MENTION", "true")
+        assert adapter._line_require_mention()
+
+    # --- _line_observe_unmentioned_group_messages ---
+
+    def test_observe_default_false(self, adapter):
+        assert not adapter._line_observe_unmentioned_group_messages()
+
+    def test_observe_from_extra(self, adapter):
+        adapter.config.extra["observe_unmentioned_group_messages"] = True
+        assert adapter._line_observe_unmentioned_group_messages()
+
+    # --- _line_message_mentions_bot ---
+
+    def test_native_mention_is_self(self, adapter):
+        event = {"message": {"mention": {"mentionees": [{"isSelf": True}]}}}
+        assert adapter._line_message_mentions_bot(event)
+
+    def test_native_mention_all(self, adapter):
+        event = {"message": {"mention": {"mentionees": [{"type": "all"}]}}}
+        assert adapter._line_message_mentions_bot(event)
+
+    def test_native_mention_other_user(self, adapter):
+        event = {"message": {"mention": {"mentionees": [{"isSelf": False, "type": "user"}]}}}
+        assert not adapter._line_message_mentions_bot(event)
+
+    def test_no_mention(self, adapter):
+        event = {"message": {}}
+        assert not adapter._line_message_mentions_bot(event)
+
+    # --- _line_message_matches_mention_patterns ---
+
+    def test_regex_match(self, adapter):
+        adapter._mention_patterns = [re.compile("喵奈", re.IGNORECASE)]
+        assert adapter._line_message_matches_mention_patterns("喵奈 幫我看看")
+
+    def test_regex_no_match(self, adapter):
+        adapter._mention_patterns = [re.compile("喵奈", re.IGNORECASE)]
+        assert not adapter._line_message_matches_mention_patterns("一般訊息")
+
+    def test_regex_empty_patterns(self, adapter):
+        adapter._mention_patterns = []
+        assert not adapter._line_message_matches_mention_patterns("喵奈 幫我看看")
+
+    # --- _should_process_line_message ---
+
+    def test_dm_always_processed(self, adapter):
+        event = {"source": {"type": "user", "userId": "U1"}}
+        assert adapter._should_process_line_message(event)
+
+    def test_group_no_mention_require_mention_disabled(self, adapter):
+        event = {"source": {"type": "group", "groupId": "C1", "userId": "U1"},
+                 "message": {"type": "text", "text": "hi"}}
+        assert adapter._should_process_line_message(event)
+
+    def test_group_no_mention_require_mention_enabled_skips(self, adapter):
+        adapter.config.extra["require_mention"] = True
+        event = {"source": {"type": "group", "groupId": "C1", "userId": "U1"},
+                 "message": {"type": "text", "text": "hi"}}
+        assert not adapter._should_process_line_message(event)
+
+    def test_group_native_mention_require_mention_enabled(self, adapter):
+        adapter.config.extra["require_mention"] = True
+        event = {"source": {"type": "group", "groupId": "C1", "userId": "U1"},
+                 "message": {"type": "text", "text": "@bot hi",
+                             "mention": {"mentionees": [{"isSelf": True}]}}}
+        assert adapter._should_process_line_message(event)
+
+    def test_group_regex_match_require_mention_enabled(self, adapter):
+        adapter.config.extra["require_mention"] = True
+        adapter._mention_patterns = [re.compile("喵奈")]
+        event = {"source": {"type": "group", "groupId": "C1", "userId": "U1"},
+                 "message": {"type": "text", "text": "喵奈 幫我看看"}}
+        assert adapter._should_process_line_message(event)
+
+    def test_free_response_channel_bypasses_mention(self, adapter):
+        adapter.config.extra["require_mention"] = True
+        adapter.config.extra["free_response_channels"] = ["C1"]
+        event = {"source": {"type": "group", "groupId": "C1", "userId": "U1"},
+                 "message": {"type": "text", "text": "hi"}}
+        assert adapter._should_process_line_message(event)
+
+    def test_room_treated_as_group(self, adapter):
+        adapter.config.extra["require_mention"] = True
+        event = {"source": {"type": "room", "roomId": "R1", "userId": "U1"},
+                 "message": {"type": "text", "text": "hi"}}
+        assert not adapter._should_process_line_message(event)
+
+    # --- exclusive_bot_mentions ---
+
+    def test_exclusive_bot_excludes_when_enabled(self, adapter):
+        adapter.config.extra["require_mention"] = True
+        adapter.config.extra["exclusive_bot_mentions"] = True
+        event = {"source": {"type": "group", "groupId": "C1", "userId": "U1"},
+                 "message": {"type": "text", "text": "@otherbot hi",
+                             "mention": {"mentionees": [{"isSelf": False, "type": "user"}]}}}
+        assert not adapter._should_process_line_message(event)
+
+    def test_exclusive_bot_does_not_exclude_self_mention(self, adapter):
+        adapter.config.extra["require_mention"] = True
+        adapter.config.extra["exclusive_bot_mentions"] = True
+        event = {"source": {"type": "group", "groupId": "C1", "userId": "U1"},
+                 "message": {"type": "text", "text": "@bot hi",
+                             "mention": {"mentionees": [{"isSelf": True}]}}}
+        assert adapter._should_process_line_message(event)
+
+    def test_exclusive_bot_disabled_allows_other_mention(self, adapter):
+        adapter.config.extra["require_mention"] = False
+        adapter.config.extra["exclusive_bot_mentions"] = False
+        event = {"source": {"type": "group", "groupId": "C1", "userId": "U1"},
+                 "message": {"type": "text", "text": "@otherbot hi",
+                             "mention": {"mentionees": [{"isSelf": False, "type": "user"}]}}}
+        assert adapter._should_process_line_message(event)
+
+    # --- _should_observe_unmentioned_line_group_message ---
+
+    def test_observe_requires_observe_enabled(self, adapter):
+        adapter.config.extra["require_mention"] = True
+        event = {"source": {"type": "group", "groupId": "C1", "userId": "U1"},
+                 "message": {"type": "text", "text": "hi"}}
+        assert not adapter._should_observe_unmentioned_line_group_message(event)
+
+    def test_observe_requires_require_mention(self, adapter):
+        adapter.config.extra["observe_unmentioned_group_messages"] = True
+        adapter.config.extra["require_mention"] = False
+        event = {"source": {"type": "group", "groupId": "C1", "userId": "U1"},
+                 "message": {"type": "text", "text": "hi"}}
+        assert not adapter._should_observe_unmentioned_line_group_message(event)
+
+    def test_observe_triggers_for_unmentioned_group(self, adapter):
+        adapter.config.extra["require_mention"] = True
+        adapter.config.extra["observe_unmentioned_group_messages"] = True
+        adapter.config.extra["group_allowed_chats"] = ["C1"]
+        event = {"source": {"type": "group", "groupId": "C1", "userId": "U1"},
+                 "message": {"type": "text", "text": "hi"}}
+        assert adapter._should_observe_unmentioned_line_group_message(event)
+
+    def test_observe_skips_when_mentioned(self, adapter):
+        adapter.config.extra["require_mention"] = True
+        adapter.config.extra["observe_unmentioned_group_messages"] = True
+        event = {"source": {"type": "group", "groupId": "C1", "userId": "U1"},
+                 "message": {"type": "text", "text": "@bot hi",
+                             "mention": {"mentionees": [{"isSelf": True}]}}}
+        assert not adapter._should_observe_unmentioned_line_group_message(event)
+
+    def test_observe_skips_free_response(self, adapter):
+        adapter.config.extra["require_mention"] = True
+        adapter.config.extra["observe_unmentioned_group_messages"] = True
+        adapter.config.extra["free_response_channels"] = ["C1"]
+        event = {"source": {"type": "group", "groupId": "C1", "userId": "U1"},
+                 "message": {"type": "text", "text": "hi"}}
+        assert not adapter._should_observe_unmentioned_line_group_message(event)
+
+    def test_observe_skips_dm(self, adapter):
+        adapter.config.extra["require_mention"] = True
+        adapter.config.extra["observe_unmentioned_group_messages"] = True
+        event = {"source": {"type": "user", "userId": "U1"},
+                 "message": {"type": "text", "text": "hi"}}
+        assert not adapter._should_observe_unmentioned_line_group_message(event)
+
+    # --- _compile_mention_patterns ---
+
+    def test_compile_from_extra(self, adapter):
+        adapter.config.extra["mention_patterns"] = ["喵奈", "@bot"]
+        patterns = adapter._compile_mention_patterns()
+        assert len(patterns) == 2
+
+    def test_compile_from_env_json(self, adapter, monkeypatch):
+        monkeypatch.setenv("LINE_MENTION_PATTERNS", '["喵奈"]')
+        patterns = adapter._compile_mention_patterns()
+        assert len(patterns) == 1
+
+    def test_compile_invalid_regex_skipped(self, adapter):
+        adapter.config.extra["mention_patterns"] = ["[invalid", "good"]
+        patterns = adapter._compile_mention_patterns()
+        assert len(patterns) == 1
+
+    # --- _line_free_response_channels ---
+
+    def test_free_response_from_extra(self, adapter):
+        adapter.config.extra["free_response_channels"] = ["C1", "C2"]
+        result = adapter._line_free_response_channels()
+        assert "C1" in result
+        assert "C2" in result
+
+    def test_free_response_from_env(self, adapter, monkeypatch):
+        monkeypatch.setenv("LINE_FREE_RESPONSE_CHANNELS", "C1,C2")
+        result = adapter._line_free_response_channels()
+        assert "C1" in result
+
+    # --- _line_exclusive_bot_mentions ---
+
+    def test_exclusive_default_true(self, adapter):
+        assert adapter._line_exclusive_bot_mentions()
+
+    def test_exclusive_from_extra(self, adapter):
+        adapter.config.extra["exclusive_bot_mentions"] = False
+        assert not adapter._line_exclusive_bot_mentions()
+
+    # --- _line_group_observe_shared_source ---
+
+    def test_shared_source_removes_user_id(self, adapter):
+        from gateway.platforms.base import SessionSource
+        source = SessionSource(
+            platform="line", user_id="U1", user_name="nick",
+            chat_id="C1", chat_type="group", chat_name="G1",
+        )
+        shared = adapter._line_group_observe_shared_source(source)
+        assert shared.user_id is None
+        assert shared.user_name is None
+        assert shared.chat_id == "C1"
+
+    # --- _line_group_observe_attributed_text ---
+
+    def test_attributed_text_format(self, adapter):
+        from gateway.platforms.base import MessageEvent, SessionSource
+        source = SessionSource(
+            platform="line", user_id="U1", user_name="Nick",
+            chat_id="C1", chat_type="group", chat_name="G1",
+        )
+        event_obj = MessageEvent(text="hello", source=source)
+        result = adapter._line_group_observe_attributed_text(event_obj)
+        assert "[Nick|U1]" in result
+        assert "hello" in result
+
+    # --- _clean_line_bot_trigger_text ---
+
+    def test_clean_strips_mention_pattern(self, adapter):
+        adapter._mention_patterns = [re.compile("喵奈")]
+        assert adapter._clean_line_bot_trigger_text("喵奈 幫我看看") == "幫我看看"
+
+    def test_clean_empty_text(self, adapter):
+        assert adapter._clean_line_bot_trigger_text("") == ""
+
+    # --- _observe_unmentioned_line_group_message (transcript write) ---
+
+    def test_observe_writes_to_transcript(self, adapter):
+        from gateway.platforms.base import MessageEvent, SessionSource
+        mock_store = MagicMock()
+        mock_session = MagicMock()
+        mock_session.session_id = "sess-1"
+        mock_store.get_or_create_session.return_value = mock_session
+        adapter._session_store = mock_store
+
+        source = SessionSource(
+            platform="line", user_id="U1", user_name="Nick",
+            chat_id="C1", chat_type="group", chat_name="G1",
+        )
+        event_obj = MessageEvent(text="hello", source=source, message_id="m1")
+        event = {"source": {"type": "group", "groupId": "C1", "userId": "U1"},
+                 "message": {"type": "text", "text": "hello"}}
+
+        adapter._observe_unmentioned_line_group_message(event, event_obj)
+
+        mock_store.append_to_transcript.assert_called_once()
+        call_args = mock_store.append_to_transcript.call_args
+        entry = call_args[0][1]
+        assert entry["role"] == "user"
+        assert entry["observed"] is True
+        assert "Nick" in entry["content"]
+        assert entry["message_id"] == "m1"
