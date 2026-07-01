@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.environments.base import BaseEnvironment, _popen_bash
 from tools.environments.file_sync import (
     FileSyncManager,
@@ -19,6 +20,11 @@ from tools.environments.file_sync import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _hidden_console_kwargs() -> dict:
+    flags = windows_hide_flags()
+    return {"creationflags": flags} if flags else {}
 
 
 def _ensure_ssh_available() -> None:
@@ -107,6 +113,7 @@ class SSHEnvironment(BaseEnvironment):
                 text=True,
                 timeout=15,
                 stdin=subprocess.DEVNULL,
+                **_hidden_console_kwargs(),
             )
             if result.returncode != 0:
                 error_msg = result.stderr.strip() or result.stdout.strip()
@@ -125,6 +132,7 @@ class SSHEnvironment(BaseEnvironment):
                 text=True,
                 timeout=10,
                 stdin=subprocess.DEVNULL,
+                **_hidden_console_kwargs(),
             )
             home = result.stdout.strip()
             if home and result.returncode == 0:
@@ -152,6 +160,7 @@ class SSHEnvironment(BaseEnvironment):
             text=True,
             timeout=10,
             stdin=subprocess.DEVNULL,
+            **_hidden_console_kwargs(),
         )
 
     # _get_sync_files provided via iter_sync_files in FileSyncManager init
@@ -167,6 +176,7 @@ class SSHEnvironment(BaseEnvironment):
             text=True,
             timeout=10,
             stdin=subprocess.DEVNULL,
+            **_hidden_console_kwargs(),
         )
 
         scp_cmd = ["scp", "-o", f"ControlPath={self.control_socket}"]
@@ -181,6 +191,7 @@ class SSHEnvironment(BaseEnvironment):
             text=True,
             timeout=30,
             stdin=subprocess.DEVNULL,
+            **_hidden_console_kwargs(),
         )
         if result.returncode != 0:
             raise RuntimeError(f"scp failed: {result.stderr.strip()}")
@@ -210,6 +221,7 @@ class SSHEnvironment(BaseEnvironment):
                 text=True,
                 timeout=30,
                 stdin=subprocess.DEVNULL,
+                **_hidden_console_kwargs(),
             )
             if result.returncode != 0:
                 raise RuntimeError(f"remote mkdir failed: {result.stderr.strip()}")
@@ -257,11 +269,13 @@ class SSHEnvironment(BaseEnvironment):
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                **_hidden_console_kwargs(),
             )
             try:
                 ssh_proc = subprocess.Popen(
                     ssh_cmd, stdin=tar_proc.stdout, stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
+                    **_hidden_console_kwargs(),
                 )
             except Exception:
                 tar_proc.kill()
@@ -314,6 +328,7 @@ class SSHEnvironment(BaseEnvironment):
                 stdout=f,
                 stderr=subprocess.PIPE,
                 timeout=120,
+                **_hidden_console_kwargs(),
             )
         if result.returncode != 0:
             raise RuntimeError(f"SSH bulk download failed: {result.stderr.decode(errors='replace').strip()}")
@@ -328,6 +343,7 @@ class SSHEnvironment(BaseEnvironment):
             text=True,
             timeout=10,
             stdin=subprocess.DEVNULL,
+            **_hidden_console_kwargs(),
         )
         if result.returncode != 0:
             raise RuntimeError(f"remote rm failed: {result.stderr.strip()}")
@@ -350,7 +366,7 @@ class SSHEnvironment(BaseEnvironment):
         else:
             cmd.extend(["bash", "-c", shlex.quote(cmd_string)])
 
-        return _popen_bash(cmd, stdin_data)
+        return _popen_bash(cmd, stdin_data, **_hidden_console_kwargs())
 
     def cleanup(self):
         if self._sync_manager:
@@ -366,6 +382,7 @@ class SSHEnvironment(BaseEnvironment):
                     capture_output=True,
                     timeout=5,
                     stdin=subprocess.DEVNULL,
+                    **_hidden_console_kwargs(),
                 )
             except (OSError, subprocess.SubprocessError):
                 pass

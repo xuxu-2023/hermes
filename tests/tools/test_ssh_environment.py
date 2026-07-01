@@ -66,6 +66,39 @@ class TestBuildSSHCommand:
         env = SSHEnvironment(host="h", user="u")
         assert env._build_ssh_command()[-1] == "u@h"
 
+    def test_hidden_console_kwargs_are_empty_when_not_needed(self, monkeypatch):
+        monkeypatch.setattr(ssh_env, "windows_hide_flags", lambda: 0)
+
+        assert ssh_env._hidden_console_kwargs() == {}
+
+    def test_run_bash_hides_ssh_console_when_windows_flag_available(self, monkeypatch):
+        captured = {}
+
+        monkeypatch.setattr(ssh_env, "windows_hide_flags", lambda: 0x08000000)
+
+        def fake_popen_bash(cmd, stdin_data=None, **kwargs):
+            captured["cmd"] = cmd
+            captured["stdin_data"] = stdin_data
+            captured["kwargs"] = kwargs
+            return MagicMock(stdout=iter([]), stderr=iter([]), stdin=MagicMock())
+
+        monkeypatch.setattr(ssh_env, "_popen_bash", fake_popen_bash)
+
+        env = SSHEnvironment.__new__(SSHEnvironment)
+        env.host = "h"
+        env.user = "u"
+        env.port = 22
+        env.key_path = ""
+        env.controlmaster = False
+        env.control_socket = None
+
+        env._run_bash("echo ok", stdin_data="input")
+
+        assert captured["stdin_data"] == "input"
+        assert captured["kwargs"] == {"creationflags": 0x08000000}
+        assert captured["cmd"][0] == "ssh"
+        assert "bash" in captured["cmd"]
+
 
 class TestControlSocketPath:
     """Regression tests for issue #11840.
