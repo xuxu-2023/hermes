@@ -423,7 +423,27 @@ class ChatCompletionsTransport(ProviderTransport):
                 if gh_reasoning is not None:
                     extra_body["reasoning"] = gh_reasoning
             else:
-                extra_body["reasoning"] = {"enabled": True, "effort": "medium"}
+                # Respect reasoning_config instead of hardcoding enabled: True
+                if reasoning_config and isinstance(reasoning_config, dict):
+                    if reasoning_config.get("enabled") is False:
+                        extra_body["reasoning"] = {"enabled": False}
+                    else:
+                        effort = reasoning_config.get("effort", "medium")
+                        extra_body["reasoning"] = {"enabled": True, "effort": effort}
+                else:
+                    extra_body["reasoning"] = {"enabled": True, "effort": "medium"}
+
+        # For providers not detected as supporting reasoning (custom providers, etc.),
+        # still respect an explicit reasoning_config.
+        # Use top-level reasoning_effort (not extra_body) since most OpenAI-compat
+        # APIs (DeepSeek, ARK, etc.) expect it as a top-level param.
+        # Map "none" to "minimal" since some APIs reject "none" as invalid.
+        elif reasoning_config and isinstance(reasoning_config, dict):
+            if reasoning_config.get("enabled") is False:
+                api_kwargs["reasoning_effort"] = "minimal"
+            else:
+                effort = reasoning_config.get("effort", "medium")
+                api_kwargs["reasoning_effort"] = effort
 
         if provider_name == "gemini":
             raw_thinking_config = _build_gemini_thinking_config(model, reasoning_config)
