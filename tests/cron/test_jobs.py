@@ -182,6 +182,28 @@ class TestComputeNextRun:
 
         assert compute_next_run(schedule) == run_at
 
+    def test_once_within_10min_grace_returns_time(self, monkeypatch):
+        """One-shot created with run_at up to 10 min in the past must still fire.
+
+        Regression test: ONESHOT_GRACE_SECONDS used to be 120s, which dropped
+        one-shots whenever a 60s tick + a jobs.json write lock contention
+        aligned.  See _recoverable_oneshot_run_at docstring.
+        """
+        from cron.jobs import ONESHOT_GRACE_SECONDS
+        assert ONESHOT_GRACE_SECONDS >= 300, (
+            f"ONESHOT_GRACE_SECONDS={ONESHOT_GRACE_SECONDS} is too small; "
+            f"see _recoverable_oneshot_run_at docstring for rationale"
+        )
+
+        now = datetime(2026, 6, 19, 15, 5, 0, tzinfo=timezone.utc)
+        # 5 min in the past — well past the old 2 min grace
+        run_at = "2026-06-19T15:00:00+00:00"
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        schedule = {"kind": "once", "run_at": run_at}
+
+        assert compute_next_run(schedule) == run_at
+
     def test_once_past_returns_none(self):
         past = (datetime.now() - timedelta(hours=1)).isoformat()
         schedule = {"kind": "once", "run_at": past}
@@ -862,8 +884,8 @@ class TestGetDueJobs:
                 "id": "oneshot-stale",
                 "name": "Too old",
                 "prompt": "Word of the day",
-                "schedule": {"kind": "once", "run_at": "2026-03-18T04:22:00+00:00", "display": "once at 2026-03-18 04:22"},
-                "schedule_display": "once at 2026-03-18 04:22",
+                "schedule": {"kind": "once", "run_at": "2026-03-18T04:12:00+00:00", "display": "once at 2026-03-18 04:12"},
+                "schedule_display": "once at 2026-03-18 04:12",
                 "repeat": {"times": 1, "completed": 0},
                 "enabled": True,
                 "state": "scheduled",

@@ -85,7 +85,7 @@ TICKER_INTERVAL_SECONDS = 60
 _jobs_file_lock = threading.RLock()
 _jobs_lock_state = threading.local()
 OUTPUT_DIR = CRON_DIR / "output"
-ONESHOT_GRACE_SECONDS = 120
+ONESHOT_GRACE_SECONDS = 600  # 10 min — see _recoverable_oneshot_run_at for rationale
 
 
 def _jobs_lock_file() -> Path:
@@ -465,9 +465,20 @@ def _recoverable_oneshot_run_at(
 ) -> Optional[str]:
     """Return a one-shot run time if it is still eligible to fire.
 
-    One-shot jobs get a small grace window so jobs created a few seconds after
-    their requested minute still run on the next tick. Once a one-shot has
-    already run, it is never eligible again.
+    One-shot jobs get a grace window so jobs whose ``run_at`` is a few minutes
+    in the past still run on the next tick.  The window is needed because:
+
+    1. The 60 s scheduler tick may not align with the requested ``run_at`` —
+       a one-shot created at 14:55:30 with ``run_at`` 14:57:00 will not be
+       eligible to fire until the tick at 14:56:30 at the earliest.
+    2. ``tick()`` uses ``flock(..., LOCK_NB)`` and silently skips a tick if
+       another process is writing ``jobs.json`` at that moment (e.g. a CLI
+       ``hermes cron create`` from a separate shell).  A few skipped ticks
+       are normal under load.
+    3. Interactive use cases (e.g. emergency one-shots to backfill a missed
+       report) routinely need a "create with run_at ≈ now + 1 min" window.
+
+    Once a one-shot has already run, it is never eligible again.
     """
     if schedule.get("kind") != "once":
         return None
