@@ -61,6 +61,11 @@ def generate_title(
     auxiliary LLM client (cheapest/fastest available model).
     Returns the title string or None on failure.
 
+    ``timeout`` defaults to ``None``, which delegates to
+    ``call_llm``'s config-driven resolution (reads
+    ``auxiliary.title_generation.timeout`` from config.yaml).
+    An explicit value overrides the config.
+
     ``failure_callback`` is invoked with ``(task, exception)`` when the
     auxiliary call raises — the caller typically wires this to
     ``AIAgent._emit_auxiliary_failure`` so the user sees a warning instead
