@@ -24,7 +24,7 @@ import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
 
 import { isKeyVar, ProviderKeyRows } from './credential-key-ui'
 import { SettingsCategoryHeading, useEnvCredentials } from './env-credentials'
-import { providerGroup, providerMeta, providerPriority } from './helpers'
+import { providerGroup, providerMeta } from './helpers'
 import { LoadingState, SettingsContent } from './primitives'
 
 // The embedded terminal (and thus the "run disconnect command" path) only
@@ -86,10 +86,13 @@ function buildProviderKeyGroups(vars: Record<string, EnvVarInfo>): ProviderKeyGr
       continue
     }
 
-    // Presentation overlay (priority, blurb, docs) is keyed by the prefix-based
-    // group name; when the backend introduced this provider it may have no
-    // overlay entry, so fall back to the backend/env metadata for display.
-    const meta = providerMeta(name)
+    // The backend label (used as the bucket name) may differ from the curated
+    // PROVIDER_GROUPS name (e.g. "Google AI Studio" vs "Gemini"), so try both
+    // when resolving the presentation overlay (priority, blurb, docs).
+    const curatedName = providerGroup(primary[0])
+    const meta =
+      providerMeta(name) ??
+      (curatedName !== name && curatedName !== 'Other' ? providerMeta(curatedName) : undefined)
 
     groups.push({
       // Advanced = the provider's non-key knobs (base URL, region, deployment).
@@ -104,7 +107,7 @@ function buildProviderKeyGroups(vars: Record<string, EnvVarInfo>): ProviderKeyGr
       hasAnySet: entries.some(([, i]) => i.is_set),
       name,
       primary,
-      priority: providerPriority(name)
+      priority: meta?.priority ?? 99
     })
   }
 
