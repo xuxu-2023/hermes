@@ -92,6 +92,41 @@ class TestMem0V3Tools:
         assert backend.captured[0][2]["filters"] == {"user_id": "u123"}
         assert backend.captured[0][2]["top_k"] == 3
 
+    def test_tool_args_cannot_override_configured_user_id(self, monkeypatch):
+        backend = FakeBackend()
+        provider = self._make_provider(monkeypatch, backend)
+
+        provider.handle_tool_call(
+            "mem0_search",
+            {
+                "query": "hello",
+                "user_id": "other-user",
+                "agent_id": "other-agent",
+                "filters": {"user_id": "other-user"},
+            },
+        )
+        provider.handle_tool_call("mem0_list", {"user_id": "other-user"})
+        provider.handle_tool_call(
+            "mem0_add",
+            {
+                "content": "user likes dark mode",
+                "user_id": "other-user",
+                "agent_id": "other-agent",
+            },
+        )
+
+        assert backend.captured[0] == (
+            "search",
+            "hello",
+            {"filters": {"user_id": "u123"}, "top_k": 10, "rerank": True},
+        )
+        assert backend.captured[1] == (
+            "get_all",
+            {"filters": {"user_id": "u123"}, "page": 1, "page_size": 100},
+        )
+        assert backend.captured[2][2]["user_id"] == "u123"
+        assert backend.captured[2][2]["agent_id"] == "hermes"
+
     def test_search_rerank_default_true(self, monkeypatch):
         backend = FakeBackend()
         provider = self._make_provider(monkeypatch, backend)
@@ -183,6 +218,24 @@ class TestMem0UpdateDelete:
         provider = self._make_provider(monkeypatch, backend)
         result = json.loads(provider.handle_tool_call("mem0_delete", {}))
         assert "error" in result
+
+
+class TestMem0BackendCreation:
+    def test_self_hosted_http_does_not_lazy_install_mem0_sdk(self, monkeypatch):
+        def fail_if_called(*args, **kwargs):
+            raise AssertionError("self_hosted_http must not lazy-install mem0ai")
+
+        monkeypatch.setattr("tools.lazy_deps.ensure", fail_if_called)
+        provider = Mem0MemoryProvider()
+        provider._mode = "self_hosted_http"
+        provider._host = "https://mem0.example.test/api"
+        provider._api_key = "test-key"
+        provider._config = {}
+
+        backend = provider._create_backend()
+
+        assert backend is not None
+        assert backend.__class__.__name__ == "SelfHostedHTTPBackend"
 
 
 class TestMem0ErrorHandling:
@@ -373,6 +426,13 @@ class TestMem0V3Config:
         schemas = provider.get_tool_schemas()
         names = [s["name"] for s in schemas]
         assert names == ["mem0_list", "mem0_search", "mem0_add", "mem0_update", "mem0_delete"]
+
+    def test_tool_schemas_do_not_expose_scope_override_fields(self):
+        provider = Mem0MemoryProvider()
+        forbidden = {"user_id", "agent_id", "run_id", "filters"}
+        for schema in provider.get_tool_schemas():
+            properties = schema["parameters"].get("properties", {})
+            assert not forbidden.intersection(properties), schema["name"]
 
     def test_system_prompt_new_tool_names(self):
         provider = Mem0MemoryProvider()
