@@ -661,8 +661,8 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     },
     "memory.provider": {
         "type": "select",
-        "description": "Memory provider plugin",
-        "options": ["builtin", "honcho"],
+        "description": "External memory provider plugin (blank = built-in only)",
+        "options": ["", "hindsight", "honcho"],
     },
     "approvals.mode": {
         "type": "select",

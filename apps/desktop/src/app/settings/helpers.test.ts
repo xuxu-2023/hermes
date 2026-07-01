@@ -169,10 +169,24 @@ describe('settings helpers', () => {
       expect(opts).toEqual(['local', 'docker', 'singularity', 'modal', 'daytona', 'ssh'])
     })
 
+    it('treats a blank memory provider as built-in only, not a builtin plugin value', () => {
+      const opts = enumOptionsFor('memory.provider', '', config)
+      expect(opts).toContain('')
+      expect(opts).toContain('honcho')
+      expect(opts).not.toContain('builtin')
+    })
+
     it('appends a hand-typed value not in the known list so it stays selected', () => {
       const opts = enumOptionsFor('tts.provider', 'my-custom-command-tts', config)
       expect(opts).toContain('my-custom-command-tts')
       expect(opts).toContain('xai')
+    })
+
+    it('keeps an existing literal builtin memory provider visible as a legacy value', () => {
+      const opts = enumOptionsFor('memory.provider', 'builtin', config)
+      expect(opts).toContain('')
+      expect(opts).toContain('honcho')
+      expect(opts).toContain('builtin')
     })
   })
 })

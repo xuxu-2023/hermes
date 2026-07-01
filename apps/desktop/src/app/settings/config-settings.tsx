@@ -109,6 +109,7 @@ function ConfigField({
   }
 
   const selectOptions = enumOptions ?? (schema.type === 'select' ? (schema.options ?? []).map(String) : undefined)
+  const emptySelectLabel = schemaKey === 'memory.provider' ? c.builtInOnly : undefined
 
   if (selectOptions) {
     return row(
@@ -124,9 +125,9 @@ function ConfigField({
             <SelectItem key={option || EMPTY_SELECT_VALUE} value={option || EMPTY_SELECT_VALUE}>
               {option
                 ? (optionLabels?.[option] ?? prettyName(option))
-                : schemaKey === 'display.personality'
+                : emptySelectLabel ?? (schemaKey === 'display.personality'
                   ? c.none
-                  : c.noneParen}
+                  : c.noneParen)}
             </SelectItem>
           ))}
         </SelectContent>

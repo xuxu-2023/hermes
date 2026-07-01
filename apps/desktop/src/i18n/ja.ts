@@ -591,6 +591,7 @@ export const ja = defineLocale({
     config: {
       none: 'なし',
       noneParen: '(なし)',
+      builtInOnly: '組み込みのみ',
       notSet: '未設定',
       commaSeparated: 'カンマ区切りの値',
       loading: 'Hermes の設定を読み込み中...',
