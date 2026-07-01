@@ -93,6 +93,7 @@ import { ChatSidebar } from './chat/sidebar'
 import { CommandPalette } from './command-palette'
 import { useGatewayBoot } from './gateway/hooks/use-gateway-boot'
 import { useGatewayRequest } from './gateway/hooks/use-gateway-request'
+import { useActiveGatewayProfileRefresh } from './hooks/use-active-gateway-profile-refresh'
 import { useKeybinds } from './hooks/use-keybinds'
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from './layout-constants'
 import { ModelPickerOverlay } from './model-picker-overlay'
@@ -577,25 +578,18 @@ export function DesktopController() {
   }, [freshSessionRequest, startFreshSessionDraft])
 
   // Swapping the live gateway to another profile must re-pull that profile's
-  // global model + active-profile pill. Both are nanostores, so the blanket
-  // invalidateQueries() the profile store fires on swap doesn't touch them —
-  // without this the statusbar keeps showing the previous profile's model
-  // (the "forgets the LLM setting" report). gatewayState stays 'open' across a
-  // swap (background sockets persist), so the open→open effect won't re-run.
+  // global model, active-profile pill, and scoped sidebar session lists. The
+  // profile store's invalidateQueries() does not touch these nanostore-backed
+  // surfaces, so without an explicit refresh the desktop can keep showing the
+  // previous profile's model or an empty/misaligned sidebar until a later
+  // user action happens to refresh sessions.
   const activeGatewayProfile = useStore($activeGatewayProfile)
-  const lastGatewayProfileRef = useRef(activeGatewayProfile)
-
-  useEffect(() => {
-    if (activeGatewayProfile === lastGatewayProfileRef.current) {
-      return
-    }
-
-    lastGatewayProfileRef.current = activeGatewayProfile
-    // Force: the new profile has its own default, so reseed even if the composer
-    // already shows the previous profile's model.
-    void refreshCurrentModel(true)
-    void refreshActiveProfile()
-  }, [activeGatewayProfile, refreshCurrentModel])
+  useActiveGatewayProfileRefresh({
+    activeGatewayProfile,
+    refreshActiveProfile,
+    refreshCurrentModel,
+    refreshSessions
+  })
 
   const composer = useComposerActions({
     activeSessionId,
