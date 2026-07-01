@@ -3398,12 +3398,27 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 for block in (result.content or []):
                     if hasattr(block, "text"):
                         error_text += block.text
+                # Try to extract a readable message from JSON error bodies
+                # instead of double-encoding them. (#47867)
+                readable = error_text
+                if error_text:
+                    try:
+                        err_parsed = json.loads(error_text)
+                        if isinstance(err_parsed, dict):
+                            # Prefer a nested "message" or "error.message"
+                            nested = err_parsed.get("error")
+                            if isinstance(nested, dict) and "message" in nested:
+                                readable = str(nested["message"])
+                            elif "message" in err_parsed:
+                                readable = str(err_parsed["message"])
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        pass  # not JSON — use raw text
                 return json.dumps({
                     "error": _sanitize_error(
-                        error_text or "MCP tool returned an error"
-                    )
+                        readable or "MCP tool returned an error"
+                    ),
+                    "_business_error": True,
                 }, ensure_ascii=False)
-
             # Collect text from content blocks. MCP tool results can also
             # include ImageContent blocks (screenshot / Blockbench / Playwright
             # etc.); cache those via the gateway's image-cache helper so they
