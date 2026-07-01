@@ -4962,6 +4962,21 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
             pid, server_name,
         )
 
+    # Phase 4: Reap zombies.  After SIGTERM/SIGKILL the child is dead but
+    # remains a zombie until the parent calls waitpid().  Without this, the
+    # gateway exits and zombies are reparented to PID 1 — which in containers
+    # without a proper init (e.g. bash as PID 1) never reaps them.
+    # Reap ALL tracked pids — both SIGTERM-exited and SIGKILL-exited ones.
+    if hasattr(os, "waitpid"):
+        time.sleep(0.5)
+        for pid in pids:
+            try:
+                os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                pass  # Not our child or already reaped
+            except ProcessLookupError:
+                pass  # Already gone
+
 
 def _stop_mcp_loop_if_idle() -> bool:
     """Stop the MCP loop only when no registered server still owns it.

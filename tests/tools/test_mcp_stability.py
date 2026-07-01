@@ -160,6 +160,7 @@ class TestStdioPidTracking:
         # ``gateway.status._pid_exists`` (so it's safe on Windows — see
         # bpo-14484). Return True so the SIGKILL escalation fires.
         with patch("tools.mcp_tool.os.kill") as mock_kill, \
+             patch("tools.mcp_tool.os.waitpid") as mock_waitpid, \
              patch("gateway.status._pid_exists", return_value=True), \
              patch("tools.mcp_tool.time.sleep") as mock_sleep:
             _kill_orphaned_mcp_children()
@@ -168,7 +169,11 @@ class TestStdioPidTracking:
         mock_kill.assert_any_call(fake_pid, signal.SIGTERM)
         mock_kill.assert_any_call(fake_pid, fake_sigkill)
         assert mock_kill.call_count == 2
-        mock_sleep.assert_called_once_with(2)
+        # Phase 2 sleep(2) + Phase 4 sleep(0.5) before waitpid
+        mock_sleep.assert_any_call(2)
+        mock_sleep.assert_any_call(0.5)
+        # Zombie must be reaped
+        mock_waitpid.assert_called_once_with(fake_pid, os.WNOHANG)
 
         with _lock:
             assert fake_pid not in _orphan_stdio_pids
@@ -198,6 +203,56 @@ class TestStdioPidTracking:
 
         with _lock:
             assert fake_pid not in _orphan_stdio_pids
+
+    def test_kill_orphaned_reaps_zombies(self):
+        """_kill_orphaned_mcp_children calls waitpid to reap zombie processes."""
+        from tools.mcp_tool import (
+            _kill_orphaned_mcp_children,
+            _orphan_stdio_pids,
+            _stdio_pids,
+            _lock,
+        )
+
+        fake_pid = 555555
+        with _lock:
+            _orphan_stdio_pids.clear()
+            _stdio_pids.clear()
+            _orphan_stdio_pids.add(fake_pid)
+
+        with patch("tools.mcp_tool.os.kill"), \
+             patch("os.waitpid") as mock_waitpid, \
+             patch("tools.mcp_tool.time.sleep"):
+            _kill_orphaned_mcp_children()
+
+        # Phase 4 must call waitpid to reap the zombie
+        mock_waitpid.assert_called_once_with(fake_pid, os.WNOHANG)
+
+    def test_kill_orphaned_reaps_active_pids_on_include_active(self):
+        """include_active=True reaps both orphan and active stdio PIDs."""
+        from tools.mcp_tool import (
+            _kill_orphaned_mcp_children,
+            _orphan_stdio_pids,
+            _stdio_pids,
+            _lock,
+        )
+
+        orphan_pid = 666666
+        active_pid = 777777
+        with _lock:
+            _orphan_stdio_pids.clear()
+            _stdio_pids.clear()
+            _orphan_stdio_pids.add(orphan_pid)
+            _stdio_pids[active_pid] = "test-server"
+
+        with patch("tools.mcp_tool.os.kill"), \
+             patch("os.waitpid") as mock_waitpid, \
+             patch("tools.mcp_tool.time.sleep"):
+            _kill_orphaned_mcp_children(include_active=True)
+
+        # Both PIDs must be reaped
+        waitpid_pids = {call.args[0] for call in mock_waitpid.call_args_list}
+        assert orphan_pid in waitpid_pids
+        assert active_pid in waitpid_pids
 
 
 # ---------------------------------------------------------------------------
