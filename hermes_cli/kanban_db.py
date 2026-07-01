@@ -6852,13 +6852,31 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         return "blocker_auth"
 
     # 3. Completed run within guard window — proof of recent success.
+    #    BUT: if a human explicitly moved the task back to ready AFTER
+    #    the completion (via the dashboard "→ ready" button or
+    #    drag-drop), that's an intentional re-work request.  The
+    #    ``_set_status_direct`` path writes a ``status`` event with
+    #    payload {"status": "ready"} — if one exists more recent than
+    #    the completed run's ``ended_at``, bypass the guard.
     cutoff = now - _RESPAWN_GUARD_SUCCESS_WINDOW
-    if conn.execute(
-        "SELECT id FROM task_runs "
-        "WHERE task_id = ? AND outcome = 'completed' AND ended_at >= ?",
+    completed_row = conn.execute(
+        "SELECT id, ended_at FROM task_runs "
+        "WHERE task_id = ? AND outcome = 'completed' AND ended_at >= ? "
+        "ORDER BY ended_at DESC LIMIT 1",
         (task_id, cutoff),
-    ).fetchone():
-        return "recent_success"
+    ).fetchone()
+    if completed_row is not None:
+        # Check for a human-initiated re-ready after this completion.
+        re_ready_after = conn.execute(
+            "SELECT 1 FROM task_events "
+            "WHERE task_id = ? AND kind = 'status' "
+            "AND payload LIKE '%\"status\": \"ready\"%' "
+            "AND created_at > ? "
+            "LIMIT 1",
+            (task_id, int(completed_row["ended_at"] or 0)),
+        ).fetchone()
+        if re_ready_after is None:
+            return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
