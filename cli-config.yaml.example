@@ -565,6 +565,14 @@ session_reset:
 # local runtime lease registry cannot be read or locked.
 max_concurrent_sessions: null
 
+# Gateway lifecycle restart/shutdown/startup alerts are enabled by default.
+# Set false to suppress the user-facing "Gateway restarting" / "Gateway online"
+# notifications across every messaging platform. Per-platform
+# gateway_restart_notification flags can still mute individual platforms when
+# this global switch remains true.
+gateway:
+  restart_alerts_enabled: true
+
 # When true, group/channel chats use one session per participant when the platform
 # provides a user ID. This is the secure default and prevents users in the same
 # room from sharing context, interrupts, and token costs. Set false only if you

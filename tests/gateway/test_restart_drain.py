@@ -494,6 +494,20 @@ async def test_shutdown_notification_suppressed_when_flag_disabled():
 
 
 @pytest.mark.asyncio
+async def test_shutdown_notification_suppressed_when_global_alerts_disabled():
+    """Global opt-out mutes active-session shutdown/restart alerts."""
+    runner, adapter = make_restart_runner()
+    runner._restart_requested = True
+    runner.config.restart_alerts_enabled = False
+    session_key = "agent:main:telegram:dm:999"
+    runner._running_agents[session_key] = MagicMock()
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert adapter.sent == []
+
+
+@pytest.mark.asyncio
 async def test_shutdown_notification_home_channel_suppressed_when_flag_disabled():
     """Home-channel ping during shutdown is muted when the flag is False."""
     from gateway.config import HomeChannel, Platform

@@ -227,6 +227,7 @@ class TestGatewayConfigRoundtrip:
             quick_commands={"limits": {"type": "exec", "command": "echo ok"}},
             group_sessions_per_user=False,
             thread_sessions_per_user=True,
+            restart_alerts_enabled=False,
         )
         d = config.to_dict()
         restored = GatewayConfig.from_dict(d)
@@ -237,6 +238,15 @@ class TestGatewayConfigRoundtrip:
         assert restored.quick_commands == {"limits": {"type": "exec", "command": "echo ok"}}
         assert restored.group_sessions_per_user is False
         assert restored.thread_sessions_per_user is True
+        assert restored.restart_alerts_enabled is False
+
+    def test_restart_alerts_enabled_defaults_true(self):
+        assert GatewayConfig().restart_alerts_enabled is True
+        assert GatewayConfig.from_dict({}).restart_alerts_enabled is True
+
+    def test_restart_alerts_enabled_from_dict_coerces_quoted_false(self):
+        restored = GatewayConfig.from_dict({"restart_alerts_enabled": "false"})
+        assert restored.restart_alerts_enabled is False
 
     def test_max_concurrent_sessions_from_dict_normalizes_disabled_values(self):
         assert GatewayConfig.from_dict({}).max_concurrent_sessions is None
@@ -426,6 +436,23 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.thread_sessions_per_user is True
+
+    def test_bridges_restart_alerts_enabled_from_gateway_config_yaml(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  restart_alerts_enabled: false\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.restart_alerts_enabled is False
 
     def test_thread_sessions_per_user_defaults_to_false(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"

@@ -573,6 +573,12 @@ class GatewayConfig:
     # Streaming configuration
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
 
+    # Global gateway lifecycle notification switch.  When false, suppresses
+    # restart/shutdown/startup user-facing alerts on every platform, while the
+    # per-platform gateway_restart_notification flag can still mute individual
+    # platforms when this remains true.
+    restart_alerts_enabled: bool = True
+
     # Session store pruning: drop SessionEntry records older than this many
     # days from the in-memory dict and sessions.json.  Keeps the store from
     # growing unbounded in gateways serving many chats/threads/users over
@@ -683,6 +689,7 @@ class GatewayConfig:
             "multiplex_profiles": self.multiplex_profiles,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
+            "restart_alerts_enabled": self.restart_alerts_enabled,
             "session_store_max_age_days": self.session_store_max_age_days,
         }
     
@@ -772,6 +779,9 @@ class GatewayConfig:
             max_concurrent_sessions=max_concurrent_sessions,
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
+            restart_alerts_enabled=_coerce_bool(
+                data.get("restart_alerts_enabled"), True
+            ),
             session_store_max_age_days=session_store_max_age_days,
         )
 
@@ -885,6 +895,9 @@ def load_gateway_config() -> GatewayConfig:
             gateway_section = yaml_cfg.get("gateway")
             if isinstance(gateway_section, dict) and "max_concurrent_sessions" in gateway_section:
                 gw_data["max_concurrent_sessions"] = gateway_section["max_concurrent_sessions"]
+
+            if isinstance(gateway_section, dict) and "restart_alerts_enabled" in gateway_section:
+                gw_data["restart_alerts_enabled"] = gateway_section["restart_alerts_enabled"]
 
             if "max_concurrent_sessions" in yaml_cfg:
                 gw_data["max_concurrent_sessions"] = yaml_cfg["max_concurrent_sessions"]

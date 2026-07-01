@@ -564,7 +564,14 @@ Once upstream is healthy, `/platform resume <name>` clears the breaker and re-ar
 
 ### Restart notifications
 
-When the gateway restarts (or is shut down with in-flight sessions), it can send a one-shot "the agent is back" / "the agent was interrupted" message to each platform's home channel. This is controlled per-platform by the `gateway_restart_notification` flag in `gateway-config.yaml`, which defaults to `true`:
+When the gateway restarts (or is shut down with in-flight sessions), it can send one-shot lifecycle alerts such as "the agent is back" / "the agent was interrupted". Global restart alerts default to enabled. Disable them across every platform with `gateway.restart_alerts_enabled: false`:
+
+```yaml
+gateway:
+  restart_alerts_enabled: false   # disables gateway restart/shutdown/startup alerts globally
+```
+
+If global alerts remain enabled, you can still mute individual platforms with the per-platform `gateway_restart_notification` flag, which defaults to `true`:
 
 ```yaml
 gateway:
@@ -577,7 +584,7 @@ gateway:
       # gateway_restart_notification omitted → defaults to true
 ```
 
-Disable it on noisy or low-priority platforms while leaving it on for your primary chat. The notification is sent once per restart, regardless of how many sessions were in flight.
+Use the global switch when operator restarts are intentionally quiet everywhere; use the per-platform flag when one noisy or low-priority platform should be muted while your primary chat still gets lifecycle pings. The notification is sent once per restart, regardless of how many sessions were in flight.
 
 ### Typing indicators
 
@@ -604,7 +611,7 @@ This behaviour is on by default and is logged at gateway start:
 Scheduled auto-resume for N restart-interrupted session(s)
 ```
 
-No configuration is required. If you don't want the heads-up, set `gateway_restart_notification: false` on the platform.
+No configuration is required. If you don't want the heads-up anywhere, set `gateway.restart_alerts_enabled: false`; if you only want to mute one platform, set `gateway_restart_notification: false` on that platform.
 
 ### Mobile-friendly progress defaults
 

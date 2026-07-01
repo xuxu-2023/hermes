@@ -1641,6 +1641,15 @@ fails open if the registry cannot be read or locked so users are not stranded.
 It is intended for a single host/profile runtime, not a shared `$HERMES_HOME`
 mounted across multiple machines.
 
+Control whether the gateway sends restart/shutdown/startup lifecycle alerts such as "Gateway restarting" and "Gateway online" to messaging platforms:
+
+```yaml
+gateway:
+  restart_alerts_enabled: true  # default; set false to suppress these alerts globally
+```
+
+When this global switch is `false`, Hermes suppresses those lifecycle alerts on every gateway platform. Leave it `true` and use per-platform `gateway_restart_notification: false` if only one platform should be muted.
+
 Control whether shared chats keep one conversation per room or one conversation per participant:
 
 ```yaml
