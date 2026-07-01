@@ -27,6 +27,7 @@ Usage:
 
 import os
 import re
+import platform
 import difflib
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -839,7 +840,10 @@ class ShellFileOperations(FileOperations):
     def _has_command(self, cmd: str) -> bool:
         """Check if a command exists in the environment (cached)."""
         if cmd not in self._command_cache:
-            result = self._exec(f"command -v {cmd} >/dev/null 2>&1 && echo 'yes'")
+            if platform.system() == "Windows":
+                result = self._exec(f"where {cmd} >nul 2>&1 && echo 'yes'")
+            else:
+                result = self._exec(f"command -v {cmd} >/dev/null 2>&1 && echo 'yes'")
             self._command_cache[cmd] = result.stdout.strip() == 'yes'
         return self._command_cache[cmd]
     
