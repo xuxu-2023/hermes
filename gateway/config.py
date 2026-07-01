@@ -900,6 +900,9 @@ def load_gateway_config() -> GatewayConfig:
             if "reset_triggers" in yaml_cfg:
                 gw_data["reset_triggers"] = yaml_cfg["reset_triggers"]
 
+            if "reset_by_platform" in yaml_cfg:
+                gw_data["reset_by_platform"] = yaml_cfg["reset_by_platform"]
+
             if "always_log_local" in yaml_cfg:
                 gw_data["always_log_local"] = yaml_cfg["always_log_local"]
 
