@@ -1675,9 +1675,14 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     feishu_app_id = os.getenv("FEISHU_APP_ID")
     feishu_app_secret = os.getenv("FEISHU_APP_SECRET")
     if feishu_app_id and feishu_app_secret:
+        # Only force-enable if the platform wasn't explicitly disabled in config.yaml.
+        # An explicit `enabled: false` in config takes precedence over env vars.
+        # See #47804.
         if Platform.FEISHU not in config.platforms:
             config.platforms[Platform.FEISHU] = PlatformConfig()
-        config.platforms[Platform.FEISHU].enabled = True
+            config.platforms[Platform.FEISHU].enabled = True
+        elif config.platforms[Platform.FEISHU].enabled is not False:
+            config.platforms[Platform.FEISHU].enabled = True
         config.platforms[Platform.FEISHU].extra.update({
             "app_id": feishu_app_id,
             "app_secret": feishu_app_secret,

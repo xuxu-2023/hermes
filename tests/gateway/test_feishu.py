@@ -78,6 +78,25 @@ class TestConfigEnvOverrides(unittest.TestCase):
 
         self.assertIn(Platform.FEISHU, config.get_connected_platforms())
 
+    @patch.dict(os.environ, {
+        "FEISHU_APP_ID": "cli_xxx",
+        "FEISHU_APP_SECRET": "secret_xxx",
+    }, clear=False)
+    def test_feishu_config_explicitly_disabled_not_overridden_by_env(self):
+        """Env vars should not force-enable Feishu when config.yaml has enabled: false.
+
+        Regression test for #47804.
+        """
+        from gateway.config import GatewayConfig, Platform, PlatformConfig, _apply_env_overrides
+
+        config = GatewayConfig()
+        # Simulate config.yaml having feishu.enabled: false
+        config.platforms[Platform.FEISHU] = PlatformConfig(enabled=False)
+        _apply_env_overrides(config)
+
+        # Platform should remain disabled despite FEISHU_APP_ID/SECRET env vars
+        self.assertFalse(config.platforms[Platform.FEISHU].enabled)
+
 
 class TestFeishuMessageNormalization(unittest.TestCase):
     def test_normalize_merge_forward_preserves_summary_lines(self):
