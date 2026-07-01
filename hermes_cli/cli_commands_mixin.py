@@ -514,6 +514,28 @@ class CLICommandsMixin:
         print(f"  Home:    {display}")
         print()
 
+    def _handle_whoami_command(self):
+        """Show the user's access level in the CLI context.
+
+        In the CLI the operator is always the owner with full access —
+        there is no platform-mediated slash-access policy.  The handler
+        mirrors the gateway's ``/whoami`` output shape so users see a
+        familiar format regardless of surface.
+        """
+        from hermes_cli.profiles import get_active_profile_name
+
+        profile_name = get_active_profile_name()
+
+        from hermes_cli.commands import COMMAND_REGISTRY
+        all_commands = sorted(cmd.name for cmd in COMMAND_REGISTRY if not cmd.gateway_only)
+
+        print()
+        print(f"  **You** — CLI (local)")
+        print(f"  Profile: {profile_name}")
+        print(f"  Tier: owner (full access)")
+        print(f"  Slash commands available: {len(all_commands)}")
+        print()
+
     def _handle_handoff_command(self, cmd_original: str) -> bool:
         """Handle ``/handoff <platform>`` — transfer this CLI session to a gateway platform.
 
