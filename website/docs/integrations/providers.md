@@ -50,6 +50,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **MiniMax OAuth** | `hermes model` → "MiniMax (OAuth)" (provider: `minimax-oauth`; browser PKCE login) |
 | **StepFun** | `STEPFUN_API_KEY` in `~/.hermes/.env` (provider: `stepfun`) |
 | **LM Studio** | `hermes model` → "LM Studio" (provider: `lmstudio`, optional `LM_API_KEY`) |
+| **Atomic Chat** | `hermes model` → "Atomic Chat" (provider: `atomic-chat`, optional `ATOMIC_CHAT_API_KEY`) |
 | **Custom Endpoint** | `hermes model` → choose "Custom endpoint" (saved in `config.yaml`) |
 
 For the official API-key path, see the dedicated [Google Gemini guide](/guides/google-gemini).
@@ -857,6 +858,39 @@ To set persistent per-model defaults: My Models tab → gear icon on the model �
 
 ---
 
+### Atomic Chat — Local Desktop with OpenAI-Compatible API
+
+[Atomic Chat](https://atomic.chat) is a local desktop app with built-in MCP tools, web search, and an OpenAI-compatible Local API Server on port `1337`.
+
+1. Install Atomic Chat and download at least one model.
+2. Enable **Settings → Local API Server**.
+3. Run:
+
+```bash
+hermes model
+# Select "Atomic Chat"
+# Press Enter to use http://127.0.0.1:1337/v1
+# Pick one of the discovered models
+```
+
+Optional environment overrides:
+
+```bash
+export ATOMIC_CHAT_BASE_URL=http://127.0.0.1:1337/v1
+export ATOMIC_CHAT_API_KEY=atomic-chat-local   # placeholder for keyless local installs
+```
+
+Or in `config.yaml`:
+
+```yaml
+model:
+  default: your-model-id
+  provider: atomic-chat
+  base_url: http://127.0.0.1:1337/v1
+```
+
+---
+
 ### WSL2 Networking (Windows Users)
 
 Since Hermes Agent requires a Unix environment, Windows users run it inside WSL2. If your model server (Ollama, LM Studio, etc.) runs on the **Windows host**, you need to bridge the network gap — WSL2 uses a virtual network adapter with its own subnet, so `localhost` inside WSL2 refers to the Linux VM, **not** the Windows host.
@@ -1104,7 +1138,8 @@ Any service with an OpenAI-compatible API works. Some popular options:
 | [OpenAI](https://openai.com) | `https://api.openai.com/v1` | Direct OpenAI access |
 | [Azure OpenAI](https://azure.microsoft.com) | `https://YOUR.openai.azure.com/` | Enterprise OpenAI |
 | [LocalAI](https://localai.io) | `http://localhost:8080/v1` | Self-hosted, multi-model |
-| [Jan](https://jan.ai) | `http://localhost:1337/v1` | Desktop app with local models |
+| [Atomic Chat](https://atomic.chat) | `http://localhost:1337/v1` | Local desktop app with MCP, web search, and OpenAI-compatible API |
+| [Jan](https://jan.ai) | `http://localhost:1337/v1` | Desktop app with local models (custom endpoint; port may conflict with Atomic Chat) |
 
 Configure any of these with `hermes model` → Custom endpoint, or in `config.yaml`:
 
@@ -1472,7 +1507,7 @@ fallback_model:
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. The chain is tried entry-by-entry; activation is one-shot per session.
 
-Supported providers: `openrouter`, `nous`, `novita`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `azure-foundry`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `custom`.
+Supported providers: `openrouter`, `nous`, `novita`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `azure-foundry`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `stepfun`, `lmstudio`, `atomic-chat`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `custom`.
 
 :::tip
 Fallback is configured exclusively through `config.yaml` — or interactively via `hermes fallback`. For full details on when it triggers, how the chain advances, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/user-guide/features/fallback-providers).
