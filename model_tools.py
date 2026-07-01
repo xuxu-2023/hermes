@@ -725,7 +725,48 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         if coerced is not value:
             args[key] = coerced
 
+    # Recurse into nested objects and array items so that deeply nested
+    # array properties are also repaired (e.g. MiniMax native XML parsing
+    # collapses single-element nested arrays to {"item": element}).
+    _coerce_nested_args(properties, args)
+
     return args
+
+
+def _coerce_nested_args(properties: Dict[str, Any], args: Dict[str, Any]) -> None:
+    """Recursively coerce nested argument values to match JSON Schema types.
+
+    Walks into nested objects and array items, applying the same bare-scalar-
+    to-list wrapping and xmltodict ``{"item": element}`` unwrapping that
+    ``coerce_tool_args`` performs at the top level.
+    """
+    for key, value in list(args.items()):
+        prop_schema = properties.get(key)
+        if not prop_schema:
+            continue
+        expected = prop_schema.get("type")
+
+        if expected == "array" and value is not None and not isinstance(value, (list, tuple)):
+            # xmltodict collapses single-element arrays to {"item": element}
+            if isinstance(value, dict) and len(value) == 1 and "item" in value:
+                args[key] = [value["item"]]
+                continue
+            args[key] = [value]
+            continue
+
+        if expected == "object" and isinstance(value, dict):
+            nested_props = prop_schema.get("properties")
+            if nested_props:
+                _coerce_nested_args(nested_props, value)
+
+        if expected == "array" and isinstance(value, list):
+            items_schema = prop_schema.get("items")
+            if isinstance(items_schema, dict) and items_schema.get("type") == "object":
+                item_props = items_schema.get("properties")
+                if item_props:
+                    for item in value:
+                        if isinstance(item, dict):
+                            _coerce_nested_args(item_props, item)
 
 
 def _coerce_value(value: str, expected_type, schema: dict | None = None):

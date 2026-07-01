@@ -408,3 +408,81 @@ class TestCoerceToolArgs:
         assert isinstance(result["offset"], int)
         assert result["limit"] == 100
         assert isinstance(result["limit"], int)
+
+    def test_nested_array_xmltodict_collapse_unwrapped(self):
+        """xmltodict single-element collapse {"item": X} is unwrapped to [X]."""
+        schema = self._mock_schema({
+            "children": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "paragraph": {
+                            "type": "object",
+                            "properties": {
+                                "rich_text": {"type": "array"},
+                            },
+                        },
+                    },
+                },
+            },
+        })
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {
+                "children": [
+                    {
+                        "paragraph": {
+                            "rich_text": {"item": {"text": {"content": "test"}, "type": "text"}},
+                        },
+                    },
+                ],
+            }
+            result = coerce_tool_args("test_tool", args)
+            # rich_text should be unwrapped from {"item": ...} to [...]
+            assert isinstance(result["children"][0]["paragraph"]["rich_text"], list)
+            assert result["children"][0]["paragraph"]["rich_text"] == [
+                {"text": {"content": "test"}, "type": "text"},
+            ]
+
+    def test_nested_bare_scalar_wrapped_as_array(self):
+        """Bare scalar in nested object is wrapped in single-element list."""
+        schema = self._mock_schema({
+            "block": {
+                "type": "object",
+                "properties": {
+                    "tags": {"type": "array"},
+                },
+            },
+        })
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"block": {"tags": "important"}}
+            result = coerce_tool_args("test_tool", args)
+            assert result["block"]["tags"] == ["important"]
+
+    def test_nested_array_already_list_untouched(self):
+        """Nested array that is already a list is left unchanged."""
+        schema = self._mock_schema({
+            "children": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string"},
+                    },
+                },
+            },
+        })
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"children": [{"text": "hello"}, {"text": "world"}]}
+            result = coerce_tool_args("test_tool", args)
+            assert result["children"] == [{"text": "hello"}, {"text": "world"}]
+
+    def test_nested_object_without_properties_not_recurse(self):
+        """Nested object without properties schema is left unchanged."""
+        schema = self._mock_schema({
+            "metadata": {"type": "object"},
+        })
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"metadata": {"arbitrary": "data"}}
+            result = coerce_tool_args("test_tool", args)
+            assert result["metadata"] == {"arbitrary": "data"}
