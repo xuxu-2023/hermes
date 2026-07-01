@@ -3649,6 +3649,11 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: 
             previous_singleton_tokens=previous_singleton_tokens,
         )
         _save_auth_store(auth_store)
+    # Publish the freshly saved singleton token to the cross-profile shared
+    # store so sibling Hermes profiles can recover it after a refresh_token
+    # rotation instead of 401'ing. Best-effort; runs outside the auth-store
+    # lock and preserves the auth-then-shared lock ordering invariant.
+    _write_shared_codex_state(tokens, last_refresh)
 
 
 def _recover_codex_tokens_from_cli(reason: str) -> Optional[Dict[str, str]]:
@@ -3830,9 +3835,10 @@ def _refresh_codex_auth_tokens(
         # we never self-heal those and re-raise unchanged.
         if not getattr(exc, "relogin_required", False):
             raise
-        imported = _recover_codex_tokens_from_cli(
-            f"refresh_token rejected: {getattr(exc, 'code', None) or 'auth_error'}"
-        )
+        reason = f"refresh_token rejected: {getattr(exc, 'code', None) or 'auth_error'}"
+        # Prefer a sibling Hermes profile's freshly rotated token (shared store)
+        # before falling back to the Codex CLI store (~/.codex).
+        imported = _recover_codex_tokens_from_shared(reason) or _recover_codex_tokens_from_cli(reason)
         if not imported:
             raise
         return imported
@@ -3906,7 +3912,8 @@ def resolve_codex_runtime_credentials(
             "codex_auth_missing_refresh_token",
             "codex_auth_invalid_shape",
         }:
-            imported = _recover_codex_tokens_from_cli(str(getattr(exc, "code", None) or "auth_error"))
+            _reason = str(getattr(exc, "code", None) or "auth_error")
+            imported = _recover_codex_tokens_from_shared(_reason) or _recover_codex_tokens_from_cli(_reason)
             if imported:
                 data = {"tokens": imported, "last_refresh": imported.get("last_refresh")}
             else:
@@ -4834,8 +4841,8 @@ NOUS_SHARED_STORE_FILENAME = "nous_auth.json"
 _nous_shared_lock_holder = threading.local()
 
 
-def _nous_shared_auth_dir() -> Path:
-    """Resolve the directory that holds the shared Nous token store.
+def _shared_auth_dir() -> Path:
+    """Resolve the directory that holds cross-profile shared OAuth stores.
 
     Honors ``HERMES_SHARED_AUTH_DIR`` so tests can redirect it to a tmp
     path without touching the real user's home. Defaults to
@@ -4852,6 +4859,11 @@ def _nous_shared_auth_dir() -> Path:
         return Path(override).expanduser()
     from hermes_constants import get_default_hermes_root
     return get_default_hermes_root() / "shared"
+
+
+def _nous_shared_auth_dir() -> Path:
+    """Directory for the shared Nous token store. See :func:`_shared_auth_dir`."""
+    return _shared_auth_dir()
 
 
 def _nous_shared_store_path() -> Path:
@@ -5238,6 +5250,208 @@ def _try_import_shared_nous_state(
         return None
 
     return refreshed
+
+
+# -----------------------------------------------------------------------------
+# Shared cross-profile Codex (openai-codex) OAuth store
+#
+# Mirrors the shared Nous store above and the xAI global-root write-through
+# (#43589): Hermes keeps a per-profile openai-codex singleton token, but OAuth
+# refresh_tokens are single-use. When one gateway (e.g. the default profile)
+# refreshes, it rotates the shared ChatGPT/Codex account token, so sibling
+# profiles (e.g. a separate ``--profile`` gateway) holding the old refresh
+# token start failing with relogin-required 401s until a manual re-auth.
+#
+# This store lets sibling profiles recover the freshly rotated token from a
+# single shared file written on every singleton save, instead of bouncing to
+# device-code. It complements the existing ~/.codex/auth.json self-heal (which
+# only recovers tokens the *Codex CLI* rotated): the shared store additionally
+# recovers tokens a *sibling Hermes profile* rotated, which Hermes does not
+# write back to ~/.codex (see #12360).
+#
+# Only the singleton openai-codex token is shared. Independent accounts added
+# via ``hermes auth add openai-codex`` live in the credential pool and never
+# flow through ``_save_codex_tokens``, so they are never published here
+# (regression guard for #39236).
+# -----------------------------------------------------------------------------
+
+CODEX_SHARED_STORE_FILENAME = "codex_auth.json"
+_codex_shared_lock_holder = threading.local()
+
+
+def _codex_shared_store_path() -> Path:
+    path = _shared_auth_dir() / CODEX_SHARED_STORE_FILENAME
+    # Seat belt: refuse to touch the real user's shared store under pytest
+    # unless HERMES_SHARED_AUTH_DIR is redirected to a tmp_path (mirrors the
+    # _nous_shared_store_path guard).
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        from hermes_constants import get_default_hermes_root
+        real_home_shared = (
+            get_default_hermes_root() / "shared" / CODEX_SHARED_STORE_FILENAME
+        ).resolve(strict=False)
+        try:
+            resolved = path.resolve(strict=False)
+        except Exception:
+            resolved = path
+        if resolved == real_home_shared:
+            raise RuntimeError(
+                f"Refusing to touch real user shared Codex auth store during test run: "
+                f"{path}. Set HERMES_SHARED_AUTH_DIR to a tmp_path in your test fixture."
+            )
+    return path
+
+
+@contextmanager
+def _codex_shared_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
+    """Cross-profile lock for the shared Codex OAuth store.
+
+    Lock ordering invariant: if both this and ``_auth_store_lock`` need to be
+    held, acquire ``_auth_store_lock`` FIRST. All codex paths follow this.
+    """
+    try:
+        lock_path = _codex_shared_store_path().with_suffix(".lock")
+    except RuntimeError:
+        # No HERMES_HOME yet (pre-setup): fall through without locking.
+        yield
+        return
+    with _file_lock(
+        lock_path,
+        _codex_shared_lock_holder,
+        timeout_seconds,
+        "Timed out waiting for shared Codex auth lock",
+    ):
+        yield
+
+
+def _write_shared_codex_state(
+    tokens: Dict[str, Any], last_refresh: Optional[str] = None
+) -> None:
+    """Publish the singleton Codex OAuth token pair to the shared store.
+
+    Best-effort: any failure is swallowed after logging. The per-profile
+    auth.json remains the source of truth.
+    """
+    if not isinstance(tokens, dict):
+        return
+    access_token = str(tokens.get("access_token", "") or "").strip()
+    refresh_token = str(tokens.get("refresh_token", "") or "").strip()
+    if not access_token or not refresh_token:
+        # No refresh_token = nothing worth sharing across profiles.
+        return
+    shared = {
+        "_schema": 1,
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "last_refresh": last_refresh,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        with _codex_shared_store_lock():
+            path = _codex_shared_store_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            # secure_parent_dir refuses to chmod / or top-level dirs (#25821).
+            secure_parent_dir(path)
+            tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
+            # Create with 0o600 atomically via os.open(O_EXCL) — closes the
+            # TOCTOU window where write_text() + post-write chmod briefly
+            # exposed the refresh_token at process umask. See #19673, #21148.
+            fd = os.open(
+                str(tmp),
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                stat.S_IRUSR | stat.S_IWUSR,
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(json.dumps(shared, indent=2, sort_keys=True))
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(tmp, path)
+            finally:
+                try:
+                    if tmp.exists():
+                        tmp.unlink()
+                except OSError:
+                    pass
+        _oauth_trace(
+            "codex_shared_store_written",
+            path=str(path),
+            refresh_token_fp=_token_fingerprint(refresh_token),
+        )
+    except Exception as exc:
+        logger.debug("Failed to write shared Codex auth store: %s", exc)
+
+
+def _read_shared_codex_state() -> Optional[Dict[str, Any]]:
+    """Return the shared Codex OAuth state if present and well-formed, else None."""
+    try:
+        path = _codex_shared_store_path()
+    except RuntimeError:
+        # Test seat belt tripped — treat as missing.
+        return None
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        logger.debug("Shared Codex auth store at %s is unreadable: %s", path, exc)
+        return None
+    if not isinstance(payload, dict):
+        return None
+    access_token = payload.get("access_token")
+    refresh_token = payload.get("refresh_token")
+    if not (isinstance(access_token, str) and access_token.strip()):
+        return None
+    if not (isinstance(refresh_token, str) and refresh_token.strip()):
+        return None
+    return payload
+
+
+def _clear_shared_codex_state(reason: str) -> None:
+    """Remove the shared Codex OAuth store after a terminal token failure."""
+    try:
+        with _codex_shared_store_lock():
+            path = _codex_shared_store_path()
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+        _oauth_trace("codex_shared_store_cleared", reason=reason)
+    except Exception as exc:
+        logger.debug("Failed to clear shared Codex auth store: %s", exc)
+
+
+def _recover_codex_tokens_from_shared(reason: str) -> Optional[Dict[str, str]]:
+    """Adopt a still-valid Codex token pair published by a sibling Hermes profile.
+
+    Cross-profile counterpart to ``_recover_codex_tokens_from_cli``: when one
+    profile refreshes openai-codex it rotates the single-use refresh_token, so
+    sibling profiles holding the old copy 401. They recover the freshly rotated
+    token here instead of forcing a device-code re-login.
+
+    Only adopts a shared token whose access_token is still valid; an expiring
+    shared token is skipped so the caller falls through to the Codex CLI store
+    (~/.codex) or device-code. Best-effort; never raises.
+    """
+    try:
+        with _codex_shared_store_lock():
+            shared = _read_shared_codex_state()
+        if not shared:
+            return None
+        access_token = str(shared.get("access_token", "") or "").strip()
+        refresh_token = str(shared.get("refresh_token", "") or "").strip()
+        if not access_token or not refresh_token:
+            return None
+        # Skip an expiring shared token so the caller can fall through to the
+        # Codex CLI store / device-code rather than adopt a soon-dead token.
+        if _codex_access_token_is_expiring(access_token, 0):
+            return None
+        tokens = {"access_token": access_token, "refresh_token": refresh_token}
+        logger.info("Codex auth recovered from shared store (%s).", reason)
+        _save_codex_tokens(tokens, last_refresh=shared.get("last_refresh"))
+        return dict(tokens)
+    except Exception as exc:
+        logger.debug("Shared Codex import failed: %s", exc)
+        return None
 
 
 def _refresh_access_token(
