@@ -3088,6 +3088,22 @@ run_stage_protocol() {
 main() {
     print_banner
 
+    # Validate HERMES_HOME path does not contain spaces.
+    # Python's venv module writes shebangs (e.g. #!/path/to/python) without
+    # quoting, so any space in HERMES_HOME propagates into broken entry-point
+    # scripts and launchers that silently fail with "No such file or directory".
+    if [[ "$HERMES_HOME" == *" "* ]]; then
+        log_error "HERMES_HOME must not contain spaces."
+        log_error "  Current value: $HERMES_HOME"
+        log_error ""
+        log_error "Remediation:"
+        log_error "  1. Move or create a HERMES_HOME at a path without spaces:"
+        log_error "       export HERMES_HOME=~/.hermes"
+        log_error "  2. Re-run the installer:"
+        log_error "       curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash"
+        exit 1
+    fi
+
     detect_os
     resolve_install_layout
     install_uv
