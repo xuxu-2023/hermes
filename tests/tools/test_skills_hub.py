@@ -75,6 +75,49 @@ class TestParseFrontmatterQuick:
 
 
 # ---------------------------------------------------------------------------
+# GitHubSource._fetch_file_content
+# ---------------------------------------------------------------------------
+
+
+class TestFetchFileContent:
+    def _source(self):
+        return GitHubSource(auth=MagicMock(spec=GitHubAuth))
+
+    def _response(self, content: bytes, content_type: str, encoding: str = "utf-8"):
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.content = content
+        resp.headers = {"content-type": content_type}
+        resp.encoding = encoding
+        return resp
+
+    def test_text_skill_file_decodes_to_string(self):
+        src = self._source()
+        with patch.object(
+            src,
+            "_github_get",
+            return_value=self._response(b"# Skill\n", "text/plain; charset=utf-8"),
+        ):
+            content = src._fetch_file_content("acme/skills", "demo/SKILL.md")
+
+        assert content == "# Skill\n"
+
+    def test_binary_skill_asset_preserves_raw_bytes(self):
+        src = self._source()
+        png_bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\xff"
+        with patch.object(
+            src,
+            "_github_get",
+            return_value=self._response(png_bytes, "image/png"),
+        ):
+            content = src._fetch_file_content("acme/skills", "demo/assets/icon.png")
+
+        assert isinstance(content, bytes)
+        assert content == png_bytes
+        assert content.startswith(b"\x89PNG\r\n\x1a\n")
+
+
+# ---------------------------------------------------------------------------
 # GitHubSource skills.sh.json grouping sidecar (category support)
 # ---------------------------------------------------------------------------
 
