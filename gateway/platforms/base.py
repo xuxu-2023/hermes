@@ -1946,6 +1946,16 @@ def classify_send_error(exc: Optional[BaseException], error_text: str = "") -> s
         or "not enough rights" in blob
         or "have no rights" in blob
         or "not a member" in blob
+        # Discord: 50001 Missing Access / 50013 Missing Permissions.
+        or "missing access" in blob
+        or "missing permissions" in blob
+        or "error code: 50001" in blob
+        or "error code: 50013" in blob
+        # Slack: bot removed from / never added to the channel, or its token
+        # lacks the scope to post there.
+        or "not_in_channel" in blob
+        or "missing_scope" in blob
+        or "restricted_action" in blob
     ):
         return "forbidden"
     if (
@@ -1954,7 +1964,28 @@ def classify_send_error(exc: Optional[BaseException], error_text: str = "") -> s
         or "message to reply not found" in blob
         or "thread not found" in blob
         or "topic_deleted" in blob
+        or "topic_closed" in blob
         or "message_id_invalid" in blob
+        # Discord: 10003 Unknown Channel (deleted/inaccessible channel|thread).
+        or "unknown channel" in blob
+        or "error code: 10003" in blob
+        # Slack: channel deleted or archived.
+        or "channel_not_found" in blob
+        or "is_archived" in blob
+        # Generic deleted / archived / locked container, across platforms whose
+        # adapters surface a free-text reason (e.g. Discord "Thread X not
+        # found", a 404 naming a channel/conversation, an archived or locked
+        # thread). Scoped to container nouns so unrelated "not found" strings
+        # (a missing media file, an unknown user) are not misread as a stale
+        # target.
+        or ("not found" in blob and (
+            "channel" in blob
+            or "thread" in blob
+            or "conversation" in blob
+            or "room" in blob
+        ))
+        or ("archiv" in blob and ("thread" in blob or "channel" in blob))
+        or ("thread" in blob and "locked" in blob)
     ):
         return "not_found"
     if (
