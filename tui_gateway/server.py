@@ -11524,24 +11524,41 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"type": "send", "message": content})
 
     if name == "steer":
-        if not arg:
+        text = (arg or "").strip()
+        if not text:
             return _err(rid, 4004, "usage: /steer <prompt>")
         agent = session.get("agent") if session else None
-        if agent and hasattr(agent, "steer"):
+        # Only inject mid-turn when a turn is actually RUNNING. The original
+        # guard checked agent presence alone, but a session keeps its agent
+        # object after a turn ends — so an idle /steer took the inject path and
+        # reported "arrives after the next tool call" with no live turn to land
+        # on. Gating on session["running"] mirrors the Ink client's `!busy`
+        # check (ui-tui/.../slash/commands/core.ts) and honors this handler's
+        # own intent: when there is "no active run, treat as next-turn message".
+        if session and session.get("running") and agent and hasattr(agent, "steer"):
             try:
-                accepted = agent.steer(arg)
-                if accepted:
-                    return _ok(
-                        rid,
-                        {
-                            "type": "exec",
-                            "output": f"⏩ Steer queued — arrives after the next tool call: {arg[:80]}{'...' if len(arg) > 80 else ''}",
-                        },
-                    )
-            except Exception:
-                pass
-        # Fallback: no active run, treat as next-turn message
-        return _ok(rid, {"type": "send", "message": arg})
+                accepted = agent.steer(text)
+            except Exception as exc:  # defensive; mirrors the session.steer RPC
+                return _ok(
+                    rid,
+                    {
+                        "type": "exec",
+                        "output": f"steer failed ({exc}) — not injected; resend after the turn",
+                    },
+                )
+            if accepted:
+                preview = text if len(text) <= 80 else text[:80] + "..."
+                return _ok(
+                    rid,
+                    {
+                        "type": "exec",
+                        "output": f"⏩ Steer queued — arrives after the next tool call: {preview}",
+                    },
+                )
+        # No running turn (or no steerable agent): a genuine next-turn message.
+        # Returned only when idle, so a client that blocks sends while busy
+        # never has to drop it.
+        return _ok(rid, {"type": "send", "message": text})
 
     if name == "goal":
         if not session:
