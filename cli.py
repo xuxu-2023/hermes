@@ -10218,11 +10218,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         try:
             from hermes_state import SessionDB
             from agent.insights import InsightsEngine
+            from rich.console import Console
 
             db = SessionDB()
             engine = InsightsEngine(db)
             report = engine.generate(days=days, source=source)
-            print(engine.format_terminal(report))
+            
+            console = Console()
+            console.print(engine.format_terminal(report))
             db.close()
         except Exception as e:
             print(f"  Error generating insights: {e}")
