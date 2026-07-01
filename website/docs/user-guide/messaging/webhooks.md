@@ -387,6 +387,7 @@ The adapter validates incoming webhook signatures using the appropriate method f
 
 - **GitHub**: `X-Hub-Signature-256` header — HMAC-SHA256 hex digest prefixed with `sha256=`
 - **GitLab**: `X-Gitlab-Token` header — plain secret string match
+- **Standard Webhooks**: `webhook-id`, `webhook-timestamp`, and `webhook-signature` headers — signed content is `{id}.{timestamp}.{raw_body}` with a `v1,<base64-hmac-sha256>` signature
 - **Generic**: `X-Webhook-Signature` header — raw HMAC-SHA256 hex digest
 
 If a secret is configured but no recognized signature header is present, the request is rejected.
