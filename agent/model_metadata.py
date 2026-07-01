@@ -1857,9 +1857,23 @@ def get_model_context_length(
         except Exception:
             pass  # fall through to probing
 
-    # Normalise provider-prefixed model names (e.g. "local:model-name" →
-    # "model-name") so cache lookups and server queries use the bare ID that
-    # local servers actually know about.  Ollama "model:tag" colons are preserved.
+    # Normalise provider-prefixed model names — first handle slash-separated
+    # format (e.g. "opencode-go/qwen3.7-plus" → model="qwen3.7-plus",
+    # provider="opencode-go") so that both call forms return the same context
+    # length for the same model.  Without this, callers that pass a
+    # fully-qualified provider/model id as the model string get a different
+    # result from those passing the bare model + explicit provider param,
+    # because the unresolved prefixed string falls through to hardcoded
+    # catch-all entries (e.g. generic "qwen" → 131072) while the separated
+    # form reaches the correct provider-aware lookup.  See #47782.
+    if "/" in model and not provider:
+        slash_idx = model.index("/")
+        potential_provider = model[:slash_idx].strip().lower()
+        if potential_provider in _PROVIDER_PREFIXES:
+            provider = model[:slash_idx].strip()
+            model = model[slash_idx + 1:]
+    # Then handle colon-separated format (e.g. "local:my-model" → "my-model").
+    # Ollama "model:tag" colons (e.g. "qwen3.5:27b") are preserved.
     model = _strip_provider_prefix(model)
 
     # 1. Check persistent cache (model+provider)
