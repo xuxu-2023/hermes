@@ -625,7 +625,19 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "tts.provider": {
         "type": "select",
         "description": "Text-to-speech provider",
-        "options": ["edge", "elevenlabs", "openai", "neutts"],
+        "options": [
+            "edge",
+            "elevenlabs",
+            "openai",
+            "xai",
+            "minimax",
+            "mistral",
+            "gemini",
+            "neutts",
+            "kittentts",
+            "piper",
+            "supertonic",
+        ],
     },
     "stt.provider": {
         "type": "select",
