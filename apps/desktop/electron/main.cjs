@@ -3926,6 +3926,15 @@ function sendOpenUpdatesRequested() {
   mainWindow.focus()
 }
 
+function sendOpenSettingsRequested() {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  const { webContents } = mainWindow
+  if (!webContents || webContents.isDestroyed()) return
+  webContents.send('hermes:open-settings')
+  if (!mainWindow.isVisible()) mainWindow.show()
+  mainWindow.focus()
+}
+
 function sendWindowStateChanged(nextIsFullscreen) {
   if (!mainWindow || mainWindow.isDestroyed()) return
   const { webContents } = mainWindow
@@ -3950,6 +3959,7 @@ function buildApplicationMenu() {
       label: APP_NAME,
       submenu: [
         { label: `About ${APP_NAME}`, click: () => showAboutPanelFresh() },
+        { label: 'Settings…', accelerator: 'CommandOrControl+,', click: () => sendOpenSettingsRequested() },
         checkForUpdatesItem,
         { type: 'separator' },
         { role: 'services' },
@@ -6720,6 +6730,11 @@ ipcMain.handle('hermes:setting:defaultProjectDir:pick', async () => {
 })
 
 ipcMain.handle('hermes:fetchLinkTitle', (_event, url) => fetchLinkTitle(url))
+
+ipcMain.handle('hermes:settings:open', async () => {
+  sendOpenSettingsRequested()
+  return { ok: true }
+})
 
 ipcMain.handle('hermes:logs:reveal', async () => {
   try {
