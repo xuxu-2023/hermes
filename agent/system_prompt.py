@@ -12,7 +12,8 @@ Three tiers are joined with ``\\n\\n``:
 * ``stable``   — identity (SOUL.md or DEFAULT_AGENT_IDENTITY), tool
   guidance, computer-use guidance, nous subscription block, tool-use
   enforcement guidance + per-model operational guidance, skills prompt,
-  alibaba model-name workaround, environment hints, platform hints.
+  alibaba model-name workaround, environment hints, platform hints,
+  plugin-owned static context blocks.
 * ``context``  — caller-supplied ``system_message`` plus context files
   (AGENTS.md / .cursorrules / etc.) discovered under ``TERMINAL_CWD``.
 * ``volatile`` — memory snapshot, USER.md profile, external memory
@@ -400,6 +401,19 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     _effective_hint = _resolve_platform_hint(agent, platform_key, _default_hint)
     if _effective_hint:
         stable_parts.append(_effective_hint)
+
+    # Plugin-owned documentation for per-turn injects. This is assembled once
+    # with the cached system prompt, unlike pre_llm_call context which remains
+    # API-call-time user-message context.
+    try:
+        from hermes_cli.plugins import collect_static_context
+        _plugin_static_context = collect_static_context()
+    except Exception:
+        _plugin_static_context = []
+    if _plugin_static_context:
+        stable_parts.append(
+            "## Plugin Static Context\n\n" + "\n\n".join(_plugin_static_context)
+        )
 
     # ── Context tier (cwd-dependent, may change between sessions) ─
     context_parts: List[str] = []

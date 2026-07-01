@@ -142,6 +142,10 @@ VALID_HOOKS: Set[str] = {
     # First non-None string wins. Useful for vocabulary/personality transformation.
     "transform_llm_output",
     "pre_llm_call",
+    # Stable prompt hook. Called during system prompt assembly, without
+    # observer kwargs, so plugins can document their own per-turn injects in
+    # the cached prefix.
+    "static_context",
     "post_llm_call",
     # Verification-loop gate. Fired once per turn when the agent has edited code
     # and is about to verify/finish (after the verify-on-stop guard). A callback
@@ -1885,6 +1889,39 @@ class PluginManager:
         """Return True when at least one callback is registered for a hook."""
         return bool(self._hooks.get(hook_name))
 
+    def collect_static_context(self) -> List[str]:
+        """Return non-empty static context blocks from enabled plugins.
+
+        ``static_context`` is intentionally not dispatched through
+        :meth:`invoke_hook`: the public contract is a pure no-argument
+        callback that runs during cached system-prompt assembly. Generic
+        observer hooks receive telemetry kwargs, which would break that
+        no-argument contract.
+        """
+        callbacks = self._hooks.get("static_context", [])
+        results: List[str] = []
+        for cb in callbacks:
+            try:
+                ret = cb()
+            except Exception as exc:
+                logger.warning(
+                    "Hook 'static_context' callback %s raised: %s",
+                    getattr(cb, "__name__", repr(cb)),
+                    exc,
+                )
+                continue
+            if isinstance(ret, str):
+                text = ret.strip()
+                if text:
+                    results.append(text)
+            elif ret is not None:
+                logger.warning(
+                    "Hook 'static_context' callback %s returned non-string %s; ignoring",
+                    getattr(cb, "__name__", repr(cb)),
+                    type(ret).__name__,
+                )
+        return results
+
     def has_middleware(self, kind: str) -> bool:
         """Return True when at least one callback is registered for middleware."""
         return bool(self._middleware.get(kind))
@@ -2007,6 +2044,11 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     Returns a list of non-``None`` return values from plugin callbacks.
     """
     return get_plugin_manager().invoke_hook(hook_name, **kwargs)
+
+
+def collect_static_context() -> List[str]:
+    """Collect plugin-owned static prompt context blocks."""
+    return get_plugin_manager().collect_static_context()
 
 
 def invoke_middleware(kind: str, **kwargs: Any) -> List[Any]:

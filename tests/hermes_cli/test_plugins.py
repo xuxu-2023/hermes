@@ -635,6 +635,24 @@ class TestPluginHooks:
     def test_valid_hooks_include_pre_gateway_dispatch(self):
         assert "pre_gateway_dispatch" in VALID_HOOKS
 
+    def test_valid_hooks_include_static_context(self):
+        assert "static_context" in VALID_HOOKS
+
+    def test_static_context_callbacks_are_called_without_kwargs(self, tmp_path, monkeypatch):
+        """static_context is a pure prompt-build hook, not an observer event."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "static_context_plugin",
+            register_body='ctx.register_hook("static_context", lambda: "PLUGIN LEGEND")',
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert mgr.collect_static_context() == ["PLUGIN LEGEND"]
+
     def test_pre_gateway_dispatch_collects_action_dicts(self, tmp_path, monkeypatch):
         """pre_gateway_dispatch callbacks return action dicts (skip/rewrite/allow)."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"

@@ -26,7 +26,7 @@ def register(ctx):
     ctx.register_hook("post_tool_call", on_post_tool_call)
 ```
 
-Every hook callback receives keyword arguments. Plugins should accept
+Observer hook callbacks receive keyword arguments. Plugins should accept
 `**kwargs` so additive fields remain backward-compatible:
 
 ```python
@@ -36,7 +36,7 @@ def on_post_tool_call(**kwargs):
     result = kwargs.get("result")
 ```
 
-The plugin manager injects this field into every hook payload:
+The plugin manager injects this field into observer hook payloads:
 
 ```text
 telemetry_schema_version = "hermes.observer.v1"
@@ -44,6 +44,10 @@ telemetry_schema_version = "hermes.observer.v1"
 
 Hook callbacks are fail-open. Hermes catches callback exceptions, logs a
 warning, and keeps the agent loop running.
+
+The prompt-build `static_context` hook is outside this observer contract. It is
+a no-argument callback used only to add plugin-owned static documentation to the
+cached system prompt.
 
 Most observer hook return values are ignored. The exceptions are older
 behavior-affecting hooks:

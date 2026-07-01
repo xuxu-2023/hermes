@@ -1299,6 +1299,24 @@ class TestBuildSystemPrompt:
         prompt = agent._build_system_prompt()
         assert "NOUS SUBSCRIPTION BLOCK" in prompt
 
+    def test_includes_plugin_static_context_in_stable_tier(self, agent):
+        with patch(
+            "hermes_cli.plugins.collect_static_context",
+            return_value=["## Memory Injects\n- `[Mem]` means recalled memory."],
+        ) as mock_static_context:
+            prompt = agent._build_system_prompt(system_message="Custom instruction")
+
+        assert "## Plugin Static Context" in prompt
+        assert "## Memory Injects\n- `[Mem]` means recalled memory." in prompt
+        assert prompt.index("## Plugin Static Context") < prompt.index("Custom instruction")
+        mock_static_context.assert_called_once_with()
+
+    def test_omits_plugin_static_context_section_when_empty(self, agent):
+        with patch("hermes_cli.plugins.collect_static_context", return_value=[]):
+            prompt = agent._build_system_prompt()
+
+        assert "## Plugin Static Context" not in prompt
+
     def test_skills_prompt_derives_available_toolsets_from_loaded_tools(self):
         tools = _make_tool_defs("web_search", "skills_list", "skill_view", "skill_manage")
         toolset_map = {

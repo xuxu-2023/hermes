@@ -362,6 +362,7 @@ def register(ctx):
     ctx.register_hook("pre_tool_call", my_tool_observer)
     ctx.register_hook("post_tool_call", my_tool_logger)
     ctx.register_hook("pre_llm_call", my_memory_callback)
+    ctx.register_hook("static_context", my_static_context)
     ctx.register_hook("post_llm_call", my_sync_callback)
     ctx.register_hook("on_session_start", my_init_callback)
     ctx.register_hook("on_session_end", my_cleanup_callback)
@@ -369,9 +370,9 @@ def register(ctx):
 
 **General rules for all hooks:**
 
-- Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility — new parameters may be added in future versions without breaking your plugin.
+- Callbacks generally receive **keyword arguments**. Always accept `**kwargs` for forward compatibility — new parameters may be added in future versions without breaking your plugin. The exception is [`static_context`](#static_context), which is intentionally a no-argument prompt-build hook.
 - If a callback **crashes**, it's logged and skipped. Other hooks and the agent continue normally. A misbehaving plugin can never break the agent.
-- Two hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, and [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call. All other hooks are fire-and-forget observers.
+- Three hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call, and [`static_context`](#static_context) can add plugin-owned documentation to the cached system prompt. All other hooks are fire-and-forget observers or transforms.
 - Observer callbacks receive `telemetry_schema_version` automatically. When present, `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count` are separate correlation fields. Treat `api_request_id` as an opaque identifier; do not parse its string format.
 
 ### Quick reference
@@ -381,6 +382,7 @@ def register(ctx):
 | [`pre_tool_call`](#pre_tool_call) | Before any tool executes | `{"action": "block", "message": str}` to veto the call |
 | [`post_tool_call`](#post_tool_call) | After any tool returns | ignored |
 | [`pre_llm_call`](#pre_llm_call) | Once per turn, before the tool-calling loop | `{"context": str}` to prepend context to the user message |
+| [`static_context`](#static_context) | During cached system prompt assembly | `str` static documentation block, `None` to skip |
 | [`post_llm_call`](#post_llm_call) | Once per turn, after the tool-calling loop | ignored |
 | [`pre_verify`](#pre_verify) | Once per turn when the agent edited code, before it verifies/finishes | `{"action": "continue", "message": str}` to keep going |
 | [`on_session_start`](#on_session_start) | New session created (first turn only) | ignored |
@@ -587,6 +589,36 @@ def guardrails(**kwargs):
 def register(ctx):
     ctx.register_hook("pre_llm_call", guardrails)
 ```
+
+---
+
+### `static_context`
+
+Fires when Hermes builds the cached system prompt for a session, including after a compression-triggered rebuild. Use this hook to document stable block formats or legends that your plugin injects dynamically with [`pre_llm_call`](#pre_llm_call).
+
+**Callback signature:**
+
+```python
+def my_static_context():
+```
+
+This hook receives **no arguments**. Return a non-empty markdown string to include it under `## Plugin Static Context` in the stable system prompt tier, or return `None`/empty text to skip.
+
+```python
+def memory_static_context():
+    return """## Memory Injects
+
+You may see these blocks in per-turn context:
+
+- `[Mem]` - recalled long-term memory. Treat it as external evidence.
+- `[EMOTION]` - reaction statistics for the current user.
+"""
+
+def register(ctx):
+    ctx.register_hook("static_context", memory_static_context)
+```
+
+Keep this content static for the session. Do not include timestamps, retrieved memories, user-specific data, or anything that should change every turn; put dynamic data in `pre_llm_call` instead.
 
 ---
 
