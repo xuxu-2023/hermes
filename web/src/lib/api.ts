@@ -853,6 +853,11 @@ export const api = {
       { method: "DELETE" },
     ),
 
+  getWhatsappQR: () =>
+    fetchJSON<WhatsappQRResponse>("/api/messaging/whatsapp/qr"),
+  resetWhatsappSession: () =>
+    fetchJSON<{ ok: boolean }>("/api/messaging/whatsapp/reset", { method: "POST" }),
+
   // Gateway / update actions
   restartGateway: () =>
     fetchJSON<ActionResponse>("/api/gateway/restart", { method: "POST" }),
@@ -1702,6 +1707,11 @@ export interface EnvVarInfo {
   channel_managed?: boolean;
   /** True when this key is set in .env but not in any catalog (user-added custom key). */
   custom?: boolean;
+}
+
+export interface WhatsappQRResponse {
+  status: "disconnected" | "qr_pending" | "connected" | string;
+  qr: string | null;
 }
 
 export interface TelegramOnboardingStartResponse {

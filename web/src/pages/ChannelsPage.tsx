@@ -30,6 +30,7 @@ import type {
   MessagingPlatformEnvVar,
   MessagingPlatformUpdate,
   TelegramOnboardingStartResponse,
+  WhatsappQRResponse,
 } from "@/lib/api";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { usePageHeader } from "@/contexts/usePageHeader";
@@ -533,6 +534,9 @@ export default function ChannelsPage() {
                     showToast={showToast}
                   />
                 )}
+                {platform.id === "whatsapp" && (
+                  <WhatsappOnboardingPanel showToast={showToast} />
+                )}
               </CardContent>
             </Card>
           );
@@ -885,6 +889,136 @@ function TelegramOnboardingPanel({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function WhatsappOnboardingPanel({
+  showToast,
+}: {
+  showToast: (message: string, type: "success" | "error") => void;
+}) {
+  const [data, setData] = useState<WhatsappQRResponse | null>(null);
+  const [qrDataUrl, setQrDataUrl] = useState<string>("");
+  const [resetting, setResetting] = useState(false);
+  const [phase, setPhase] = useState<"idle" | "connecting" | "ready">("idle");
+
+  const fetchQR = useCallback(async () => {
+    try {
+      const res = await api.getWhatsappQR();
+      setData(res);
+      if (res.status === "connected") {
+        setPhase("ready");
+      } else if (res.status === "qr_pending") {
+        setPhase("connecting");
+      }
+      if (res.qr) {
+        const url = await QRCode.toDataURL(res.qr, {
+          errorCorrectionLevel: "M",
+          margin: 1,
+          width: 224,
+        });
+        setQrDataUrl(url);
+      }
+    } catch {
+      // bridge not running — silently skip
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchQR();
+    const timer = setInterval(fetchQR, 3000);
+    return () => clearInterval(timer);
+  }, [fetchQR]);
+
+  const handleReset = async () => {
+    if (!window.confirm("Delete WhatsApp session and re-pair with a new QR code?")) return;
+    setResetting(true);
+    try {
+      await api.resetWhatsappSession();
+      setData(null);
+      setQrDataUrl("");
+      setPhase("idle");
+      showToast("Session reset — scan the new QR code", "success");
+      setTimeout(fetchQR, 1500);
+    } catch (e) {
+      showToast("Reset failed: " + String(e), "error");
+    } finally {
+      setResetting(false);
+    }
+  };
+
+  const isPending = data?.status === "qr_pending";
+  const isConnected = data?.status === "connected";
+
+  return (
+    <div className="mt-4">
+      <div className="rounded-sm border border-border bg-background/35 p-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            size="sm"
+            className="uppercase"
+            onClick={handleReset}
+            disabled={phase === "idle" || resetting}
+            prefix={resetting ? <Spinner /> : <RotateCw className="h-4 w-4" />}
+          >
+            {resetting ? "Resetting…" : isPending ? "Connecting…" : isConnected ? "Re-pair with QR" : "Set up with QR"}
+          </Button>
+          {phase === "idle" && !isPending && !isConnected && (
+            <span className="text-xs text-muted-foreground">
+              WhatsApp bridge not running or not configured.
+            </span>
+          )}
+        </div>
+
+        {isPending && qrDataUrl && (
+          <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_260px]">
+            <div className="grid gap-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge tone="warning">Scan to pair</Badge>
+              </div>
+              <p className="text-sm text-muted-foreground">
+                Open WhatsApp on your phone, go to{" "}
+                <span className="font-courier">Linked Devices</span> →{" "}
+                <span className="font-courier">Link a Device</span>, and scan
+                the QR code.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  ghost
+                  className="uppercase text-destructive"
+                  onClick={handleReset}
+                  disabled={resetting}
+                  prefix={<X className="h-4 w-4" />}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+
+            <div className="flex flex-col items-center justify-center gap-3">
+              <img
+                src={qrDataUrl}
+                alt="WhatsApp QR code"
+                className="h-56 w-56 bg-white p-2"
+              />
+              <Badge tone="warning">waiting</Badge>
+            </div>
+          </div>
+        )}
+
+        {isConnected && (
+          <div className="mt-4 grid gap-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge tone="success">Connected</Badge>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              WhatsApp is paired and connected.
+            </p>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
