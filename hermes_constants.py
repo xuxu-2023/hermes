@@ -888,12 +888,29 @@ def is_container() -> bool:
     # cgroup v2: /proc/1/cgroup is just "0::/" with no marker. The container
     # runtime still shows up in the mount table (overlay rootfs, runtime mount
     # paths), so scan mountinfo as a last resort.
+    #
+    # Guard against false positives on Docker-ENGINE hosts: the host's
+    # /proc/self/mountinfo contains lines whose *mount point* or super-options
+    # reference /var/lib/containerd or /var/lib/docker, but the root field (4th
+    # column) is "/".  Real container mounts have a non-trivial root like
+    # "/containerd/.../rootfs".  We parse each line and only match when the
+    # root field contains the marker AND the mount point does NOT start with
+    # /var/lib/docker or /var/lib/containerd (host-side storage paths).
     try:
         with open("/proc/self/mountinfo", "r", encoding="utf-8") as f:
-            mountinfo = f.read()
-            if any(marker in mountinfo for marker in ("kubepods", "containerd", "crio")):
-                _container_detected = True
-                return True
+            for line in f:
+                parts = line.split()
+                if len(parts) < 6:
+                    continue
+                root = parts[3]       # 4th field: root of the mount
+                mount_point = parts[4] # 5th field: mount point
+                # Skip host-side Docker/containerd storage mounts
+                if mount_point.startswith("/var/lib/docker") or mount_point.startswith("/var/lib/containerd"):
+                    continue
+                for marker in ("kubepods", "containerd", "crio"):
+                    if marker in root:
+                        _container_detected = True
+                        return True
     except OSError:
         pass
     _container_detected = False
