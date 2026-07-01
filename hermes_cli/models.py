@@ -436,6 +436,8 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "nemotron-3-ultra-free",
     ],
     "opencode-go": [
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
         "kimi-k2.6",
         "kimi-k2.5",
         "glm-5.1",
