@@ -3688,7 +3688,9 @@ def get_profiles_sessions(
 
 
 @app.get("/api/sessions/search")
-async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] = None):
+async def search_sessions(
+    q: str = "", limit: int = 20, scope: str = "all", profile: Optional[str] = None
+):
     """Search sessions by ID plus full-text message content using FTS5.
 
     Direct session-id matches are surfaced first, then FTS message-content
@@ -3698,9 +3700,27 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
     logical chat can own many ``sessions`` rows that all match the same query.
     Branches also use ``parent_session_id``, but they are real alternate
     conversations; don't collapse branch-specific hits back into the parent.
+
+    ``scope`` narrows by message role so the result list isn't dominated by
+    tool/structured noise:
+      - ``all`` (default): every role, plus direct session-id matches. This is
+        byte-identical to the historical behaviour.
+      - ``messages``: user + assistant prose only (excludes tool output).
+      - ``code``: tool messages only (command output / file contents /
+        structured results).
+    Any unrecognised value is treated as ``all``. A non-``all`` scope drops the
+    session-id match pass so the list stays a pure content-scoped result.
     """
     if not q or not q.strip():
         return {"results": []}
+    # Map the public scope name onto the db layer's role_filter. ``None`` means
+    # "no role filter" — the exact default search_messages already uses — so
+    # scope="all" (or any unknown value) leaves the query untouched.
+    scope_norm = (scope or "all").strip().lower()
+    role_filter = {
+        "messages": ["user", "assistant"],
+        "code": ["tool"],
+    }.get(scope_norm)  # None for "all"/unknown → unchanged behaviour
     try:
         db = _open_session_db_for_profile(profile)
         try:
@@ -3797,7 +3817,15 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
             # logs, or another Hermes surface. FTS can't find those unless the
             # id happens to appear in message text. search_sessions_by_id is
             # SQL-bounded, so this stays cheap even with thousands of sessions.
-            for row in db.search_sessions_by_id(q, limit=safe_limit, include_archived=True):
+            # Skipped for a narrowed scope (messages/code) so the list stays a
+            # pure content-scoped result; for the default scope this is the same
+            # pass as before.
+            id_rows = (
+                db.search_sessions_by_id(q, limit=safe_limit, include_archived=True)
+                if role_filter is None
+                else []
+            )
+            for row in id_rows:
                 sid = row.get("id")
                 preview = (row.get("preview") or "").strip()
                 snippet = preview or f"Session ID: {sid}"
@@ -3826,7 +3854,13 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
             # Over-fetch so lineage dedup can still surface `limit` distinct
             # conversations even when several hits collapse onto one root.
             fetch_limit = max(safe_limit * 5, 50)
-            matches = db.search_messages(query=prefix_query, limit=fetch_limit)
+            # Pass role_filter only when a scope is active, so the default
+            # (scope="all") path calls search_messages exactly as stock Hermes
+            # does — keeps this seam additive and the existing search tests green.
+            search_kwargs = {"query": prefix_query, "limit": fetch_limit}
+            if role_filter is not None:
+                search_kwargs["role_filter"] = role_filter
+            matches = db.search_messages(**search_kwargs)
 
             for m in matches:
                 if len(seen) >= safe_limit:
