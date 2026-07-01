@@ -691,6 +691,19 @@ agent:
     hype: "YOOO LET'S GOOOO!!! 🔥🔥🔥 I am SO PUMPED to help you today! Every question is AMAZING and we're gonna CRUSH IT together! This is gonna be LEGENDARY! ARE YOU READY?! LET'S DO THIS! 💪😤🚀"
 
 # =============================================================================
+# Context Files
+# =============================================================================
+# Optional shared rule files to load before cwd project rules like AGENTS.md.
+# Useful for sharing personal instructions across Hermes, Codex, Claude Code,
+# or other agent tools without creating symlinks in every working directory.
+context_files:
+  global_paths: []
+  # Example:
+  # global_paths:
+  #   - ~/.codex/AGENTS.md
+  #   - ~/.claude/CLAUDE.md
+
+# =============================================================================
 # Toolsets
 # =============================================================================
 # Control which tools the agent has access to.

@@ -65,6 +65,38 @@ cannot override, via a system-level managed directory. See
 [Managed Scope](/user-guide/managed-scope).
 :::
 
+## Global context files
+
+Hermes normally discovers project rules from the session working directory
+(`.hermes.md`, `AGENTS.md`, `CLAUDE.md`, or `.cursorrules`, first match wins).
+To prepend one or more personal/shared rule files to every new session, set
+`context_files.global_paths` in `config.yaml`:
+
+```yaml
+context_files:
+  global_paths:
+    - ~/.codex/AGENTS.md
+    - ~/.claude/CLAUDE.md
+```
+
+Global paths are loaded before the cwd project context and are additive: a
+project `AGENTS.md` can still provide repo-specific rules. Entries may be
+absolute, `~`-prefixed, or home-relative. Missing files are ignored. Changes
+affect new sessions only.
+
+During interactive setup, Hermes also offers known shared rule files such as
+`~/.codex/AGENTS.md` and `~/.claude/CLAUDE.md` when they exist:
+
+```bash
+hermes setup context
+```
+
+You can also set the list from the CLI:
+
+```bash
+hermes config set context_files.global_paths ~/.codex/AGENTS.md
+```
+
 ## Environment Variable Substitution
 
 You can reference environment variables in `config.yaml` using `${VAR_NAME}` syntax:

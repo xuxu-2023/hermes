@@ -475,7 +475,10 @@ Tool changes take effect on `/reset` (new session). They do NOT apply mid-conver
 
 ## Project Context Files
 
-Hermes injects project-level instructions into the system prompt by reading context files from the working directory. The discovery order is **first match wins** — only one project context source is loaded per session.
+Hermes injects instructions into the system prompt from two layers:
+
+1. Additive global context files configured in `config.yaml` at `context_files.global_paths`.
+2. Project context from the working directory. Project discovery is **first match wins** — only one project context source is loaded per session.
 
 | File (in priority order) | Discovery | Use when |
 |---|---|---|
@@ -486,11 +489,22 @@ Hermes injects project-level instructions into the system prompt by reading cont
 
 `SOUL.md` (in `$HERMES_HOME`) is independent and always loaded when present — it sets the agent's identity, not project rules.
 
+To share personal rules such as Codex's `~/.codex/AGENTS.md` with every Hermes session, configure:
+
+```yaml
+context_files:
+  global_paths:
+    - ~/.codex/AGENTS.md
+```
+
+Global context files load before cwd project rules. Entries may be absolute, `~`-prefixed, or home-relative. Missing files are ignored and changes apply only to new sessions.
+
 ### Pick the right one
 
 - **Use `.hermes.md`** when you want Hermes-specific behavior that lives above the cwd (root + subtree), or when you want rules to inherit from a parent directory. The parent walk stops at the git root, so a home-level `.hermes.md` won't leak into every project (a git repo's root is the boundary).
 - **Use `AGENTS.md`** when the same project will also be worked on by other agents (Codex, Claude Code, OpenCode). Those tools all have their own conventions for `AGENTS.md`, and the "cwd only" contract keeps the file portable.
-- **Don't put project rules in `~/.hermes/AGENTS.md`** (or any other home-level location). When Hermes runs with that directory as cwd, the file loads — but only for that one directory. For cross-project context, use `SOUL.md` (in `$HERMES_HOME`, identity-only) or install a skill via `hermes skills install`.
+- **Use `context_files.global_paths`** when you want one shared personal rules file (for example `~/.codex/AGENTS.md`) to prepend to every new Hermes session without maintaining cwd symlinks.
+- **Don't put project rules in `~/.hermes/AGENTS.md`** (or any other home-level location). When Hermes runs with that directory as cwd, the file loads — but only for that one directory. For cross-project identity, use `SOUL.md`; for cross-project rule files, use `context_files.global_paths`; for reusable procedures, install a skill via `hermes skills install`.
 
 ### Size and truncation
 

@@ -185,22 +185,28 @@ Be targeted and efficient in your exploration and investigations.
 
 ## How context files are injected
 
-`build_context_files_prompt()` uses a **priority system** — only one project context type is loaded (first match wins):
+`build_context_files_prompt()` first loads any configured global context files,
+then uses a **priority system** for cwd project rules — only one project context
+type is loaded (first match wins):
 
 ```python
 # From agent/prompt_builder.py (simplified)
 def build_context_files_prompt(cwd=None, skip_soul=False):
     cwd_path = Path(cwd).resolve()
+    loaded_paths = set()
+    sections = []
+
+    # Additive global rules from config.yaml, e.g. ~/.codex/AGENTS.md
+    sections.extend(_load_global_context_files(loaded_paths=loaded_paths))
 
     # Priority: first match wins — only ONE project context loaded
     project_context = (
-        _load_hermes_md(cwd_path)       # 1. .hermes.md / HERMES.md (walks to git root)
-        or _load_agents_md(cwd_path)    # 2. AGENTS.md (cwd only)
-        or _load_claude_md(cwd_path)    # 3. CLAUDE.md (cwd only)
-        or _load_cursorrules(cwd_path)  # 4. .cursorrules / .cursor/rules/*.mdc
+        _load_hermes_md(cwd_path, loaded_paths=loaded_paths)
+        or _load_agents_md(cwd_path, loaded_paths=loaded_paths)
+        or _load_claude_md(cwd_path, loaded_paths=loaded_paths)
+        or _load_cursorrules(cwd_path, loaded_paths=loaded_paths)
     )
 
-    sections = []
     if project_context:
         sections.append(project_context)
 
@@ -222,6 +228,9 @@ def build_context_files_prompt(cwd=None, skip_soul=False):
 ```
 
 ### Context file discovery details
+
+Global context files from `context_files.global_paths` are loaded first, in
+configured order. The project discovery priority then applies to the cwd:
 
 | Priority | Files | Search scope | Notes |
 |----------|-------|-------------|-------|
@@ -254,8 +263,11 @@ Local memory and user profile data are captured in the system prompt's **volatil
 
 ## Context files
 
-`agent/prompt_builder.py` scans and sanitizes project context files using a **priority system** — only one type is loaded (first match wins):
+`agent/prompt_builder.py` scans and sanitizes configured global context files,
+then scans project context files using a **priority system** — only one project
+type is loaded from the cwd (first match wins):
 
+0. `context_files.global_paths` from `config.yaml` (additive, loaded before cwd rules)
 1. `.hermes.md` / `HERMES.md` (walks to git root)
 2. `AGENTS.md` (CWD at startup; subdirectories discovered progressively during the session via `agent/subdirectory_hints.py`)
 3. `CLAUDE.md` (CWD only)
@@ -277,6 +289,7 @@ Most users should treat `agent/prompt_builder.py` as implementation code, not a 
 
 - `~/.hermes/SOUL.md` — replace the built-in default identity block with your own agent persona and standing behavior.
 - `~/.hermes/MEMORY.md` and `~/.hermes/USER.md` — provide durable cross-session facts and user profile data that should be snapshotted into new sessions.
+- `context_files.global_paths` in `config.yaml` — prepend shared rule files such as `~/.codex/AGENTS.md` to every new session.
 - Project context files such as `.hermes.md`, `HERMES.md`, `AGENTS.md`, `CLAUDE.md`, or `.cursorrules` — inject repo-specific working rules.
 - Skills — package reusable workflows and references without editing core prompt code.
 - Optional system prompt config / API overrides — add deployment-specific instruction text without forking Hermes.

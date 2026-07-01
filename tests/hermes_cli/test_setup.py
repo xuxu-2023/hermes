@@ -259,6 +259,43 @@ def test_setup_syncs_custom_provider_removal_from_disk(tmp_path, monkeypatch):
     assert reloaded.get("custom_providers") == []
 
 
+def test_setup_global_context_files_offers_codex_agents(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    codex_agents = home / ".codex" / "AGENTS.md"
+    codex_agents.parent.mkdir(parents=True)
+    codex_agents.write_text("Codex rules", encoding="utf-8")
+
+    config = {}
+    saved = []
+    monkeypatch.setattr("pathlib.Path.home", lambda: home)
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *args, **kwargs: True)
+    monkeypatch.setattr(setup_mod, "save_config", lambda cfg: saved.append(dict(cfg)))
+
+    setup_mod.setup_global_context_files(config)
+
+    assert config["context_files"]["global_paths"] == ["~/.codex/AGENTS.md"]
+    assert saved
+
+
+def test_setup_global_context_files_deduplicates_configured_path(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    codex_agents = home / ".codex" / "AGENTS.md"
+    codex_agents.parent.mkdir(parents=True)
+    codex_agents.write_text("Codex rules", encoding="utf-8")
+
+    config = {"context_files": {"global_paths": ["~/.codex/AGENTS.md"]}}
+    monkeypatch.setattr("pathlib.Path.home", lambda: home)
+
+    def fail_prompt(*args, **kwargs):
+        raise AssertionError("already configured path should not be prompted again")
+
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", fail_prompt)
+
+    setup_mod.setup_global_context_files(config)
+
+    assert config["context_files"]["global_paths"] == ["~/.codex/AGENTS.md"]
+
+
 def test_setup_cancel_preserves_existing_config(tmp_path, monkeypatch):
     """When the user cancels provider selection, existing config is preserved."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

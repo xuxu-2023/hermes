@@ -1267,6 +1267,14 @@ DEFAULT_CONFIG = {
     # and override the dynamic behavior. Separate from read_file tool limits.
     "context_file_max_chars": None,
 
+    # Additional, user-configured context files loaded into every new session
+    # before cwd project context. Use absolute paths or home-relative paths
+    # (e.g. ~/.codex/AGENTS.md) to share a personal AGENTS/CLAUDE-style rule
+    # file without requiring a symlink in every working directory.
+    "context_files": {
+        "global_paths": [],
+    },
+
     # Maximum characters returned by a single read_file call.  Reads that
     # exceed this are rejected with guidance to use offset+limit.
     # 100K chars ≈ 25–35K tokens across typical tokenisers.
@@ -7651,16 +7659,28 @@ def set_config_value(key: str, value: str):
     # inline navigation here silently overwrote lists with dicts.
 
     # Convert value to appropriate type
-    if value.lower() in {'true', 'yes', 'on'}:
-        value = True
+    typed_value: Any = value
+    if key == "context_files.global_paths":
+        try:
+            parsed_value = yaml.safe_load(value)
+        except yaml.YAMLError:
+            parsed_value = value
+        if isinstance(parsed_value, list):
+            typed_value = [str(part).strip() for part in parsed_value if str(part).strip()]
+        elif isinstance(parsed_value, str):
+            typed_value = [part.strip() for part in parsed_value.split(",") if part.strip()]
+        else:
+            typed_value = []
+    elif value.lower() in {'true', 'yes', 'on'}:
+        typed_value = True
     elif value.lower() in {'false', 'no', 'off'}:
-        value = False
+        typed_value = False
     elif value.isdigit():
-        value = int(value)
+        typed_value = int(value)
     elif value.replace('.', '', 1).isdigit():
-        value = float(value)
+        typed_value = float(value)
 
-    _set_nested(user_config, key, value)
+    _set_nested(user_config, key, typed_value)
     # Normalize the api_base → base_url alias at set-time too (issue #8919),
     # so a fresh `hermes config set model.api_base ...` lands on the canonical
     # key the runtime resolver actually reads, instead of being silently
@@ -7679,18 +7699,18 @@ def set_config_value(key: str, value: str):
     # config.yaml is authoritative, but terminal_tool only reads TERMINAL_ENV etc.
     env_var = terminal_config_env_var_for_key(key)
     if env_var and key != "terminal.cwd":
-        save_env_value(env_var, _terminal_env_value(value))
+        save_env_value(env_var, _terminal_env_value(typed_value))
 
     # Mask the echoed value when the (possibly nested) key is credential-shaped
     # — e.g. `hermes config set model.api_key cfut_...` routes to config.yaml
     # (lowercase, so it misses the .env api_keys list above) and would otherwise
     # print the raw secret to the terminal.
     _leaf_key = key.rsplit(".", 1)[-1].lower()
-    if _leaf_key in _SECRET_CONFIG_KEYS and isinstance(value, str) and value:
+    if _leaf_key in _SECRET_CONFIG_KEYS and isinstance(typed_value, str) and typed_value:
         from agent.redact import mask_secret
-        _display_value = mask_secret(value)
+        _display_value = mask_secret(typed_value)
     else:
-        _display_value = value
+        _display_value = typed_value
     print(f"✓ Set {key} = {_display_value} in {config_path}")
 
 

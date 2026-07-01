@@ -689,6 +689,11 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "API service tier (OpenAI/Anthropic)",
         "options": ["", "auto", "default", "flex"],
     },
+    "context_files.global_paths": {
+        "type": "list",
+        "description": "Global context files loaded before cwd project rules (absolute, ~, or home-relative paths)",
+        "category": "agent",
+    },
     "delegation.reasoning_effort": {
         "type": "select",
         "description": "Reasoning effort for delegated subagents",
@@ -721,6 +726,7 @@ _CATEGORY_MERGE: Dict[str, str] = {
     "prompt_caching": "agent",
     "goals": "agent",
     "updates": "general",
+    "context_files": "agent",
     # `onboarding.profile_build` is the only schema-surfaced onboarding field
     # (`onboarding.seen` is an internal latch dict, not a user setting), so fold
     # it into the agent tab rather than spawning a one-field orphan category.

@@ -708,6 +708,77 @@ class TestBuildContextFilesPrompt:
         assert "Ruff for linting" in result
         assert "Project Context" in result
 
+    def test_loads_configured_global_context_paths(self, tmp_path, monkeypatch):
+        project = tmp_path / "project"
+        project.mkdir()
+        shared = tmp_path / "shared" / "AGENTS.md"
+        shared.parent.mkdir()
+        shared.write_text("Shared Codex rules.", encoding="utf-8")
+        other = tmp_path / "shared" / "CLAUDE.md"
+        other.write_text("Shared Claude rules.", encoding="utf-8")
+        (project / "AGENTS.md").write_text("Project local rules.", encoding="utf-8")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"context_files": {"global_paths": [str(shared), str(other)]}},
+        )
+
+        result = build_context_files_prompt(cwd=str(project), skip_soul=True)
+
+        assert "Shared Codex rules" in result
+        assert "Shared Claude rules" in result
+        assert "Project local rules" in result
+        assert result.index("Shared Codex rules") < result.index("Project local rules")
+
+    def test_configured_global_context_path_requires_list(self, tmp_path, monkeypatch):
+        shared = tmp_path / "AGENTS.md"
+        shared.write_text("Scalar path rules.", encoding="utf-8")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"context_files": {"global_paths": str(shared)}},
+        )
+
+        result = build_context_files_prompt(cwd=str(tmp_path / "empty"), skip_soul=True)
+
+        assert result == ""
+
+    def test_relative_global_context_paths_are_home_relative(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        shared = home / ".codex" / "AGENTS.md"
+        shared.parent.mkdir(parents=True)
+        shared.write_text("Home relative rules.", encoding="utf-8")
+        monkeypatch.setattr("pathlib.Path.home", lambda: home)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"context_files": {"global_paths": [".codex/AGENTS.md"]}},
+        )
+
+        result = build_context_files_prompt(cwd=str(tmp_path), skip_soul=True)
+
+        assert "Home relative rules" in result
+        assert "## ~/.codex/AGENTS.md" in result
+
+    def test_configured_global_context_deduplicates_project_file(self, tmp_path, monkeypatch):
+        project_agents = tmp_path / "AGENTS.md"
+        project_agents.write_text("One canonical rules file.", encoding="utf-8")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"context_files": {"global_paths": [str(project_agents)]}},
+        )
+
+        result = build_context_files_prompt(cwd=str(tmp_path), skip_soul=True)
+
+        assert result.count("One canonical rules file") == 1
+
+    def test_missing_configured_global_context_paths_are_ignored(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"context_files": {"global_paths": [str(tmp_path / "missing.md")]}},
+        )
+
+        result = build_context_files_prompt(cwd=str(tmp_path), skip_soul=True)
+
+        assert result == ""
+
     def test_loads_cursorrules(self, tmp_path):
         (tmp_path / ".cursorrules").write_text("Always use type hints.")
         result = build_context_files_prompt(cwd=str(tmp_path))

@@ -124,6 +124,27 @@ class TestConfigYamlRouting:
             or "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE=True" in env_content
         )
 
+    def test_context_files_global_paths_set_as_list(self, _isolated_hermes_home):
+        set_config_value("context_files.global_paths", "~/.codex/AGENTS.md, ~/.claude/CLAUDE.md")
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["context_files"]["global_paths"] == [
+            "~/.codex/AGENTS.md",
+            "~/.claude/CLAUDE.md",
+        ]
+
+    def test_context_files_global_paths_accept_yaml_list(self, _isolated_hermes_home):
+        set_config_value(
+            "context_files.global_paths",
+            '["~/.codex/AGENTS.md", "~/.claude/CLAUDE.md"]',
+        )
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["context_files"]["global_paths"] == [
+            "~/.codex/AGENTS.md",
+            "~/.claude/CLAUDE.md",
+        ]
+
 
 # ---------------------------------------------------------------------------
 # Empty / falsy values — regression tests for #4277

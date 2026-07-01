@@ -97,6 +97,18 @@ def test_dashboard_builder_two_handlers():
     assert parser.parse_args(["dashboard", "register"]).func is reg
 
 
+def test_setup_context_section_parses():
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    handler = _h("setup")
+    build_setup_parser(sub, cmd_setup=handler)
+
+    ns = parser.parse_args(["setup", "context"])
+
+    assert ns.func is handler
+    assert ns.section == "context"
+
+
 # ── deprecated `hermes login` fails gracefully, not with argparse error ────
 #
 # `hermes login` is a removed command; its handler (`login_command` in

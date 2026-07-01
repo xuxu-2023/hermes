@@ -2981,6 +2981,13 @@ class TestBuildSchemaFromConfig:
         if "agent.max_turns" in CONFIG_SCHEMA:
             assert CONFIG_SCHEMA["agent.max_turns"]["category"] == "agent"
 
+    def test_global_context_paths_schema_is_editable_in_agent_tab(self):
+        from hermes_cli.web_server import CONFIG_SCHEMA
+        entry = CONFIG_SCHEMA["context_files.global_paths"]
+        assert entry["type"] == "list"
+        assert entry["category"] == "agent"
+        assert "Global context files" in entry["description"]
+
     def test_category_merge_applied(self):
         """Small categories should be merged into larger ones."""
         from hermes_cli.web_server import CONFIG_SCHEMA
