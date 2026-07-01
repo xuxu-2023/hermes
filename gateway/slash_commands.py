@@ -29,7 +29,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, Union
 
-from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.i18n import t
 from gateway.config import HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
@@ -53,6 +52,18 @@ logger = logging.getLogger("gateway.run")
 # past this the reset proceeds and the cleanup is left to finish (or leak) in
 # its worker thread. (#35994)
 _RESET_CLEANUP_TIMEOUT_S = 30.0
+
+
+def fetch_account_usage(*args, **kwargs):
+    from agent.account_usage import fetch_account_usage as _fetch_account_usage
+
+    return _fetch_account_usage(*args, **kwargs)
+
+
+def render_account_usage_lines(*args, **kwargs):
+    from agent.account_usage import render_account_usage_lines as _render_account_usage_lines
+
+    return _render_account_usage_lines(*args, **kwargs)
 
 
 def _model_switch_skew_guard() -> Optional[str]:

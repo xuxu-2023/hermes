@@ -81,6 +81,14 @@ class TestAdaptiveTextBatchTiers:
         assert TelegramAdapter._TEXT_BATCH_FAST_DELAY_S > 0
         assert TelegramAdapter._TEXT_BATCH_SHORT_DELAY_S > 0
 
+    def test_tier_defaults_stay_at_least_90_percent_below_baseline(self):
+        """Keep the latency target explicit against the original defaults."""
+        original_fast_delay_s = 0.18
+        original_short_delay_s = 0.24
+
+        assert TelegramAdapter._TEXT_BATCH_FAST_DELAY_S <= original_fast_delay_s * 0.10
+        assert TelegramAdapter._TEXT_BATCH_SHORT_DELAY_S <= original_short_delay_s * 0.10
+
     def test_fast_tier_uses_min_with_configured_cap(self, adapter):
         """A short message picks the lower of the fast-tier delay and
         the operator's configured cap."""
@@ -93,12 +101,12 @@ class TestAdaptiveTextBatchTiers:
         assert delay == TelegramAdapter._TEXT_BATCH_FAST_DELAY_S
 
         # Operator tightened the cap below the fast-tier delay; cap wins.
-        adapter._text_batch_delay_seconds = 0.10
+        adapter._text_batch_delay_seconds = 0.01
         delay = min(
             adapter._text_batch_delay_seconds,
             TelegramAdapter._TEXT_BATCH_FAST_DELAY_S,
         )
-        assert delay == 0.10
+        assert delay == 0.01
 
     def test_short_tier_uses_min_with_configured_cap(self, adapter):
         """Same composition rule for the medium tier."""
