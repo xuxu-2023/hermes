@@ -68,6 +68,20 @@ from utils import base_url_host_matches, env_var_enabled
 
 logger = logging.getLogger(__name__)
 
+# Post-tool placeholder detection: exact-match (single-word) and
+# prefix-match (intent phrases).  Capped at MAX_RETRIES to prevent loops.
+_POST_TOOL_PLACEHOLDER_EXACT = [
+    "analyzing", "checking", "continuing", "digging", "examining",
+    "exploring", "fetching", "gathering", "generating", "getting",
+    "going", "loading", "looking", "processing", "reading",
+    "researching", "reviewing", "running", "scanning", "searching",
+    "starting", "thinking", "waiting", "working",
+]
+_POST_TOOL_PLACEHOLDER_PREFIX = [
+    "i'll", "let me", "one moment", "one sec", "please wait", "stand by",
+]
+_POST_TOOL_PLACEHOLDER_MAX_RETRIES = 2
+
 # Stable prefix of the local interrupt status string emitted when a turn is
 # cancelled while waiting on the provider. Surfaces (ACP, TUI) match on this
 # to treat it as cancellation metadata rather than assistant prose.
@@ -4629,6 +4643,64 @@ def run_conversation(
             else:
                 # No tool calls - this is the final response
                 final_response = assistant_message.content or ""
+
+                # Post-tool placeholder guard: models sometimes return short
+                # progress text after tool results instead of a real answer.
+                # Nudge them to continue; capped to prevent infinite loops.
+                if final_response.strip():
+                    _recent_tool = any(
+                        m.get("role") == "tool"
+                        for m in messages[-5:]
+                    )
+                    if _recent_tool:
+                        _lower = final_response.strip().lower()
+                        _stripped = _lower.rstrip(" .…")
+                        if (
+                            len(_lower) < 40
+                            and (
+                                _stripped in _POST_TOOL_PLACEHOLDER_EXACT
+                                or any(
+                                    _lower.startswith(p)
+                                    for p in _POST_TOOL_PLACEHOLDER_PREFIX
+                                )
+                            )
+                        ):
+                            _retries = getattr(
+                                agent, "_post_tool_placeholder_retries", 0
+                            )
+                            if _retries >= _POST_TOOL_PLACEHOLDER_MAX_RETRIES:
+                                logger.warning(
+                                    "post-tool placeholder retry cap reached "
+                                    "(%r) — treating as final response",
+                                    final_response.strip(),
+                                )
+                            else:
+                                agent._post_tool_placeholder_retries = _retries + 1
+                                logger.info(
+                                    "post-tool placeholder detected (%r, "
+                                    "retry %d/%d)",
+                                    final_response.strip(),
+                                    _retries + 1,
+                                    _POST_TOOL_PLACEHOLDER_MAX_RETRIES,
+                                )
+                                agent._buffer_status(
+                                    "placeholder after tools — nudging to continue"
+                                )
+                                messages.append(
+                                    agent._build_assistant_message(
+                                        assistant_message, finish_reason
+                                    )
+                                )
+                                messages.append({
+                                    "role": "user",
+                                    "content": (
+                                        "Tool results are above. "
+                                        "Please continue with the actual "
+                                        "results or next steps."
+                                    ),
+                                    "_placeholder_recovery_synthetic": True,
+                                })
+                                continue
                 
                 # Fix: unmute output when entering the no-tool-call branch
                 # so the user can see empty-response warnings and recovery
