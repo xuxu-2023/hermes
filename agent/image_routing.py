@@ -209,7 +209,17 @@ def _supports_vision_override(
     config_provider = str(model_cfg.get("provider") or "").strip()
     providers_raw = cfg.get("providers")
     providers_cfg: Dict[str, Any] = providers_raw if isinstance(providers_raw, dict) else {}
-    for p in dict.fromkeys(filter(None, (provider, config_provider))):
+    # Build candidate keys for providers: dict lookup.  The provider and
+    # config_provider values may carry a "custom:" prefix (runtime-resolved
+    # named custom providers), but providers: dict keys never include that
+    # prefix.  Strip it so e.g. "custom:openclaw-router" correctly matches
+    # the dict key "openclaw-router".  (#45472, #45480)
+    _candidates: list = []
+    for _cand in dict.fromkeys(filter(None, (provider, config_provider))):
+        _candidates.append(_cand)
+        if _cand.startswith("custom:"):
+            _candidates.append(_cand.split(":", 1)[1].strip())
+    for p in dict.fromkeys(_candidates):
         entry_raw = providers_cfg.get(p)
         entry: Dict[str, Any] = entry_raw if isinstance(entry_raw, dict) else {}
         models_raw = entry.get("models")

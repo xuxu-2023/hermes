@@ -280,7 +280,15 @@ def _normalize_aux_provider(provider: Optional[str]) -> str:
         suffix = normalized.split(":", 1)[1].strip()
         if not suffix:
             return "custom"
-        normalized = suffix
+        # Return the bare name WITHOUT applying _PROVIDER_ALIASES.
+        # The "custom:" prefix is the user's explicit signal that they
+        # reference their own named custom provider, not a built-in.
+        # Applying aliases here would rewrite e.g. "custom:kimi" to
+        # "kimi-coding" — routing auxiliary calls to the built-in
+        # Kimi endpoint instead of the user's relay.  Named custom
+        # lookups in resolve_provider_client() must see the raw name
+        # to find the user's entry in config.yaml.  (#45472, #45480)
+        return suffix
     if normalized == "codex":
         return "openai-codex"
     if normalized == "main":
