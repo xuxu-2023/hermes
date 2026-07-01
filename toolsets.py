@@ -62,7 +62,7 @@ _HERMES_CORE_TOOLS = [
     # Clarifying questions
     "clarify",
     # Code execution + delegation
-    "execute_code", "delegate_task",
+    "execute_code", "delegate_task", "codex_workflow_run", "codex_staged_implement",
     # Cronjob management
     "cronjob",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
@@ -241,6 +241,18 @@ TOOLSETS = {
         "tools": ["execute_code"],
         "includes": []
     },
+
+    "codex_staged_implement": {
+        "description": "Dirty recovery orchestration plus guarded Codex candidate implementation",
+        "tools": ["codex_workflow_run", "codex_staged_implement"],
+        "includes": []
+    },
+
+    "codex_workflow_run": {
+        "description": "High-level Codex dirty recovery workflow orchestrator",
+        "tools": ["codex_workflow_run"],
+        "includes": []
+    },
     
     "delegation": {
         "description": "Spawn subagents with isolated context for complex subtasks",
@@ -389,7 +401,7 @@ TOOLSETS = {
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
             "todo", "memory",
             "session_search",
-            "execute_code", "delegate_task",
+            "execute_code", "delegate_task", "codex_workflow_run", "codex_staged_implement",
         ],
         "includes": []
     },
@@ -417,7 +429,7 @@ TOOLSETS = {
             # Session history search
             "session_search",
             # Code execution + delegation
-            "execute_code", "delegate_task",
+            "execute_code", "delegate_task", "codex_workflow_run", "codex_staged_implement",
             # Cronjob management
             "cronjob",
             # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
