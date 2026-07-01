@@ -17147,7 +17147,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             agent.event_callback = _event_callback_sync
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
-            agent.request_overrides = turn_route.get("request_overrides") or {}
+            agent.request_overrides = dict(getattr(agent, "request_overrides", {}) or {})
+            if turn_route.get("request_overrides"):
+                agent.request_overrides.update(turn_route["request_overrides"])
 
             _bg_review_release = threading.Event()
             _bg_review_pending: list[str] = []
