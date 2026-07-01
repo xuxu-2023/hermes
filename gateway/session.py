@@ -351,23 +351,30 @@ def build_session_context_prompt(
     - What platforms are connected
     - Where it can deliver scheduled task outputs
 
-    When *redact_pii* is True **and** the source platform is in
-    ``_PII_SAFE_PLATFORMS``, phone numbers are stripped and user/chat IDs
-    are replaced with deterministic hashes before being sent to the LLM.
+    When *redact_pii* is True **and** the source platform is considered
+    PII-safe, phone numbers are stripped and user/chat IDs are replaced
+    with deterministic hashes before being sent to the LLM.
     Platforms like Discord are excluded because mentions need real IDs.
     Routing still uses the original values (they stay in SessionSource).
+
+    PII-safety is determined dynamically:
+    1. The ``platform_registry`` is consulted first — if the platform's
+       ``PlatformEntry`` has ``pii_safe=True`` it is used directly.
+    2. Otherwise the hardcoded ``_PII_SAFE_PLATFORMS`` set serves as a
+       fallback for built-in platforms that haven't registered an entry.
     """
     # Only apply redaction on platforms where IDs aren't needed for mentions.
-    # Check both the hardcoded set (builtins) and the plugin registry.
-    _is_pii_safe = context.source.platform in _PII_SAFE_PLATFORMS
+    # Priority: platform_registry entry → hardcoded _PII_SAFE_PLATFORMS fallback.
+    _is_pii_safe = False
+    try:
+        from gateway.platform_registry import platform_registry
+        entry = platform_registry.get(context.source.platform.value)
+        if entry and entry.pii_safe:
+            _is_pii_safe = True
+    except Exception:
+        pass
     if not _is_pii_safe:
-        try:
-            from gateway.platform_registry import platform_registry
-            entry = platform_registry.get(context.source.platform.value)
-            if entry and entry.pii_safe:
-                _is_pii_safe = True
-        except Exception:
-            pass
+        _is_pii_safe = context.source.platform in _PII_SAFE_PLATFORMS
     redact_pii = redact_pii and _is_pii_safe
     lines = [
         "## Current Session Context",
