@@ -31,6 +31,10 @@ from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.conversation_compression import conversation_history_after_compression
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.gemma_tool_call_parser import (
+    recover_gemma_text_tool_calls,
+    text_contains_gemma_tool_call,
+)
 from agent.iteration_budget import IterationBudget
 from agent.turn_context import build_turn_context
 from agent.turn_retry_state import TurnRetryState
@@ -4258,6 +4262,12 @@ def run_conversation(
                 }
             elif hasattr(agent, "_codex_incomplete_retries"):
                 agent._codex_incomplete_retries = 0
+
+            if recover_gemma_text_tool_calls(
+                assistant_message,
+                valid_tool_names=agent.valid_tool_names,
+            ):
+                finish_reason = "tool_calls"
             
             # Check for tool calls
             if assistant_message.tool_calls:
