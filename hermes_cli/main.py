@@ -323,7 +323,27 @@ def _require_tty(command_name: str) -> None:
 
 
 # Add project root to path
-PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+# When hermes is installed via pip (not ``pip install -e .``),
+# ``Path(__file__).parent.parent`` resolves to the site-packages
+# directory instead of the project root.  We detect this by checking
+# for ``pyproject.toml`` at the computed root and walk up until we
+# find it (or give up after a few levels).  See issue #46400.
+def _resolve_project_root() -> Path:
+    candidate = Path(__file__).parent.parent.resolve()
+    # Fast path: the typical dev-editable layout has pyproject.toml here.
+    if (candidate / "pyproject.toml").is_file():
+        return candidate
+    # Slow path: installed via pip — walk up looking for the project root.
+    for _ in range(5):
+        candidate = candidate.parent
+        if (candidate / "pyproject.toml").is_file():
+            return candidate
+    # Fallback: return the original calculation even though it's likely wrong.
+    # Breaking here is worse than using a slightly wrong root.
+    return Path(__file__).parent.parent.resolve()
+
+
+PROJECT_ROOT = _resolve_project_root()
 sys.path.insert(0, str(PROJECT_ROOT))
 
 
