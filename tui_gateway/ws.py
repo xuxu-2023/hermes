@@ -37,8 +37,10 @@ _log = logging.getLogger(__name__)
 
 # Max seconds a pool-dispatched handler will block waiting for the event loop
 # to flush a WS frame before we mark the transport dead. Protects handler
-# threads from a wedged socket.
-_WS_WRITE_TIMEOUT_S = 10.0
+# threads from a wedged socket.  10 s was too aggressive on Windows
+# ProactorEventLoop where scheduling latency from worker threads is higher;
+# large tool outputs routinely exceeded that window under load (#42938).
+_WS_WRITE_TIMEOUT_S = 30.0
 _WS_LOG_PAYLOAD_PREVIEW = 240
 
 # Per-token streaming frames are coalesced: buffered and flushed as a batch on
