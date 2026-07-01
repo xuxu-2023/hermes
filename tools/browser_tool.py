@@ -4605,7 +4605,7 @@ def check_browser_vision_requirements() -> bool:
     resolvable vision backend. Without the vision check, the tool stays in
     the model's tool list even when no vision provider is configured, then
     fails at call time with a cryptic provider-side error like
-    ``unknown variant `image_url`, expected `text``` (issue #31179).
+    ``unknown variant `image_url`, expected `text`` (issue #31179).
     """
     if not check_browser_requirements():
         return False
@@ -4613,7 +4613,23 @@ def check_browser_vision_requirements() -> bool:
         from tools.vision_tools import check_vision_requirements
     except ImportError:
         return False
-    return check_vision_requirements()
+    if check_vision_requirements():
+        return True
+    # The auxiliary resolver may not recognise the user's main provider
+    # (e.g. custom OAuth providers, local vLLM endpoints), even though
+    # the main model is itself vision-capable and images would work via
+    # the native fast path.  In that case the tool should still be
+    # advertised — otherwise it silently disappears (#47149).
+    try:
+        from agent.auxiliary_client import _main_model_supports_vision
+        from agent.auxiliary_client import _read_main_provider, _read_main_model
+        main_provider = _read_main_provider()
+        main_model = _read_main_model()
+        if main_provider and main_provider not in {"auto", ""}:
+            return _main_model_supports_vision(main_provider, main_model)
+    except Exception:
+        pass
+    return False
 
 
 # ============================================================================
