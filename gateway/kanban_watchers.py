@@ -399,13 +399,16 @@ class GatewayKanbanWatchersMixin:
                             sub["chat_id"], sub.get("thread_id") or "",
                         )
                         try:
-                            await adapter.send(
-                                sub["chat_id"], msg, metadata=metadata,
-                            )
-                            logger.debug(
-                                "kanban notifier: delivered %s event for %s to %s/%s on board %s",
-                                kind, sub["task_id"], platform_str, sub["chat_id"], board_slug,
-                            )
+                            # Skip the text notification when category suppression
+                            # (gateway.system_messages.suppress) blanked it to "".
+                            if msg and msg.strip():
+                                await adapter.send(
+                                    sub["chat_id"], msg, metadata=metadata,
+                                )
+                                logger.debug(
+                                    "kanban notifier: delivered %s event for %s to %s/%s on board %s",
+                                    kind, sub["task_id"], platform_str, sub["chat_id"], board_slug,
+                                )
                             # After delivering the text notification, surface
                             # any artifact paths the worker referenced in
                             # ``kanban_complete(summary=..., artifacts=[...])``
