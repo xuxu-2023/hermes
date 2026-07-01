@@ -2535,7 +2535,13 @@ class CLICommandsMixin:
             return
 
         self.reasoning_config = parsed
-        self.agent = None  # Force agent re-init with new reasoning config
+        # Update the live agent's reasoning_config in-place instead of
+        # destroying the agent.  The transport layer reads agent.reasoning_config
+        # on every API call (chat_completion_helpers.py:572/648/753/785),
+        # so an in-place update takes effect immediately without triggering MCP
+        # rediscovery or prompt cache invalidation.
+        if self.agent is not None:
+            self.agent.reasoning_config = parsed
 
         if save_config_value("agent.reasoning_effort", arg):
             _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (saved to config){_RST}")
