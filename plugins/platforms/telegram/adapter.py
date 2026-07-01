@@ -1617,14 +1617,17 @@ class TelegramAdapter(BasePlatformAdapter):
         draft_id: int,
         content: str,
         metadata: Optional[Dict[str, Any]],
-    ) -> bool:
-        """Emit one ``sendRichMessageDraft`` preview frame; True on success.
+    ) -> Optional["SendResult"]:
+        """Emit one ``sendRichMessageDraft`` preview frame.
 
-        Draft frames are ephemeral and overwritten by the next frame / the
-        final ``sendRichMessage``, so a duplicate or lost rich draft is
-        harmless — any failure simply returns False and the caller renders the
-        legacy plain-text draft. A permanent/capability failure additionally
-        latches ``_rich_draft_disabled`` so later frames skip the rich attempt.
+        Returns:
+          SendResult(success=True)  — frame landed.
+          SendResult(success=False, retryable=True, retry_after=N) — flood
+              control; caller must NOT fall through to legacy sendMessageDraft
+              as that would burn another call in the same rate-limit bucket.
+          None — capability or transient failure; caller may try legacy draft.
+              A permanent/capability failure additionally latches
+              ``_rich_draft_disabled`` so later frames skip the rich attempt.
         """
         payload: Dict[str, Any] = {
             "chat_id": normalize_telegram_chat_id(chat_id),
@@ -1636,8 +1639,21 @@ class TelegramAdapter(BasePlatformAdapter):
             payload["message_thread_id"] = int(thread_id)
         try:
             ok = await self._bot.do_api_request("sendRichMessageDraft", api_kwargs=payload)
-            return bool(ok)
+            return SendResult(success=bool(ok), message_id=None)
         except Exception as exc:
+            retry_after = getattr(exc, "retry_after", None)
+            if retry_after is not None:
+                wait = float(retry_after)
+                logger.debug(
+                    "[%s] sendRichMessageDraft flood control %.1fs (chat=%s draft_id=%s)",
+                    self.name, wait, chat_id, draft_id,
+                )
+                return SendResult(
+                    success=False,
+                    error=f"flood_control:{wait:.0f}",
+                    retryable=True,
+                    retry_after=wait,
+                )
             if self._is_rich_capability_error(exc):
                 self._rich_draft_disabled = True
                 logger.debug(
@@ -1649,7 +1665,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     "[%s] sendRichMessageDraft transient failure (%s) — legacy draft this frame",
                     self.name, exc,
                 )
-            return False
+            return None
 
     async def _drain_polling_connections(self) -> None:
         """Reset the httpx connection pool used for getUpdates polling.
@@ -4055,11 +4071,13 @@ class TelegramAdapter(BasePlatformAdapter):
         # Rich draft fast-path (Bot API 10.1 sendRichMessageDraft): render the
         # streaming preview with the same raw markdown the final
         # sendRichMessage will persist, so the animated draft matches the final
-        # message. Any failure degrades to the legacy plain-text draft below.
+        # message. Capability/transient failures (None result) degrade to the
+        # legacy plain-text draft below; flood-control failures are returned
+        # directly so we don't burn a legacy call in the same rate-limit window.
         if self._should_attempt_rich_draft(content):
-            if await self._try_send_rich_draft(chat_id, draft_id, content, metadata):
-                # Drafts have no message_id; report success without one.
-                return SendResult(success=True, message_id=None)
+            rich_result = await self._try_send_rich_draft(chat_id, draft_id, content, metadata)
+            if rich_result is not None:
+                return rich_result
 
         if not hasattr(self._bot, "send_message_draft"):
             return SendResult(success=False, error="api_unavailable")
@@ -4097,13 +4115,46 @@ class TelegramAdapter(BasePlatformAdapter):
                     # Drafts have no message_id; we report success without one
                     # so the caller knows the animation frame landed.
                     return SendResult(success=True, message_id=None)
-                return SendResult(success=False, error="draft_rejected")
+                # ok=False: Bot API rejected the frame (typing action expired,
+                # unsupported client, etc.).  Suppress silently — returning
+                # success=True keeps the consumer in draft mode so it never
+                # cascades to rapid editMessageText calls that exhaust the quota.
+                logger.debug(
+                    "[%s] sendMessageDraft ok=False, frame suppressed "
+                    "(chat=%s draft_id=%s)",
+                    self.name, chat_id, draft_id,
+                )
+                return SendResult(success=True, message_id=None)
             except Exception as e:
-                # A MarkdownV2 parse failure (BadRequest "can't parse entities")
-                # is recoverable: retry once as plain text.  Any other failure
-                # (chat doesn't allow drafts, transient hiccup) — or a failure
-                # on the plain-text attempt — propagates to the caller, which
-                # treats it as "fall back to edit-based for this response".
+                # Short flood-control wait (≤5s): sleep inline and retry the
+                # same frame so this single hiccup is invisible to the caller.
+                retry_after = getattr(e, "retry_after", None)
+                if retry_after is not None:
+                    wait = float(retry_after)
+                    if wait <= 5.0:
+                        logger.debug(
+                            "[%s] sendMessageDraft flood control %.1fs, retrying "
+                            "(chat=%s draft_id=%s)",
+                            self.name, wait, chat_id, draft_id,
+                        )
+                        await asyncio.sleep(wait)
+                        try:
+                            ok = await self._bot.send_message_draft(**kwargs)
+                            if ok:
+                                return SendResult(success=True, message_id=None)
+                        except Exception:
+                            pass
+                        # Retry failed after sleeping — suppress this frame rather
+                        # than counting it as a failure and risking edit cascade.
+                        return SendResult(success=True, message_id=None)
+                    # Long wait — signal retryable so the caller doesn't count
+                    # this against the permanent-disable threshold.
+                    logger.debug(
+                        "[%s] sendMessageDraft flood control %.1fs (chat=%s draft_id=%s)",
+                        self.name, wait, chat_id, draft_id,
+                    )
+                    return SendResult(success=False, error=f"flood_control:{wait:.0f}", retryable=True)
+                # MarkdownV2 parse failure: retry once as plain text.
                 if use_markdown and self._is_bad_request_error(e):
                     logger.debug(
                         "[%s] sendMessageDraft MarkdownV2 rejected, retrying "
@@ -4111,13 +4162,17 @@ class TelegramAdapter(BasePlatformAdapter):
                         self.name, chat_id, draft_id, e,
                     )
                     continue
+                # Any other failure (expired typing action, unsupported chat,
+                # network hiccup, plain-text retry failure): suppress silently.
+                # Returning success=True keeps the consumer in draft mode and
+                # prevents the editMessageText cascade that exhausts the quota.
                 logger.debug(
-                    "[%s] sendMessageDraft failed (chat=%s draft_id=%s): %s",
+                    "[%s] sendMessageDraft suppressed (chat=%s draft_id=%s): %s",
                     self.name, chat_id, draft_id, e,
                 )
-                return SendResult(success=False, error=str(e))
+                return SendResult(success=True, message_id=None)
 
-        return SendResult(success=False, error="draft_rejected")
+        return SendResult(success=True, message_id=None)
 
     async def _send_message_with_thread_fallback(self, **kwargs):
         """Send a Telegram message, retrying once without message_thread_id

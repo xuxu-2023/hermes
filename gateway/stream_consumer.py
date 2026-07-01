@@ -99,6 +99,12 @@ class GatewayStreamConsumer:
     # progressive edits for the remainder of the stream.
     _MAX_FLOOD_STRIKES = 3
 
+    # After this many consecutive draft-frame failures, fall back to the
+    # edit-based streaming path.  A single transient error (short flood
+    # control, temporary Bot API hiccup) should not kill draft streaming for
+    # the entire response.
+    _MAX_DRAFT_FAILURES = 3
+
     # Reasoning/thinking tags that models emit inline in content.
     # Must stay in sync with cli.py _OPEN_TAGS/_CLOSE_TAGS and
     # run_agent.py _strip_think_blocks() tag variants.
@@ -208,9 +214,11 @@ class GatewayStreamConsumer:
         # in their chat history (drafts have no message_id).
         self._use_draft_streaming = False
         self._draft_id: Optional[int] = None
-        # Cumulative draft-frame failure count for this consumer.  After the
-        # first failure we permanently disable drafts for the remainder of
-        # this response and route through edit-based for graceful degradation.
+        # Consecutive draft-frame failure count for this consumer.  After
+        # _MAX_DRAFT_FAILURES consecutive failures we permanently disable drafts
+        # and route through edit-based for graceful degradation.  A successful
+        # frame resets the counter so one transient hiccup can't kill drafts for
+        # the entire session.
         self._draft_failures = 0
         self._before_finalize_notified = False
 
@@ -1026,9 +1034,38 @@ class GatewayStreamConsumer:
             else len
         )
         safe_limit = max(500, raw_limit - 100)
-        chunks = self._split_text_chunks(continuation, safe_limit, len_fn=_len_fn)
 
         stale_message_id = self._message_id  # partial message to clean up
+
+        # Edit-in-place: replace the stale partial with the complete final text.
+        # This avoids both sending a new message and deleting the old one — the
+        # message keeps its position and timestamp in the chat.  Only attempted
+        # when the full text fits in a single message; multi-chunk responses fall
+        # through to the send path below.
+        if (
+            stale_message_id
+            and stale_message_id != "__no_edit__"
+            and not self._fallback_preserve_partial_messages
+            and _len_fn(final_text) <= raw_limit
+        ):
+            try:
+                edit_result = await self._edit_message(
+                    message_id=stale_message_id,
+                    content=final_text,
+                )
+                if getattr(edit_result, "success", False):
+                    self._message_id = stale_message_id
+                    self._last_sent_text = final_text
+                    self._already_sent = True
+                    self._final_response_sent = True
+                    self._final_content_delivered = True
+                    self._fallback_prefix = ""
+                    self._fallback_preserve_partial_messages = False
+                    return
+            except Exception:
+                pass  # edit failed (flood control, etc.) — fall through to send path
+
+        chunks = self._split_text_chunks(continuation, safe_limit, len_fn=_len_fn)
         last_message_id: Optional[str] = None
         last_successful_chunk = ""
         sent_any_chunk = False
@@ -1164,11 +1201,11 @@ class GatewayStreamConsumer:
     async def _send_draft_frame(self, text: str) -> bool:
         """Emit a single animated draft frame for the current accumulated text.
 
-        Returns True when the frame landed.  On any failure, permanently
-        disables drafts for the remainder of this run so subsequent frames
-        flow through the edit-based path (which can adapt with flood-control
-        backoff, etc.).  Drafts have no message_id and clear naturally on
-        the client when the response finalizes via a regular sendMessage.
+        Returns True when the frame landed.  Tolerates up to _MAX_DRAFT_FAILURES
+        consecutive errors before permanently disabling draft streaming for this
+        run.  A single transient failure (short flood-control wait, temporary
+        Bot API hiccup) should not cascade into edit-mode flood control for the
+        entire remaining response.  Consecutive successes reset the failure count.
         """
         if self._draft_id is None:
             # Defensive: should never happen — _use_draft_streaming gate is
@@ -1184,20 +1221,36 @@ class GatewayStreamConsumer:
             )
         except Exception as e:
             logger.debug(
-                "send_draft raised, disabling draft transport for this run: %s", e,
+                "send_draft raised (failure %d/%d): %s",
+                self._draft_failures + 1, self._MAX_DRAFT_FAILURES, e,
             )
             self._draft_failures += 1
-            self._use_draft_streaming = False
+            if self._draft_failures >= self._MAX_DRAFT_FAILURES:
+                self._use_draft_streaming = False
             return False
         if not getattr(result, "success", False):
+            error = getattr(result, "error", "unknown")
+            # Retryable failures (long flood-control waits handled by the
+            # adapter) don't count toward the permanent-disable threshold —
+            # they're transient and the next frame will likely succeed.
+            if getattr(result, "retryable", False):
+                # Long flood-control wait: skip this frame silently and stay
+                # in draft mode so the next tick tries again.  Returning True
+                # prevents _send_or_edit from falling through to the regular
+                # edit/send path, which would re-create the edit cascade the
+                # draft transport is meant to prevent.
+                logger.debug("send_draft retryable failure (not counted): %s", error)
+                return True
             logger.debug(
-                "send_draft returned success=False, disabling draft transport: %s",
-                getattr(result, "error", "unknown"),
+                "send_draft success=False (failure %d/%d): %s",
+                self._draft_failures + 1, self._MAX_DRAFT_FAILURES, error,
             )
             self._draft_failures += 1
-            self._use_draft_streaming = False
+            if self._draft_failures >= self._MAX_DRAFT_FAILURES:
+                self._use_draft_streaming = False
             return False
-        # Frame delivered.  Track text for parity with edit-based no-op skip.
+        # Frame delivered — reset the failure streak.
+        self._draft_failures = 0
         self._last_sent_text = text
         return True
 
@@ -1238,7 +1291,10 @@ class GatewayStreamConsumer:
         """Best-effort edit to remove the cursor from the last visible message.
 
         Called when entering fallback mode so the user doesn't see a stuck
-        cursor (▉) in the partial message.
+        cursor (▉) in the partial message.  If the edit is flood-controlled or
+        fails for any other reason, we leave the message intact: a partial with
+        a stuck cursor is better UX than deleting it and leaving the user with
+        nothing for the duration of the flood-control wait.
         """
         if not self._message_id or self._message_id == "__no_edit__":
             return
@@ -1246,13 +1302,14 @@ class GatewayStreamConsumer:
         if not prefix or not prefix.strip():
             return
         try:
-            await self._edit_message(
+            result = await self._edit_message(
                 message_id=self._message_id,
                 content=prefix,
             )
-            self._last_sent_text = prefix
+            if getattr(result, "success", False):
+                self._last_sent_text = prefix
         except Exception:
-            pass  # best-effort — don't let this block the fallback path
+            pass  # best-effort — leave message intact on any failure
 
     async def _send_commentary(self, text: str) -> bool:
         """Send a completed interim assistant commentary message."""
