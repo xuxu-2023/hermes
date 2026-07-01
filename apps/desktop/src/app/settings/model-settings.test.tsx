@@ -13,17 +13,22 @@ beforeAll(() => {
 const getGlobalModelInfo = vi.fn()
 const getGlobalModelOptions = vi.fn()
 const getAuxiliaryModels = vi.fn()
+const getMoaModels = vi.fn()
+const saveMoaModels = vi.fn()
 const setModelAssignment = vi.fn()
 const getRecommendedDefaultModel = vi.fn()
 const setEnvVar = vi.fn()
 const getHermesConfigRecord = vi.fn()
 const saveHermesConfig = vi.fn()
 const startManualProviderOAuth = vi.fn()
+const startManualLocalEndpoint = vi.fn()
 
 vi.mock('@/hermes', () => ({
   getGlobalModelInfo: () => getGlobalModelInfo(),
   getGlobalModelOptions: () => getGlobalModelOptions(),
   getAuxiliaryModels: () => getAuxiliaryModels(),
+  getMoaModels: () => getMoaModels(),
+  saveMoaModels: (body: unknown) => saveMoaModels(body),
   setModelAssignment: (body: unknown) => setModelAssignment(body),
   getRecommendedDefaultModel: (slug: string) => getRecommendedDefaultModel(slug),
   setEnvVar: (key: string, value: string) => setEnvVar(key, value),
@@ -32,6 +37,7 @@ vi.mock('@/hermes', () => ({
 }))
 
 vi.mock('@/store/onboarding', () => ({
+  startManualLocalEndpoint: () => startManualLocalEndpoint(),
   startManualProviderOAuth: (slug: string) => startManualProviderOAuth(slug)
 }))
 
@@ -61,6 +67,8 @@ beforeEach(() => {
     main: { provider: 'nous', model: 'hermes-4' },
     tasks: [{ task: 'vision', provider: 'auto', model: '', base_url: '' }]
   })
+  getMoaModels.mockResolvedValue(null)
+  saveMoaModels.mockResolvedValue(null)
   setModelAssignment.mockResolvedValue({ provider: 'nous', model: 'hermes-4', gateway_tools: [] })
   getRecommendedDefaultModel.mockResolvedValue({ provider: 'deepseek', model: 'deepseek-chat', free_tier: null })
   setEnvVar.mockResolvedValue({ ok: true })
@@ -80,6 +88,54 @@ async function renderModelSettings() {
 }
 
 describe('ModelSettings', () => {
+  it('resolves the bare custom provider to the saved endpoint row that matches model.base_url', async () => {
+    const { resolveModelSettingsProvider } = await import('./model-settings')
+
+    expect(
+      resolveModelSettingsProvider(
+        [
+          {
+            name: 'Custom endpoint',
+            slug: 'custom',
+            models: [],
+            authenticated: false,
+            auth_type: 'api_key'
+          },
+          {
+            name: '100.79.23.62:8317',
+            slug: 'custom:100.79.23.62:8317',
+            api_url: 'http://100.79.23.62:8317/v1/',
+            models: ['gpt-5.4'],
+            authenticated: true,
+            is_user_defined: true
+          }
+        ],
+        'custom',
+        'http://100.79.23.62:8317/v1'
+      )
+    ).toBe('custom:100.79.23.62:8317')
+  })
+
+  it('keeps the bare custom provider when no saved endpoint matches model.base_url', async () => {
+    const { resolveModelSettingsProvider } = await import('./model-settings')
+
+    expect(
+      resolveModelSettingsProvider(
+        [
+          {
+            name: 'Other endpoint',
+            slug: 'custom:other',
+            api_url: 'http://127.0.0.1:8000/v1',
+            models: ['llama'],
+            is_user_defined: true
+          }
+        ],
+        'custom',
+        'http://100.79.23.62:8317/v1'
+      )
+    ).toBe('custom')
+  })
+
   it('loads the current main model and lists the full provider universe', async () => {
     await renderModelSettings()
 
@@ -92,10 +148,44 @@ describe('ModelSettings', () => {
     fireEvent.click(triggers[0])
 
     // "Nous" shows in both the trigger and the open list; the unconfigured
-    // provider + its setup hint are the unique signal of the full universe.
+    // provider row is the unique signal of the full universe.
     expect((await screen.findAllByText('Nous')).length).toBeGreaterThan(0)
     expect(await screen.findByText(/DeepSeek/)).toBeTruthy()
-    expect(await screen.findByText(/set up/)).toBeTruthy()
+  })
+
+  it('shows the saved custom provider instead of the unconfigured custom setup row', async () => {
+    getGlobalModelInfo.mockResolvedValueOnce({ provider: 'custom', model: 'gpt-5.4' })
+    getGlobalModelOptions.mockResolvedValueOnce({
+      providers: [
+        {
+          name: 'Custom endpoint',
+          slug: 'custom',
+          models: [],
+          authenticated: false,
+          auth_type: 'api_key'
+        },
+        {
+          name: '100.79.23.62:8317',
+          slug: 'custom:100.79.23.62:8317',
+          api_url: 'http://100.79.23.62:8317/v1',
+          models: ['gpt-5.4', 'gpt-5.5'],
+          authenticated: true,
+          is_user_defined: true,
+          capabilities: { 'gpt-5.4': { reasoning: true, fast: false } }
+        }
+      ]
+    })
+    getHermesConfigRecord.mockResolvedValueOnce({
+      model: { provider: 'custom', default: 'gpt-5.4', base_url: 'http://100.79.23.62:8317/v1' },
+      agent: { reasoning_effort: 'medium', service_tier: 'normal' }
+    })
+
+    await renderModelSettings()
+
+    expect(await screen.findByText('100.79.23.62:8317')).toBeTruthy()
+    expect(screen.getByText('gpt-5.4')).toBeTruthy()
+    expect(screen.queryByText(/needs an API key/)).toBeNull()
+    expect(screen.queryByRole('button', { name: /Set up Custom endpoint/ })).toBeNull()
   })
 
   it('activates an unconfigured api_key provider inline by saving its key', async () => {
