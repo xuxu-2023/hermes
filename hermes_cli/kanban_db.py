@@ -7706,6 +7706,33 @@ def _default_spawn(
         # This only happens in test fixtures where the isolated
         # HERMES_HOME never had profiles created.
         pass
+
+    # Inject TELEGRAM_BOT_TOKEN from the assignee's profile .env if it's not
+    # already set in the parent env. The gateway process may not have loaded
+    # the profile-specific .env, leaving workers without the token needed to
+    # send Telegram notifications via direct API calls (``curl
+    # https://api.telegram.org/bot<token>/sendMessage``).  Workers that need to
+    # notify a user directly (e.g. static-ip-only hosts without a gateway
+    # adapter) use this env var.  See
+    # ~/.hermes/kanban_worker_analysis.md#问题4 for the full rationale.
+    _profile_home = env.get("HERMES_HOME")
+    if _profile_home and not env.get("TELEGRAM_BOT_TOKEN", "").strip():
+        _dotenv_path = Path(_profile_home) / ".env"
+        if _dotenv_path.is_file():
+            try:
+                with open(str(_dotenv_path), "r", encoding="utf-8") as _f:
+                    for _line in _f:
+                        _line = _line.strip()
+                        if _line.startswith("#") or "=" not in _line:
+                            continue
+                        _key, _sep, _val = _line.partition("=")
+                        _key = _key.strip()
+                        _val = _val.strip().strip("\"'")
+                        if _key == "TELEGRAM_BOT_TOKEN" and _val:
+                            env["TELEGRAM_BOT_TOKEN"] = _val
+                            break
+            except OSError:
+                pass  # best-effort: don't block spawn on a read error
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
