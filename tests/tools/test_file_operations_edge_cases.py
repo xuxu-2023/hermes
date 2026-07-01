@@ -284,7 +284,7 @@ class TestPaginationBounds:
                 return MagicMock(exit_code=0, stdout="line1\nline2\n")
             if command.startswith("sed -n"):
                 return MagicMock(exit_code=0, stdout="line1\n")
-            if command.startswith("wc -l"):
+            if command.startswith("awk "):
                 return MagicMock(exit_code=0, stdout="2")
             return MagicMock(exit_code=0, stdout="")
 
@@ -295,6 +295,35 @@ class TestPaginationBounds:
         assert "1|line1" in result.content
         sed_commands = [cmd for cmd in commands if cmd.startswith("sed -n")]
         assert sed_commands == ["sed -n '1,1p' 'notes.txt'"]
+
+    def test_read_file_counts_final_line_without_trailing_newline(self):
+        env = MagicMock()
+        env.cwd = "/tmp"
+        ops = ShellFileOperations(env)
+
+        def fake_exec(command, *args, **kwargs):
+            if command.startswith("wc -c"):
+                return MagicMock(exit_code=0, stdout="8")
+            if command.startswith("head -c"):
+                return MagicMock(exit_code=0, stdout="x1\nx2\nx3")
+            if command.startswith("sed -n '1,2p'"):
+                return MagicMock(exit_code=0, stdout="x1\nx2\n")
+            if command.startswith("sed -n '3,3p'"):
+                return MagicMock(exit_code=0, stdout="x3")
+            if command.startswith("awk "):
+                return MagicMock(exit_code=0, stdout="3\n")
+            return MagicMock(exit_code=0, stdout="")
+
+        with patch.object(ops, "_exec", side_effect=fake_exec):
+            first_page = ops.read_file("c.txt", offset=1, limit=2)
+            last_page = ops.read_file("c.txt", offset=3, limit=1)
+
+        assert first_page.total_lines == 3
+        assert first_page.truncated is True
+        assert first_page.hint == "Use offset=3 to continue reading (showing 1-2 of 3 lines)"
+        assert "3|x3" in last_page.content
+        assert last_page.total_lines == 3
+        assert last_page.truncated is False
 
     def test_search_clamps_offset_and_limit_before_building_head_pipeline(self):
         env = MagicMock()

@@ -1115,12 +1115,14 @@ class ShellFileOperations(FileOperations):
         if offset == 1:
             read_output, _ = _strip_bom(read_output)
         
-        # Get total line count
-        wc_cmd = f"wc -l < {self._escape_shell_arg(path)}"
-        wc_result = self._exec(wc_cmd)
-        wc_output = _strip_terminal_fence_leaks(wc_result.stdout)
+        # Get total line count.  ``wc -l`` counts newline characters, so it
+        # undercounts a final unterminated line; awk's NR tracks logical
+        # records and includes that last line.
+        line_count_cmd = f"awk 'END {{ print NR + 0 }}' {self._escape_shell_arg(path)}"
+        line_count_result = self._exec(line_count_cmd)
+        line_count_output = _strip_terminal_fence_leaks(line_count_result.stdout)
         try:
-            total_lines = int(wc_output.strip())
+            total_lines = int(line_count_output.strip())
         except ValueError:
             total_lines = 0
         
