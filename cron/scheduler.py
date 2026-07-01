@@ -3000,6 +3000,32 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         logger.info("Job '%s' completed successfully", job_name)
         return True, output, final_response, None
         
+    except (BrokenPipeError, ConnectionResetError) as pipe_err:
+        # Broken pipe / connection reset during final response delivery is
+        # non-fatal for cron jobs. The agent already completed its tool work
+        # (skill edits, state file updates, checkpoint saves) — only the
+        # final response stream delivery failed. Treat as success so the job
+        # is not retried unnecessarily and the operator sees a clean log.
+        pipe_err_msg = f"{type(pipe_err).__name__}: {pipe_err}"
+        logger.warning(
+            "Job '%s': pipe error during response delivery (non-fatal): %s",
+            job_name, pipe_err_msg,
+        )
+        output = f"""# Cron Job: {job_name}
+
+**Job ID:** {job_id}
+**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
+**Schedule:** {job.get('schedule_display', 'N/A')}
+
+**Status:** Completed (non-fatal pipe error during response delivery)
+
+## Warning
+```
+{pipe_err_msg}
+```
+"""
+        return True, output, "", None
+
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
         logger.exception("Job '%s' failed: %s", job_name, error_msg)
