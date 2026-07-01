@@ -5959,6 +5959,20 @@ function createWindow() {
     rememberLog(`[renderer] render-process-gone reason=${details?.reason} exitCode=${details?.exitCode}`)
 
     if (details?.reason === 'crashed' || details?.reason === 'oom') {
+      // The crashed renderer's webContents is reused on reload, so the
+      // per-session `destroyed` listener never fires and this renderer's PTYs
+      // would leak a live shell (plus children/handles) on every crash. Dispose
+      // them here, scoped by the stored webContentsId, mirroring the before-quit
+      // sweep. Runs before the reload/suppress branches so it covers both.
+      const goneWebContentsId = mainWindow?.webContents?.id
+      if (goneWebContentsId != null) {
+        for (const [terminalId, sessionInfo] of [...terminalSessions.entries()]) {
+          if (sessionInfo?.webContentsId === goneWebContentsId) {
+            disposeTerminalSession(terminalId)
+          }
+        }
+      }
+
       const now = Date.now()
       rendererReloadTimes = rendererReloadTimes.filter(t => now - t < RENDERER_RELOAD_WINDOW_MS)
 
