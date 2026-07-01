@@ -87,16 +87,29 @@ def _safe_stderr():  # type: ignore[return]
 
     On Windows the console encoding is often a legacy MBCS codec
     (cp949, cp1252, …) that raises ``UnicodeEncodeError`` for characters
-    like the em-dash (U+2014).  We wrap ``sys.stderr`` in a
-    ``TextIOWrapper`` with ``errors='replace'`` so log lines are never
-    lost — un-encodable characters are replaced with ``?`` instead of
-    crashing the process.
+    like the em-dash (U+2014).  Prefer reconfiguring the existing text stream
+    to ``errors='replace'`` so log lines are never lost while preserving the
+    console's real encoding and stream identity.  If reconfiguration is not
+    available, fall back to a tolerant ``TextIOWrapper`` around the buffer.
     """
     stream = sys.stderr
     encoding = getattr(stream, "encoding", None) or "utf-8"
-    # Already UTF-8 or surrogate-aware — no wrapping needed.
-    if encoding.lower().replace("-", "") in ("utf8", "utf8surrogateescape"):
+    errors = getattr(stream, "errors", None)
+    # Already UTF-8 or tolerant — no wrapping needed.
+    if (
+        encoding.lower().replace("-", "") in ("utf8", "utf8surrogateescape")
+        or errors == "replace"
+    ):
         return stream
+
+    reconfigure = getattr(stream, "reconfigure", None)
+    if callable(reconfigure):
+        try:
+            reconfigure(errors="replace")
+            return stream
+        except Exception:
+            pass
+
     try:
         buf = getattr(stream, "buffer", None)
         if buf is not None:

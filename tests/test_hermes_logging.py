@@ -1109,13 +1109,42 @@ class TestSafeStderr:
         # Should return the same object (or a equivalent stream)
         assert result is fake_stderr or getattr(result, "encoding", "").lower().startswith("utf")
 
-    def test_wraps_non_utf8_stderr(self, monkeypatch):
-        """On non-UTF-8 systems (e.g. Windows cp949), wraps stderr with UTF-8."""
-        import io
+    def test_reconfigures_non_utf8_stderr_when_supported(self, monkeypatch):
+        """On non-UTF-8 stderr, prefer reconfigure() over replacing the stream."""
 
         class FakeStderr:
             """Simulates a Windows stderr with legacy encoding."""
             encoding = "cp949"
+            errors = "strict"
+
+            def __init__(self):
+                self.reconfigured_with = None
+
+            def reconfigure(self, **kwargs):
+                self.reconfigured_with = kwargs
+                self.errors = kwargs.get("errors", self.errors)
+
+            def write(self, s):
+                pass
+
+            def flush(self):
+                pass
+
+        fake = FakeStderr()
+        monkeypatch.setattr(sys, "stderr", fake)
+        result = hermes_logging._safe_stderr()
+
+        assert result is fake
+        assert fake.reconfigured_with == {"errors": "replace"}
+        assert fake.errors == "replace"
+
+    def test_wraps_non_utf8_stderr_when_reconfigure_unavailable(self, monkeypatch):
+        """Fallback for stderr-like streams without reconfigure()."""
+        import io
+
+        class FakeStderr:
+            encoding = "cp949"
+            errors = "strict"
             buffer = io.BytesIO()
 
             def write(self, s):
@@ -1127,7 +1156,7 @@ class TestSafeStderr:
         fake = FakeStderr()
         monkeypatch.setattr(sys, "stderr", fake)
         result = hermes_logging._safe_stderr()
-        # Should be a TextIOWrapper, not the original FakeStderr
+
         assert isinstance(result, io.TextIOWrapper)
         assert result.encoding == "utf-8"
         assert result.errors == "replace"
