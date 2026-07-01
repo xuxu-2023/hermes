@@ -39,6 +39,7 @@ from plugins.platforms.telegram.adapter import (  # noqa: E402
     TelegramAdapter,
     _escape_mdv2,
     _strip_mdv2,
+    _strip_telegram_web_unsafe,
     _wrap_markdown_tables,
 )
 
@@ -1134,3 +1135,162 @@ class TestTelegramGuestMentionGating:
         message.caption_entities = [_guest_mention_entity(text)]
 
         assert adapter._should_process_message(message) is True
+
+
+# =========================================================================
+# _strip_telegram_web_unsafe — Telegram Web compatibility sanitizer
+#
+# Invariants tested here:
+#   1. Constructs that escape format_message() (--- rules, <details>/<summary>,
+#      $$ ... $$) are removed from outbound content.
+#   2. Constructs that format_message() handles correctly (## headers, fenced
+#      code, **bold**, pipe tables) are NOT touched by the sanitizer.
+#   3. The fast-path (no unsafe constructs present) returns the same string
+#      object so the call site can detect "no work needed" without ==.
+#   4. Empty inputs are safe.
+#   5. Repeated blank lines left by strips are collapsed to one blank line.
+# =========================================================================
+
+
+class TestStripTelegramWebUnsafe:
+    # --- 1. Constructs the sanitizer MUST remove ----------------------------
+
+    def test_strips_dash_horizontal_rule(self):
+        text = "header\n---\nbody"
+        out = _strip_telegram_web_unsafe(text)
+        assert "---" not in out
+        assert "header" in out and "body" in out
+
+    def test_strips_equals_horizontal_rule(self):
+        text = "header\n===\nbody"
+        out = _strip_telegram_web_unsafe(text)
+        assert "===" not in out
+        assert "header" in out and "body" in out
+
+    def test_strips_long_dash_rule(self):
+        # 4+ dashes also counts (matches the [-=]{3,} pattern).
+        text = "header\n----\nbody"
+        out = _strip_telegram_web_unsafe(text)
+        assert "----" not in out
+
+    def test_strips_details_open_close(self):
+        text = "<details><summary>click</summary>\nbody\n</details>"
+        out = _strip_telegram_web_unsafe(text)
+        assert "<details>" not in out
+        assert "<summary>" not in out
+        assert "</details>" not in out
+        assert "</summary>" not in out
+        assert "body" in out
+
+    def test_strips_details_with_attributes(self):
+        text = '<details class="x" data-y="z">\nfine\n</details>'
+        out = _strip_telegram_web_unsafe(text)
+        assert "<details" not in out
+        assert "fine" in out
+
+    def test_strips_block_math(self):
+        text = "before\n$$\nE = mc^2\n$$\nafter"
+        out = _strip_telegram_web_unsafe(text)
+        assert "$$" not in out
+        assert "before" in out and "after" in out
+
+    # --- 2. Constructs the sanitizer MUST preserve --------------------------
+
+    def test_preserves_markdown_header(self):
+        # ## headers are handled by format_message; sanitizer must not touch.
+        text = "## Title\n\nbody"
+        out = _strip_telegram_web_unsafe(text)
+        assert out == text
+
+    def test_preserves_fenced_code_block(self):
+        text = "before\n```python\nprint('hi')\n```\nafter"
+        out = _strip_telegram_web_unsafe(text)
+        assert out == text
+
+    def test_preserves_bold(self):
+        text = "this is **bold** text"
+        out = _strip_telegram_web_unsafe(text)
+        assert out == text
+
+    def test_preserves_pipe_table(self):
+        # Tables are converted to bullets by format_message via
+        # _wrap_markdown_tables; the sanitizer must not pre-strip the pipes
+        # because that detection runs on the original content.
+        text = "| a | b |\n|---|---|\n| 1 | 2 |"
+        out = _strip_telegram_web_unsafe(text)
+        assert out == text
+
+    def test_preserves_two_dashes_in_word(self):
+        # "end-of-line" contains "--" but is NOT a horizontal rule.
+        text = "use -- for emphasis"
+        out = _strip_telegram_web_unsafe(text)
+        assert out == text
+
+    def test_preserves_three_dashes_in_word(self):
+        # "pre---post" — must not match the rule regex (rule requires line
+        # boundaries + whitespace).
+        text = "pre---post"
+        out = _strip_telegram_web_unsafe(text)
+        assert out == text
+
+    def test_preserves_inline_dollar(self):
+        # Single $ (not block math) must not be touched.
+        text = "cost is $5"
+        out = _strip_telegram_web_unsafe(text)
+        assert out == text
+
+    def test_preserves_anchor_tag_with_details_substring(self):
+        # 'details' substring in non-tag text must not match the tag regex.
+        text = "see details for more info"
+        out = _strip_telegram_web_unsafe(text)
+        assert out == text
+
+    # --- 3. Fast-path returns same string when no work is needed ------------
+
+    def test_fast_path_returns_same_string_object(self):
+        # The call site uses `if sanitized is not content` to detect whether
+        # the sanitizer actually changed anything. Fast-path MUST return the
+        # same object (not just equal content) so that check works.
+        text = "no unsafe constructs here, just regular text"
+        out = _strip_telegram_web_unsafe(text)
+        assert out is text
+
+    def test_fast_path_on_empty_string(self):
+        assert _strip_telegram_web_unsafe("") == ""
+
+    # --- 5. Blank-line collapse ---------------------------------------------
+
+    def test_collapses_multiple_blank_lines_after_strip(self):
+        text = "header\n\n\n---\n\n\nbody"
+        out = _strip_telegram_web_unsafe(text)
+        assert "\n\n\n" not in out
+        # The non-rule content remains.
+        assert "header" in out and "body" in out
+
+    # --- Mixed / regression coverage ----------------------------------------
+
+    def test_mixed_constructs_in_one_payload(self):
+        text = (
+            "## Section\n\n"
+            "---\n"
+            "intro <details>hidden</details> done\n"
+            "$$x=1$$\n"
+            "**bold** survives\n"
+        )
+        out = _strip_telegram_web_unsafe(text)
+        assert "---" not in out
+        assert "<details>" not in out
+        assert "$$" not in out
+        # Constructs the sanitizer must preserve are still there.
+        assert "## Section" in out
+        assert "**bold**" in out
+        assert "intro" in out and "hidden" in out and "done" in out
+
+    def test_idempotent_on_already_safe_content(self):
+        text = "## Title\n\nbody text **bold** `code`"
+        once = _strip_telegram_web_unsafe(text)
+        twice = _strip_telegram_web_unsafe(once)
+        # Sanitizing safe content twice yields the same string.
+        assert once == twice
+        # And preserves identity (fast-path).
+        assert twice is once

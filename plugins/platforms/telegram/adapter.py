@@ -197,6 +197,58 @@ def _strip_mdv2(text: str) -> str:
     return cleaned
 
 
+# Constructs that Telegram Web cannot render and that survive both the rich
+# fast-path (Bot API 10.1, which Web refuses entirely) and the MarkdownV2
+# fallback (which parses but rejects malformed markdown at the server). The
+# sanitize pass runs at the top of send() before either path is chosen, so
+# both code paths see only Web-safe content. Kept intentionally narrow:
+# format_message() already handles headers, bold/italic, code fences, pipe
+# tables, and inline code for the legacy path. The regexes here cover the
+# three constructs that escape both paths' normalizers.
+#
+# - ``---`` / ``===`` horizontal rules: MarkdownV2 escapes ``-`` so the line
+#   renders as literal "\-\-\-" on Web, and rich frames render the rule on
+#   native but break the frame on Web.
+# - ``<details>`` / ``<summary>``: Telegram renders these only on native
+#   rich frames; on Web they leak as literal HTML.
+# - ``$$ ... $$`` block-math markers: Telegram renders these only on native
+#   rich frames; on Web they leak as literal ``$$`` and corrupt the line.
+#
+# Markdown headers (## / ###) and fenced code blocks are deliberately NOT
+# handled here: format_message() already converts headers to bold and
+# protects code blocks via placeholders before the MarkdownV2 escape pass.
+_WEB_UNSAFE_HRULE_RE = re.compile(r'(?m)^\s*[-=]{3,}\s*$')
+_WEB_UNSAFE_DETAILS_RE = re.compile(
+    r'(?is)<\s*/?\s*(?:details|summary)\b[^>]*>'
+)
+_WEB_UNSAFE_BLOCK_MATH_RE = re.compile(r'\$\$[\s\S]*?\$\$')
+
+
+def _strip_telegram_web_unsafe(text: str) -> str:
+    """Strip constructs that Telegram Web cannot render.
+
+    Conservative: only removes constructs known to break Web rendering and
+    not already handled by :meth:`TelegramAdapter.format_message`. Returns
+    the input unchanged when no unsafe construct is present (so the
+    fast-path skips this in the common case).
+
+    See ``_WEB_UNSAFE_*`` regex constants above for the full rationale.
+    """
+    if not text:
+        return text
+    has_rule = bool(_WEB_UNSAFE_HRULE_RE.search(text))
+    has_details = bool(_WEB_UNSAFE_DETAILS_RE.search(text))
+    has_block_math = bool(_WEB_UNSAFE_BLOCK_MATH_RE.search(text))
+    if not (has_rule or has_details or has_block_math):
+        return text
+    cleaned = _WEB_UNSAFE_HRULE_RE.sub('', text)
+    cleaned = _WEB_UNSAFE_DETAILS_RE.sub('', cleaned)
+    cleaned = _WEB_UNSAFE_BLOCK_MATH_RE.sub('', cleaned)
+    # Collapse 3+ consecutive blank lines left by the strips down to one.
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+    return cleaned
+
+
 _CHUNK_INDICATOR_ON_FENCE_RE = re.compile(
     r'(?m)^``` (?P<indicator>(?:\\)?\(\d+/\d+(?:\\)?\))$'
 )
@@ -375,6 +427,17 @@ class TelegramAdapter(BasePlatformAdapter):
         # as plain text, which is worse than degraded table/task-list rendering
         # for command snippets and mobile handoffs.
         self._rich_messages_enabled: bool = self._coerce_bool_extra("rich_messages", False)
+        # Telegram Web compat: strip constructs that Web cannot render
+        # (horizontal rules, <details>/<summary> HTML, $$ block math) before
+        # either the rich fast-path or the MarkdownV2 fallback sees the
+        # content. Bot API 10.1 rich frames are not supported on Web at
+        # all (the client renders the literal "not supported on Telegram Web"
+        # stub), so this only narrows what survives into both paths; native
+        # desktop/mobile users who want rich rendering can opt out via
+        # platforms.telegram.extra.telegram_web_safe: false.
+        self._telegram_web_safe_enabled: bool = self._coerce_bool_extra(
+            "telegram_web_safe", True
+        )
         # Rich draft previews use a separate opt-in. Telegram macOS / Desktop
         # can leave Bot API 10.1 rich draft frames visually overlaid until the
         # chat is redrawn, while final rich messages remain useful.
@@ -3257,7 +3320,22 @@ class TelegramAdapter(BasePlatformAdapter):
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
-        
+
+        # Telegram Web sanitization (substrate-level, runs before both the
+        # rich fast-path and the MarkdownV2 fallback). Strips constructs that
+        # Web cannot render and that escape format_message's normalizers:
+        # ``---``/``===`` horizontal rules, ``<details>``/``<summary>`` HTML,
+        # ``$$ ... $$`` block-math markers. See _strip_telegram_web_unsafe.
+        # Gated on extra.telegram_web_safe (default True). Opt-out is for
+        # users who have tested rich rendering on native Telegram clients
+        # and prefer it preserved at the cost of Web compatibility.
+        if getattr(self, "_telegram_web_safe_enabled", True):
+            sanitized = _strip_telegram_web_unsafe(content)
+            if sanitized is not content:
+                content = sanitized
+                if not content.strip():
+                    return SendResult(success=True, message_id=None)
+
         try:
             # Bot API 10.1 rich fast-path: send the raw agent markdown via
             # sendRichMessage so tables/task lists/etc. render natively. Falls
