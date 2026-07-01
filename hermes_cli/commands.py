@@ -671,10 +671,23 @@ def _telegram_effective_priority() -> tuple[str, ...]:
 def _prioritize_telegram_menu_commands(
     commands: list[tuple[str, str]],
 ) -> list[tuple[str, str]]:
+    """Sort commands by priority: built-in > plugins > skills.
+
+    Built-in commands in _TELEGRAM_MENU_PRIORITY get highest priority (0).
+    Plugin commands get middle priority (1) — they should appear before skills.
+    All other commands (skills) get lowest priority (2).
+    """
     priority = {
         name: index
         for index, name in enumerate(_telegram_effective_priority())
     }
+    # Collect plugin command names for middle-priority treatment
+    plugin_names: set[str] = set()
+    for name, _description, _args_hint in _iter_plugin_command_entries():
+        tg_name = _sanitize_telegram_name(name)
+        if tg_name:
+            plugin_names.add(tg_name)
+
     return [
         command
         for _index, command in sorted(
@@ -687,6 +700,11 @@ def _prioritize_telegram_menu_commands(
             if item[1][0] in priority
             else (
                 1,
+                item[0],
+            )
+            if item[1][0] in plugin_names
+            else (
+                2,
                 item[0],
             ),
         )
