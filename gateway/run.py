@@ -19514,12 +19514,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     except Exception:
         pass
 
-    if runner.should_exit_with_failure:
-        if runner.exit_reason:
-            logger.error("Gateway exiting with failure: %s", runner.exit_reason)
-        return False
-    
-    # Stop cron scheduler + housekeeping cleanly
+    # Stop cron scheduler, housekeeping, and MCP connections cleanly.
+    # Always runs — even on failure — so daemon threads don't leak.
     cron_stop.set()
     try:
         cron_provider.stop()
@@ -19538,6 +19534,11 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         shutdown_mcp_servers()
     except Exception:
         pass
+
+    if runner.should_exit_with_failure:
+        if runner.exit_reason:
+            logger.error("Gateway exiting with failure: %s", runner.exit_reason)
+        return False
 
     if runner.exit_code is not None:
         raise SystemExit(runner.exit_code)
