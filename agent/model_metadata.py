@@ -87,20 +87,44 @@ _TAILSCALE_CGNAT = ipaddress.IPv4Network("100.64.0.0/10")
 def _strip_provider_prefix(model: str) -> str:
     """Strip a recognised provider prefix from a model string.
 
-    ``"local:my-model"`` → ``"my-model"``
-    ``"qwen3.5:27b"``   → ``"qwen3.5:27b"``  (unchanged — not a provider prefix)
-    ``"qwen:0.5b"``     → ``"qwen:0.5b"``    (unchanged — Ollama model:tag)
-    ``"deepseek:latest"``→ ``"deepseek:latest"``(unchanged — Ollama model:tag)
+    Handles both colon-separated (``"local:my-model"``) and slash-separated
+    (``"opencode-go/qwen3.7-plus"``) prefixes.  Returns the bare model id.
+
+    ``"local:my-model"``   → ``"my-model"``
+    ``"opencode-go/qwen3.7-plus"`` → ``"qwen3.7-plus"``
+    ``"qwen3.5:27b"``      → ``"qwen3.5:27b"``  (unchanged — not a provider prefix)
+    ``"qwen:0.5b"``        → ``"qwen:0.5b"``    (unchanged — Ollama model:tag)
+    ``"deepseek:latest"``  → ``"deepseek:latest"`` (unchanged — Ollama model:tag)
+    ``"anthropic/claude-sonnet-4"`` → ``"anthropic/claude-sonnet-4"`` (unchanged — OpenRouter-style id)
     """
-    if ":" not in model or model.startswith("http"):
+    if model.startswith("http"):
         return model
-    prefix, suffix = model.split(":", 1)
-    prefix_lower = prefix.strip().lower()
-    if prefix_lower in _PROVIDER_PREFIXES:
-        # Don't strip if suffix looks like an Ollama tag (e.g. "7b", "latest", "q4_0")
-        if _OLLAMA_TAG_PATTERN.match(suffix.strip()):
-            return model
-        return suffix
+
+    # Colon-separated prefix (e.g. "local:my-model", "openrouter:anthropic/claude-sonnet-4")
+    if ":" in model:
+        prefix, suffix = model.split(":", 1)
+        prefix_lower = prefix.strip().lower()
+        if prefix_lower in _PROVIDER_PREFIXES:
+            # Don't strip if suffix looks like an Ollama tag (e.g. "7b", "latest", "q4_0")
+            if _OLLAMA_TAG_PATTERN.match(suffix.strip()):
+                return model
+            return suffix
+
+    # Slash-separated prefix (e.g. "opencode-go/qwen3.7-plus")
+    # Only strip if the prefix is a known provider name, not a model family
+    # prefix like "anthropic" or "openai" which are part of OpenRouter-style
+    # model identifiers (e.g. "anthropic/claude-sonnet-4").
+    if "/" in model:
+        prefix, suffix = model.split("/", 1)
+        if prefix and suffix:
+            prefix_lower = prefix.strip().lower()
+            # Known provider prefixes that should be stripped from slash-separated ids
+            _SLASH_PROVIDER_PREFIXES = frozenset({
+                "opencode-go", "copilot", "codex", "openai-codex",
+            })
+            if prefix_lower in _SLASH_PROVIDER_PREFIXES:
+                return suffix
+
     return model
 
 _model_metadata_cache: Dict[str, Dict[str, Any]] = {}
