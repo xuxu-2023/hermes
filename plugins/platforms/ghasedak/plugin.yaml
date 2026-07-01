@@ -1,0 +1,10 @@
+name: ghasedak
+label: Ghasedak (قاصدک)
+kind: platform
+version: 1.0.0
+description: Ghasedak (قاصدک) adapter.
+author: Hermes Core Team
+requires_env:
+  - name: GHASEDAK_API_KEY\n    description: "GHASEDAK_API_KEY"\n    prompt: "GHASEDAK_API_KEY"\n    password: true\n
+optional_env:
+  - name: GHASEDAK_SENDER\n    description: "GHASEDAK_SENDER"\n    prompt: "GHASEDAK_SENDER"\n    password: false\n
