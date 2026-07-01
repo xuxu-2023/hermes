@@ -8,6 +8,7 @@ and implement the required methods.
 import asyncio
 import inspect
 import ipaddress
+import json
 import logging
 import os
 import random
@@ -1238,6 +1239,55 @@ def _path_is_within(path: Path, root: Path) -> bool:
         return False
 
 
+_DOCKER_VOLUME_SPEC_RE = re.compile(
+    r"^(?P<host>.+):(?P<container>/[^:]+?)(?::(?P<options>[^:]+))?$"
+)
+
+
+def _resolve_via_docker_volumes(container_path: Path) -> Optional[Path]:
+    """Translate a Docker container path to the corresponding host path.
+
+    Reads ``TERMINAL_DOCKER_VOLUMES`` (JSON list of volume specs like
+    ``["/host/dir:/container/dir:rw"]``) and checks whether *container_path*
+    falls under a mapped container directory.  If so, the matching host prefix
+    is substituted and the host file is validated with ``resolve(strict=True)``.
+
+    Returns the resolved host ``Path`` on success, or ``None`` if no mapping
+    matches or the host file doesn't exist.  (#42299)
+    """
+    raw_volumes = os.getenv("TERMINAL_DOCKER_VOLUMES", "").strip()
+    if not raw_volumes:
+        return None
+    try:
+        parsed = json.loads(raw_volumes)
+    except Exception:
+        return None
+    if not isinstance(parsed, list):
+        return None
+
+    container_str = str(container_path)
+    for spec in parsed:
+        if not isinstance(spec, str):
+            continue
+        m = _DOCKER_VOLUME_SPEC_RE.match(spec)
+        if not m:
+            continue
+        host_dir = m.group("host")
+        container_dir = m.group("container")
+        # Match: container_path must be exactly container_dir or start with
+        # container_dir + "/"
+        if container_str == container_dir or container_str.startswith(container_dir + "/"):
+            suffix = container_str[len(container_dir):]
+            host_candidate = host_dir.rstrip("/") + suffix
+            try:
+                resolved = Path(host_candidate).expanduser().resolve(strict=True)
+                if resolved.is_file():
+                    return resolved
+            except (OSError, RuntimeError, ValueError):
+                continue
+    return None
+
+
 def validate_media_delivery_path(path: str) -> Optional[str]:
     """Return a safe absolute file path for native media delivery, else None.
 
@@ -1279,7 +1329,12 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
     try:
         resolved = expanded.resolve(strict=True)
     except (OSError, RuntimeError, ValueError):
-        return None
+        # Path doesn't exist on the host — it may be a Docker container path
+        # mapped via ``docker_volumes``.  Try to translate it to the host path
+        # so MEDIA directives emitted inside a sandbox still work.  (#42299)
+        resolved = _resolve_via_docker_volumes(expanded)
+        if resolved is None:
+            return None
 
     if not resolved.is_file():
         return None
