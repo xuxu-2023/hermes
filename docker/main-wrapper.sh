@@ -78,5 +78,22 @@ if command -v "$1" >/dev/null 2>&1; then
     drop "$@"
 fi
 
+# HERMES_PROFILE env-var support: when set, inject -p <profile> into
+# the hermes command. This is the reliable way to specify the profile
+# in docker-compose, because s6-overlay's /init may consume dash-prefixed
+# CMD arguments as its own options (see #43295). Usage:
+#
+#   environment:
+#     HERMES_PROFILE: viewer
+#   command: ["gateway", "run"]
+#
+# If both the env-var and -p in CMD are present, the env-var wins.
+if [ -n "${HERMES_PROFILE:-}" ]; then
+    # Strip any existing -p <name> from the args to avoid duplication
+    # and inject the env-var value.
+    set -- $(echo "$@" | sed 's/-p [^ ]*//')
+    drop hermes -p "$HERMES_PROFILE" "$@"
+fi
+
 # Hermes subcommand pass-through.
 drop hermes "$@"
