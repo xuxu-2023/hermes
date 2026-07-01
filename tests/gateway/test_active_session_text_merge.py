@@ -376,3 +376,96 @@ def test_busy_text_mode_respects_env_var_override(monkeypatch):
     adapter = _make_initialized_adapter()
     assert adapter._busy_text_mode == "interrupt"
     assert not adapter._is_queue_text_debounce_candidate(_make_event("test"))
+
+
+@pytest.mark.asyncio
+async def test_typing_cancels_pending_button_clarify():
+    """A typed follow-up must cancel a blocked BUTTON-choice clarify.
+
+    Regression: button-choice clarify (awaiting_text=False) blocks the agent
+    thread in clarify_gateway.wait_for_response() on a threading.Event.
+    get_pending_for_session() only returns text-awaiting entries, so the
+    existing clarify text-intercept missed button clarifies entirely — a typed
+    message got queued as a follow-up that never ran (the current turn never
+    ends), so the user saw a multi-minute hang until the 10-minute timeout.
+
+    The fix cancels the pending button-clarify inside handle_message so the
+    blocked thread wakes immediately, letting the current turn finish.
+    """
+    import threading
+    from tools import clarify_gateway as cg
+
+    adapter = _make_adapter()
+    adapter._busy_text_mode = ""  # direct path, no debounce
+    event = _make_event("actually never mind, do this instead")
+    session_key = build_session_key(event.source)
+    adapter._active_sessions[session_key] = asyncio.Event()
+
+    # Register a BUTTON-choice clarify (awaiting_text=False).
+    cg.register(
+        clarify_id="cid-button",
+        session_key=session_key,
+        question="Which one?",
+        choices=["A", "B", "C"],
+    )
+
+    # Simulate the agent thread blocked waiting for the user to click.
+    woke = {"done": False}
+
+    def _blocked_agent():
+        cg.wait_for_response("cid-button", timeout=30)
+        woke["done"] = True
+
+    t = threading.Thread(target=_blocked_agent)
+    t.start()
+    try:
+        await asyncio.sleep(0.1)
+        assert t.is_alive()  # genuinely blocked
+        assert cg.has_pending(session_key) is True
+        assert cg.get_pending_for_session(session_key) is None  # button-type
+
+        # User types instead of clicking.
+        await adapter.handle_message(event)
+
+        # The blocked thread must have been woken by the cancel.
+        t.join(timeout=5)
+        assert woke["done"] is True
+        assert cg.has_pending(session_key) is False
+    finally:
+        cg.clear_session(session_key)
+        t.join(timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_typing_leaves_textawaiting_clarify_for_intercept():
+    """A free-form (awaiting_text=True) clarify must NOT be cancelled here.
+
+    Those are resolved by the existing text-intercept (the typed message IS
+    the answer), so the button-cancel branch must leave them alone.
+    """
+    from tools import clarify_gateway as cg
+
+    adapter = _make_adapter()
+    adapter._busy_text_mode = ""
+    adapter._message_handler = AsyncMock(return_value=None)
+    event = _make_event("my free-form answer")
+    session_key = build_session_key(event.source)
+    adapter._active_sessions[session_key] = asyncio.Event()
+
+    # Open-ended clarify → awaiting_text=True from the start.
+    cg.register(
+        clarify_id="cid-text",
+        session_key=session_key,
+        question="What is your name?",
+        choices=None,
+    )
+    try:
+        assert cg.get_pending_for_session(session_key) is not None  # text-awaiting
+
+        await adapter.handle_message(event)
+
+        # The text-intercept path handles it (calls _message_handler), and it
+        # must NOT be swept by the button-cancel branch.
+        adapter._message_handler.assert_awaited_once()
+    finally:
+        cg.clear_session(session_key)

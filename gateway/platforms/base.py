@@ -4699,6 +4699,33 @@ class BasePlatformAdapter(ABC):
                 except Exception:
                     _has_text_clarify = False
 
+                # Button-choice clarify (awaiting_text=False) that the user
+                # IGNORED by typing instead of clicking. get_pending_for_session
+                # only returns text-awaiting entries, so the bypass above misses
+                # these — the agent thread stays blocked in
+                # clarify_gateway.wait_for_response() on a threading.Event and the
+                # typed message gets queued as a follow-up that never runs (the
+                # current turn never ends), so the user sees a multi-minute hang
+                # until the 10-minute clarify timeout. A new message means the
+                # prior clarify is obsolete: cancel it here so the blocked thread
+                # wakes immediately and the current turn can finish, then let this
+                # message fall through to normal busy handling (interrupt/queue).
+                if not _has_text_clarify:
+                    try:
+                        from tools import clarify_gateway as _clarify_mod2
+                        if _clarify_mod2.has_pending(session_key):
+                            _cancelled = _clarify_mod2.clear_session(session_key)
+                            logger.info(
+                                "[%s] Cancelled %d pending button-clarify for %s "
+                                "(user typed a new message instead of clicking)",
+                                self.name, _cancelled, session_key,
+                            )
+                    except Exception as _btn_clarify_exc:
+                        logger.debug(
+                            "[%s] Failed to cancel button-clarify for %s: %s",
+                            self.name, session_key, _btn_clarify_exc,
+                        )
+
                 if _has_text_clarify:
                     logger.debug(
                         "[%s] Routing message to clarify text-intercept for %s",
