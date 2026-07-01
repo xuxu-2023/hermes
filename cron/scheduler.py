@@ -1140,6 +1140,17 @@ _VIDEO_EXTS = frozenset({'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'})
 _IMAGE_EXTS = frozenset({'.jpg', '.jpeg', '.png', '.webp', '.gif'})
 
 
+def _cron_button_metadata(job: dict) -> dict | None:
+    buttons = job.get("buttons")
+    if not buttons:
+        return None
+    return {
+        "job_id": str(job.get("id", "")),
+        "job_name": str(job.get("name") or job.get("id") or "cron job"),
+        "buttons": buttons,
+    }
+
+
 def _send_media_via_adapter(
     adapter,
     chat_id: str,
@@ -1455,6 +1466,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 looks_like_telegram_private_chat_id,
             )
 
+            cron_buttons = _cron_button_metadata(job)
             is_private_dm_topic = (
                 platform == Platform.TELEGRAM
                 and thread_id is not None
@@ -1475,7 +1487,8 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 route_thread_id = str(thread_id) if thread_id is not None else None
                 route_metadata = {"job_id": job["id"]}
                 media_metadata = {"thread_id": thread_id} if thread_id else None
-
+            if cron_buttons:
+                route_metadata["cron_buttons"] = cron_buttons
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content.
                 # Route through the gateway's DeliveryRouter so the live send
