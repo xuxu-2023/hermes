@@ -15,6 +15,31 @@ from providers.base import ProviderProfile
 class CustomProfile(ProviderProfile):
     """Custom/Ollama local provider — think=false and num_ctx support."""
 
+    def get_max_tokens(self, model: str | None) -> int | None:
+        """Custom/Ollama: resolve max_tokens from custom_providers config when available."""
+        val = self.default_max_tokens
+        if not model:
+            return val
+        try:
+            from hermes_cli.config import load_config
+            config = load_config()
+            custom_providers = config.get("custom_providers") or []
+            for entry in custom_providers:
+                if isinstance(entry, dict) and entry.get("model") == model:
+                    # 1. Explicit max_tokens override under this custom_provider
+                    if "max_tokens" in entry:
+                        try:
+                            return int(entry["max_tokens"])
+                        except (TypeError, ValueError):
+                            pass
+                    # 2. Implicit auto-clamp to context_length if smaller than default_max_tokens
+                    ctx_len = entry.get("context_length")
+                    if isinstance(ctx_len, int) and ctx_len > 0 and ctx_len < val:
+                        return ctx_len
+        except Exception:
+            pass
+        return val
+
     def build_api_kwargs_extras(
         self,
         *,

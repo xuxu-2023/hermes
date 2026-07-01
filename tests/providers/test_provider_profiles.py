@@ -487,3 +487,39 @@ class TestBaseProfile:
         eb, tl = p.build_api_kwargs_extras()
         assert eb == {}
         assert tl == {}
+
+
+class TestCustomProfile:
+    def test_get_max_tokens_default(self):
+        p = get_provider_profile("custom")
+        assert p.get_max_tokens("nonexistent_model") == 65536
+
+    def test_get_max_tokens_clamped_by_context_length(self, monkeypatch):
+        p = get_provider_profile("custom")
+        mock_config = {
+            "custom_providers": [
+                {
+                    "name": "aiase",
+                    "model": "aiase_model",
+                    "context_length": 32768
+                }
+            ]
+        }
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: mock_config)
+        assert p.get_max_tokens("aiase_model") == 32768
+
+    def test_get_max_tokens_override(self, monkeypatch):
+        p = get_provider_profile("custom")
+        mock_config = {
+            "custom_providers": [
+                {
+                    "name": "aiase",
+                    "model": "aiase_model",
+                    "context_length": 32768,
+                    "max_tokens": 8192
+                }
+            ]
+        }
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: mock_config)
+        assert p.get_max_tokens("aiase_model") == 8192
+
