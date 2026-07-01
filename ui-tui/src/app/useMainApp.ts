@@ -22,7 +22,7 @@ import type {
 import { useGitBranch } from '../hooks/useGitBranch.js'
 import { useVirtualHistory } from '../hooks/useVirtualHistory.js'
 import { composerPromptWidth } from '../lib/inputMetrics.js'
-import { appendTranscriptMessage } from '../lib/messages.js'
+import { appendTranscriptMessage, ensureMsgId } from '../lib/messages.js'
 import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
 import { createResizeCoalescer } from '../lib/resizeCoalescer.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
@@ -173,7 +173,7 @@ export function useMainApp(gw: GatewayClient) {
     }
   }, [stdout])
 
-  const [historyItems, setHistoryItems] = useState<Msg[]>(() => [{ kind: 'intro', role: 'system', text: '' }])
+  const [historyItems, setHistoryItems] = useState<Msg[]>(() => [ensureMsgId({ kind: 'intro', role: 'system', text: '' })])
   const [lastUserMsg, setLastUserMsg] = useState('')
   const [stickyPrompt, setStickyPrompt] = useState('')
   const [catalog, setCatalog] = useState<null | SlashCatalog>(null)
@@ -300,6 +300,10 @@ export function useMainApp(gw: GatewayClient) {
   }, [])
 
   const messageId = useCallback((msg: Msg) => {
+    if (msg.id) {
+      return msg.id
+    }
+
     const hit = msgIdsRef.current.get(msg)
 
     if (hit) {
