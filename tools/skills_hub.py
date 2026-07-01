@@ -121,6 +121,19 @@ def __getattr__(name: str):
 
 _REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
 _MAX_SKILL_FETCH_REDIRECTS = 5
+_BINARY_SKILL_FILE_SUFFIXES = {
+    # Images
+    ".avif", ".bmp", ".gif", ".heic", ".heif", ".ico", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp",
+    # Audio/video
+    ".aac", ".flac", ".m4a", ".mov", ".mp3", ".mp4", ".ogg", ".wav", ".webm",
+    # Fonts
+    ".eot", ".otf", ".ttf", ".woff", ".woff2",
+    # Model/data/runtime assets
+    ".db", ".duckdb", ".npy", ".npz", ".onnx", ".parquet", ".pickle", ".pkl", ".safetensors", ".sqlite3", ".wasm",
+    # Documents/archives/compiled assets
+    ".7z", ".bin", ".bz2", ".class", ".dmg", ".doc", ".docx", ".gz", ".jar", ".pdf",
+    ".ppt", ".pptx", ".pyc", ".rar", ".sqlite", ".tar", ".tgz", ".xls", ".xlsx", ".xz", ".zip", ".zst",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +303,11 @@ def _guarded_http_get(url: str, *, timeout: int = 20) -> Optional[httpx.Response
 
 def _validate_bundle_rel_path(rel_path: str) -> str:
     return _normalize_bundle_path(rel_path, field_name="bundle file path", allow_nested=True)
+
+
+def _is_binary_skill_file(path_value: str) -> bool:
+    """Return True when a skill support file should be preserved as raw bytes."""
+    return Path(path_value).suffix.lower() in _BINARY_SKILL_FILE_SUFFIXES
 
 
 # ---------------------------------------------------------------------------
@@ -627,7 +645,7 @@ class GitHubSource(SkillSource):
         skill_md_path = f"{skill_path}/SKILL.md"
 
         content = self._fetch_file_content(repo, skill_md_path)
-        if not content:
+        if not content or isinstance(content, bytes):
             return None
 
         fm = self._parse_frontmatter_quick(content)
@@ -849,8 +867,8 @@ class GitHubSource(SkillSource):
         return last_resp
 
 
-    def _download_directory(self, repo: str, path: str) -> Dict[str, str]:
-        """Recursively download all text files from a GitHub directory.
+    def _download_directory(self, repo: str, path: str) -> Dict[str, Union[str, bytes]]:
+        """Recursively download all files from a GitHub directory.
 
         Uses the Git Trees API first (single call for the entire tree) to
         avoid per-directory rate limiting that causes silent subdirectory
@@ -863,7 +881,7 @@ class GitHubSource(SkillSource):
         logger.debug("Tree API unavailable for %s/%s, falling back to Contents API", repo, path)
         return self._download_directory_recursive(repo, path)
 
-    def _download_directory_via_tree(self, repo: str, path: str) -> Optional[Dict[str, str]]:
+    def _download_directory_via_tree(self, repo: str, path: str) -> Optional[Dict[str, Union[str, bytes]]]:
         """Download an entire directory using the Git Trees API (single request).
 
         Returns:
@@ -890,7 +908,7 @@ class GitHubSource(SkillSource):
             return {}
 
         # Filter to blobs under our target path and fetch content
-        files: Dict[str, str] = {}
+        files: Dict[str, Union[str, bytes]] = {}
         for item in tree_entries:
             if item.get("type") != "blob":
                 continue
@@ -906,7 +924,7 @@ class GitHubSource(SkillSource):
 
         return files if files else None
 
-    def _download_directory_recursive(self, repo: str, path: str) -> Dict[str, str]:
+    def _download_directory_recursive(self, repo: str, path: str) -> Dict[str, Union[str, bytes]]:
         """Recursively download via Contents API (fallback)."""
         url = f"https://api.github.com/repos/{repo}/contents/{path.rstrip('/')}"
         try:
@@ -921,7 +939,7 @@ class GitHubSource(SkillSource):
         if not isinstance(entries, list):
             return {}
 
-        files: Dict[str, str] = {}
+        files: Dict[str, Union[str, bytes]] = {}
         for entry in entries:
             name = entry.get("name", "")
             entry_type = entry.get("type", "")
@@ -966,15 +984,20 @@ class GitHubSource(SkillSource):
 
         return None
 
-    def _fetch_file_content(self, repo: str, path: str) -> Optional[str]:
-        """Fetch a single file's content from GitHub."""
+    def _fetch_file_content(self, repo: str, path: str) -> Optional[Union[str, bytes]]:
+        """Fetch a single file's content from GitHub without corrupting binary assets."""
         url = f"https://api.github.com/repos/{repo}/contents/{path}"
         resp = self._github_get(
             url,
             headers={**self.auth.get_headers(), "Accept": "application/vnd.github.v3.raw"},
         )
         if resp is not None and resp.status_code == 200:
-            return resp.text
+            if _is_binary_skill_file(path):
+                return resp.content
+            try:
+                return resp.content.decode("utf-8")
+            except UnicodeDecodeError:
+                return resp.content
         return None
 
     def _get_skillsh_groupings(self, repo: str) -> Optional[Dict[str, str]]:
@@ -998,7 +1021,7 @@ class GitHubSource(SkillSource):
             return self._skillsh_groupings[repo]
 
         content = self._fetch_file_content(repo, "skills.sh.json")
-        groupings = self._parse_skillsh_groupings(content) if content else None
+        groupings = self._parse_skillsh_groupings(content) if isinstance(content, str) else None
         self._skillsh_groupings[repo] = groupings
         return groupings
 

@@ -1968,6 +1968,103 @@ class TestQuarantineBundleBinaryAssets:
         assert not absolute_target.exists()
 
 
+class TestGitHubFetchFileContent:
+    """Tests for preserving text and binary GitHub file content."""
+
+    def _source(self):
+        auth = MagicMock(spec=GitHubAuth)
+        auth.get_headers.return_value = {}
+        return GitHubSource(auth=auth)
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_text_file_returns_text(self, mock_get):
+        resp = MagicMock(status_code=200)
+        resp.text = "---\nname: demo\n---\n"
+        resp.content = resp.text.encode("utf-8")
+        mock_get.return_value = resp
+
+        content = self._source()._fetch_file_content("owner/repo", "skill/SKILL.md")
+
+        assert content == "---\nname: demo\n---\n"
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_binary_asset_returns_raw_bytes(self, mock_get):
+        png_bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\xff\xd8"
+        resp = MagicMock(status_code=200)
+        resp.content = png_bytes
+        # Simulate the corruption-prone text view that would replace invalid
+        # binary bytes if callers used resp.text for image assets.
+        resp.text = png_bytes.decode("utf-8", errors="replace")
+        mock_get.return_value = resp
+
+        content = self._source()._fetch_file_content("owner/repo", "skill/assets/reference.png")
+
+        assert content == png_bytes
+        assert isinstance(content, bytes)
+        assert content.startswith(b"\x89PNG")
+        assert content != resp.text
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_unknown_suffix_invalid_utf8_returns_raw_bytes(self, mock_get):
+        model_bytes = b"GGUF\x00\xff\xfe\x80weights"
+        resp = MagicMock(status_code=200)
+        resp.content = model_bytes
+        resp.text = model_bytes.decode("utf-8", errors="replace")
+        mock_get.return_value = resp
+
+        content = self._source()._fetch_file_content(
+            "owner/repo", "skill/assets/model.gguf"
+        )
+
+        assert content == model_bytes
+        assert isinstance(content, bytes)
+        assert content != resp.text
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_extensionless_invalid_utf8_round_trips_through_quarantine(
+        self, mock_get, tmp_path
+    ):
+        import tools.skills_hub as hub
+
+        raw_fixture = b"\x00\xff\xfe\x80extensionless-fixture"
+        responses = {
+            "https://api.github.com/repos/owner/repo/contents/demo-skill/SKILL.md": b"---\nname: demo-skill\n---\n",
+            "https://api.github.com/repos/owner/repo/contents/demo-skill/assets/fixture": raw_fixture,
+        }
+
+        def fake_get(url, **_kwargs):
+            content = responses[url]
+            resp = MagicMock(status_code=200)
+            resp.content = content
+            resp.text = content.decode("utf-8", errors="replace")
+            return resp
+
+        mock_get.side_effect = fake_get
+        src = self._source()
+        src._tree_cache["owner/repo"] = (
+            "main",
+            [
+                {"type": "blob", "path": "demo-skill/SKILL.md"},
+                {"type": "blob", "path": "demo-skill/assets/fixture"},
+            ],
+        )
+        hub_dir = tmp_path / "skills" / ".hub"
+
+        with patch.object(hub, "SKILLS_DIR", tmp_path / "skills"), \
+             patch.object(hub, "HUB_DIR", hub_dir), \
+             patch.object(hub, "LOCK_FILE", hub_dir / "lock.json"), \
+             patch.object(hub, "QUARANTINE_DIR", hub_dir / "quarantine"), \
+             patch.object(hub, "AUDIT_LOG", hub_dir / "audit.log"), \
+             patch.object(hub, "TAPS_FILE", hub_dir / "taps.json"), \
+             patch.object(hub, "INDEX_CACHE_DIR", hub_dir / "index-cache"):
+            bundle = src.fetch("owner/repo/demo-skill")
+            assert bundle is not None
+            assert bundle.files["assets/fixture"] == raw_fixture
+            q_path = quarantine_bundle(bundle)
+
+        assert (q_path / "assets" / "fixture").read_bytes() == raw_fixture
+
+
 # ---------------------------------------------------------------------------
 # GitHubSource._download_directory — tree API + fallback (#2940)
 # ---------------------------------------------------------------------------
@@ -2007,6 +2104,31 @@ class TestDownloadDirectoryViaTree:
         assert "references/api.md" in files
         assert "other/file.txt" not in files  # outside target path
         assert len(files) == 3
+
+    @patch.object(GitHubSource, "_fetch_file_content")
+    @patch("tools.skills_hub.httpx.get")
+    def test_tree_api_preserves_binary_asset_bytes(self, mock_get, mock_fetch):
+        """Tree API path carries binary support files through as bytes."""
+        png_bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\xff\xd8"
+        repo_resp = MagicMock(status_code=200, json=lambda: {"default_branch": "main"})
+        tree_resp = MagicMock(status_code=200, json=lambda: {
+            "truncated": False,
+            "tree": [
+                {"type": "blob", "path": "skills/my-skill/SKILL.md"},
+                {"type": "blob", "path": "skills/my-skill/assets/reference.png"},
+            ],
+        })
+        mock_get.side_effect = [repo_resp, tree_resp]
+        mock_fetch.side_effect = lambda repo, path: (
+            png_bytes if path.endswith("reference.png") else "# Skill\n"
+        )
+
+        src = self._source()
+        files = src._download_directory("owner/repo", "skills/my-skill")
+
+        assert files["SKILL.md"] == "# Skill\n"
+        assert files["assets/reference.png"] == png_bytes
+        assert isinstance(files["assets/reference.png"], bytes)
 
     @patch.object(GitHubSource, "_download_directory_recursive", return_value={"SKILL.md": "# ok"})
     @patch("tools.skills_hub.httpx.get")
