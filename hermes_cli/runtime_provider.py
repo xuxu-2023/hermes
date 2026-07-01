@@ -497,6 +497,16 @@ def _resolve_runtime_from_pool_entry(
             detected = _detect_api_mode_for_url(base_url)
             if detected:
                 api_mode = detected
+            elif pconfig is not None and getattr(pconfig, "api_mode", ""):
+                # Honor the api_mode a provider plugin declared on its
+                # ProviderProfile. URL auto-detection only recognizes
+                # self-describing endpoints (/anthropic suffix, api.kimi.com
+                # /coding); a plugin whose Anthropic endpoint is not
+                # URL-self-describing (e.g. Volcengine Ark's .../api/coding)
+                # would otherwise silently fall back to chat_completions and
+                # 404 against an Anthropic-only endpoint. The plugin's own
+                # declaration is authoritative here.
+                api_mode = pconfig.api_mode
 
     # OpenCode base URLs end with /v1 for OpenAI-compatible models, but the
     # Anthropic SDK prepends its own /v1/messages to the base_url.  Strip the

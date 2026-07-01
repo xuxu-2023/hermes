@@ -169,6 +169,12 @@ class ProviderConfig:
     api_key_env_vars: tuple = ()
     # Optional env var for base URL override
     base_url_env_var: str = ""
+    # Transport protocol declared by the provider (e.g. "anthropic_messages",
+    # "chat_completions", "codex_responses"). Empty = unset; the runtime then
+    # falls back to URL-based auto-detection. Populated from a provider plugin's
+    # ProviderProfile.api_mode so a plugin's explicit declaration is honored
+    # even when its base_url is not URL-self-describing (e.g. .../api/coding).
+    api_mode: str = ""
 
 
 PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
@@ -468,6 +474,7 @@ try:
             inference_base_url=_pp.base_url,
             api_key_env_vars=_api_key_vars or _pp.env_vars,
             base_url_env_var=_base_url_var or "",
+            api_mode=getattr(_pp, "api_mode", "") or "",
         )
         # Also register aliases so resolve_provider() resolves them
         for _alias in _pp.aliases:
