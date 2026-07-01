@@ -303,7 +303,12 @@ def _provider_supports_explicit_api_mode(provider: Optional[str], configured_pro
     if not normalized_configured:
         return True
     if normalized_provider == "custom":
-        return normalized_configured == "custom" or normalized_configured.startswith("custom:")
+        if normalized_configured == "custom" or normalized_configured.startswith("custom:"):
+            return True
+        # Named custom providers (defined in the user's ``providers:`` block)
+        # are not in the built-in PROVIDER_REGISTRY, so honor their api_mode.
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        return normalized_configured not in PROVIDER_REGISTRY
     return normalized_configured == normalized_provider
 
 
