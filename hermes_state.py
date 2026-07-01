@@ -1181,35 +1181,38 @@ class SessionDB:
         )
 
     def _try_wal_checkpoint(self) -> None:
-        """Best-effort TRUNCATE WAL checkpoint.  Never raises.
+        """Best-effort PASSIVE WAL checkpoint.  Never raises.
 
         Flushes committed WAL frames back into the main DB file and
-        truncates the WAL file to zero bytes.  Keeps the WAL from
-        growing unbounded when many processes hold persistent
-        connections.
+        keeps the WAL from growing unbounded when many processes hold
+        persistent connections.
 
-        PASSIVE checkpoint was previously used here, but it never
-        truncates the WAL file — the file stays at its high-water
-        mark until an explicit TRUNCATE is called (which only
-        happened inside the infrequent vacuum()).
-
-        TRUNCATE may block writers briefly while checkpointing, but
-        _try_wal_checkpoint is called off the hot path (every 50
-        writes) and already runs under ``self._lock``, so the
-        additional hold time is negligible.
+        PASSIVE is used instead of TRUNCATE to avoid data-loss risk:
+        TRUNCATE first flushes WAL frames to the main DB then
+        truncates the WAL to zero bytes.  If the operation fails
+        mid-way (e.g. I/O error, FTS contention, concurrent writer),
+        the WAL is already truncated but data was not fully written
+        back, corrupting the database.  PASSIVE never truncates, so a
+        failure leaves the WAL intact and recoverable on the next
+        connection.
         """
         try:
             with self._lock:
                 result = self._conn.execute(
-                    "PRAGMA wal_checkpoint(TRUNCATE)"
+                    "PRAGMA wal_checkpoint(PASSIVE)"
                 ).fetchone()
                 if result and result[1] > 0:
                     logger.debug(
                         "WAL checkpoint: %d/%d pages checkpointed",
                         result[2], result[1],
                     )
+                if result and result[0] == 1:
+                    logger.debug(
+                        "WAL checkpoint: %d pages still in WAL (busy)",
+                        result[1],
+                    )
         except Exception:
-            pass  # Best effort — never fatal.
+            logger.debug("WAL checkpoint failed", exc_info=True)
 
     def _try_optimize_fts(self) -> None:
         """Best-effort FTS5 segment merge. Never raises.
@@ -1237,8 +1240,8 @@ class SessionDB:
             if self._conn:
                 try:
                     self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("close WAL checkpoint failed: %s", exc)
                 self._conn.close()
                 self._conn = None
 
@@ -5630,8 +5633,8 @@ class SessionDB:
             # Best-effort WAL checkpoint first, then VACUUM.
             try:
                 self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("vacuum WAL checkpoint failed: %s", exc)
             self._conn.execute("VACUUM")
         return optimized
 
