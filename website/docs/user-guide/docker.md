@@ -43,6 +43,63 @@ This drops you into the setup wizard, which will prompt you for your API keys an
 Inside the container, run `hermes setup --portal` once — the refresh token persists in the mounted `~/.hermes` volume. See [Nous Portal](/integrations/nous-portal).
 :::
 
+## Compose helper
+
+If you work from a local Hermes Agent checkout, the repo includes a shell helper
+for the bundled `docker-compose.yml` workflow. The helper wraps common Compose
+commands and passes your host UID/GID automatically so files created by the
+container stay owned by your host user.
+
+Source it from the checkout:
+
+```sh
+cd hermes-agent
+source scripts/dockter-hermes-helpers.sh
+```
+
+To load it automatically in new shells, add the source line to your shell
+profile:
+
+```sh
+echo 'source /path/to/hermes-agent/scripts/dockter-hermes-helpers.sh' >> ~/.zshrc
+```
+
+The helper looks for a local `hermes-agent` checkout in common project
+directories. If it cannot find yours, set the checkout path directly:
+
+```sh
+export DOCKTER_HERMES_DIR=/path/to/hermes-agent
+```
+
+First-time flow:
+
+```sh
+dockter-hermes-setup
+dockter-hermes-start
+dockter-hermes-dashboard
+```
+
+Common commands:
+
+| Command | Description |
+| --- | --- |
+| `dockter-hermes-setup` | Run the Hermes setup wizard in a one-off gateway container. |
+| `dockter-hermes-start [gateway|dashboard|all]` | Start the Compose stack. Defaults to `all`. |
+| `dockter-hermes-stop` | Stop the Compose stack. |
+| `dockter-hermes-restart [gateway|dashboard|all]` | Restart services. Defaults to `gateway`. |
+| `dockter-hermes-status` | Show Compose status and Hermes containers. |
+| `dockter-hermes-logs [gateway|dashboard|all]` | Follow service logs. |
+| `dockter-hermes-shell [gateway|dashboard]` | Open a shell in a running service container. |
+| `dockter-hermes-exec [gateway|dashboard] <command>` | Run a command in a running service container. |
+| `dockter-hermes-cli <args>` | Run `hermes` in a one-off gateway container. |
+| `dockter-hermes-chat` | Open an interactive Hermes chat in a one-off gateway container. |
+| `dockter-hermes-dashboard` | Start and open the dashboard. |
+| `dockter-hermes-health` | Run gateway health checks. |
+| `dockter-hermes-config` | Print helper configuration and Compose file paths. |
+| `dockter-hermes-rebuild [gateway|dashboard|all]` | Rebuild and recreate services. |
+| `dockter-hermes-update` | Pull, rebuild, and recreate services. |
+| `dockter-hermes-clean` | Remove Compose containers and volumes after confirmation. |
+
 ## Running in gateway mode
 
 Once configured, run the container in the background as a persistent gateway (Telegram, Discord, Slack, WhatsApp, etc.):
