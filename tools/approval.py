@@ -367,7 +367,20 @@ HARDLINE_PATTERNS = [
     # `${HOME}` brace form and quoted paths (`rm -rf "/"`, `rm -rf "$HOME"`)
     # are handled via _hardline_rm_path so the floor cannot be bypassed with
     # the ordinary quoting/brace shell idioms.
-    (_RM_FLAG_PREFIX + _hardline_rm_path(r'/|/\*|/ \*'), "recursive delete of root filesystem"),
+    #
+    # The root path-alt matches any root-anchored token whose components
+    # collapse back to "/" in the shell: bare "/", repeated slashes ("//"),
+    # and "."/".." current/parent segments ("/.", "/./", "/..", "/../..")
+    # all resolve to root, optionally with a trailing glob ("/*", "//*").
+    # Each inter-slash segment must be exactly "." or "..", so a longer dot
+    # run or any real name is a literal directory, NOT root — "/tmp", "/home",
+    # "/.ssh", "/.config" and even "/..." (a dir literally named "...") fall
+    # through to the softer DANGEROUS_PATTERNS / system-directory rules. The
+    # explicit "/ \*" alt preserves the slash-space-glob spelling (`rm -rf / *`,
+    # which the shell sees as two args: "/" and the "*" glob). This closes the
+    # collapse-spelling bypass where `rm -rf //` returned approved=True under
+    # --yolo while the literal `rm -rf /` was blocked.
+    (_RM_FLAG_PREFIX + _hardline_rm_path(r'/(?:(?:\.\.?)?/)*(?:\.\.?)?\**|/ \*'), "recursive delete of root filesystem"),
     (_RM_FLAG_PREFIX + _hardline_rm_path(_HARDLINE_SYSTEM_DIRS), "recursive delete of system directory"),
     (_RM_FLAG_PREFIX + _hardline_rm_path(r'(?:~|\$\{?HOME\}?)(?:/?|/\*)?'), "recursive delete of home directory"),
     # Filesystem format

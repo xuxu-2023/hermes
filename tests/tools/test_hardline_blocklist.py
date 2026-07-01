@@ -31,6 +31,19 @@ _HARDLINE_BLOCK = [
     # rm -rf targeting root / system dirs / home
     "rm -rf /",
     "rm -rf /*",
+    # Shell-equivalent spellings of "rm -rf /": repeated slashes and
+    # current/parent-dir segments all collapse back to root, so they must
+    # hit the hardline floor too (regression: these used to slip through
+    # to the softer DANGEROUS_PATTERNS rule that yolo/mode-off/cron bypass).
+    "rm -rf //",
+    "rm -rf /.",
+    "rm -rf /./",
+    "rm -rf /..",
+    "rm -rf //*",
+    "rm -rf ///",
+    "rm -rf /../..",
+    "rm -fr /./",
+    "ls && rm -rf //",
     "rm -rf /home",
     "rm -rf /home/*",
     "rm -rf /etc",
@@ -121,6 +134,18 @@ _HARDLINE_ALLOW = [
     "rm -rf $HOME/tmp",
     "rm foo.txt",
     "rm -rf some/path",
+    # Literal root-level directories that only LOOK like root-collapse
+    # spellings. Each is a real dir whose inter-slash segment is not exactly
+    # "." or ".." — "/..." is a dir literally named "...", and "/.foo" /
+    # "/.ssh" / "/.config" are ordinary dotfiles at root. These must NOT be
+    # swept into the "recursive delete of root filesystem" hardline rule
+    # (regression guard for the collapse-spelling fix).
+    "rm -rf /...",
+    "rm -rf /....",
+    "rm -rf /.foo",
+    "rm -rf /.ssh",
+    "rm -rf /.config",
+    "rm -rf /.config/foo",
     # A dangerous-looking command embedded as a quoted *argument* to another
     # command must not trip the floor: the path is immediately followed by a
     # closing quote with no matching opening quote of its own, so the
@@ -327,6 +352,25 @@ def test_yolo_env_var_cannot_bypass_hardline(clean_session, monkeypatch):
         r2 = check_all_command_guards(cmd, "local")
         assert r2["approved"] is False, f"yolo leaked hardline on {cmd!r} (check_all_command_guards)"
         assert r2.get("hardline") is True
+
+
+def test_root_collapse_forms_cannot_bypass_hardline(clean_session, monkeypatch):
+    """Shell-equivalent spellings of "rm -rf /" stay blocked under yolo.
+
+    "//", "/.", "/./", "/..", "//*", "///", "/../.." all collapse to the root
+    filesystem in the shell. They previously matched only the softer
+    DANGEROUS_PATTERNS rule, which yolo bypasses — leaving the hardline floor
+    open to a full root wipe under --yolo / approvals.mode=off / cron approve.
+    """
+    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+
+    for cmd in ["rm -rf //", "rm -rf /.", "rm -rf /./", "rm -rf /..",
+                "rm -rf //*", "rm -rf ///", "rm -rf /../.."]:
+        is_hl, _ = detect_hardline_command(cmd)
+        assert is_hl, f"{cmd!r} should be hardline-blocked"
+        result = check_all_command_guards(cmd, "local")
+        assert result["approved"] is False, f"yolo leaked hardline on {cmd!r}"
+        assert result.get("hardline") is True
 
 
 def test_line_continuation_root_wipe_cannot_bypass_hardline(clean_session, monkeypatch):
