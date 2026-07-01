@@ -795,7 +795,7 @@ def test_session_resume_reuses_existing_live_session(server, monkeypatch):
         def close(self):
             closed_sids.append(self.sid)
 
-    def make_agent(sid, key, session_id=None, session_db=None):
+    def make_agent(sid, key, session_id=None):
         created_sids.append(sid)
         first_agent_started.set()
         assert agent_can_finish.wait(timeout=1)
@@ -1006,7 +1006,7 @@ def test_session_resume_live_payload_uses_current_history_with_ancestors(server,
     monkeypatch.setattr(
         server,
         "_make_agent",
-        lambda _sid, key, session_id=None, session_db=None: types.SimpleNamespace(
+        lambda _sid, key, session_id=None: types.SimpleNamespace(
             model="test/model", session_id=session_id or key
         ),
     )
@@ -1070,109 +1070,6 @@ def test_session_resume_live_payload_uses_current_history_with_ancestors(server,
         {"role": "user", "text": "new live turn"},
         {"role": "assistant", "text": "new live reply"},
     ]
-
-
-def test_session_activate_rebinds_orphaned_ws_session_to_current_transport(server, monkeypatch):
-    """Reconnect + activate must reattach a parked live session before orphan reap."""
-
-    class _Transport:
-        def write(self, _obj):
-            return True
-
-    sid = "runtime01"
-    old_transport = server._stdio_transport
-    new_transport = _Transport()
-    server._sessions[sid] = {
-        "agent": types.SimpleNamespace(model="test/model"),
-        "created_at": 123.0,
-        "history": [],
-        "history_lock": threading.RLock(),
-        "last_active": 123.0,
-        "running": False,
-        "session_key": "20260409_010101_abc123",
-        "transport": old_transport,
-    }
-    monkeypatch.setattr(server, "current_transport", lambda: new_transport)
-    monkeypatch.setattr(server, "_get_db", lambda: None)
-    monkeypatch.setattr(
-        server,
-        "_session_info",
-        lambda _agent, _session=None: {"model": "test/model"},
-    )
-
-    resp = server.handle_request(
-        {"id": "activate", "method": "session.activate", "params": {"session_id": sid}}
-    )
-
-    assert "error" not in resp
-    assert resp["result"]["session_id"] == sid
-    assert server._sessions[sid]["transport"] is new_transport
-    assert not server._ws_session_is_orphaned(server._sessions[sid])
-
-
-def test_session_branch_persists_branched_from_marker(server, monkeypatch):
-    """TUI /branch must persist a _branched_from marker so the branch stays
-    visible in /resume and /sessions.
-
-    Regression for issue #20856: the TUI branch leaves the parent live (it
-    never ends it with end_reason='branched'), so list_sessions_rich's legacy
-    heuristic never surfaces it — the stable model_config marker is the only
-    thing that keeps a TUI branch visible.
-    """
-    create_calls = []
-
-    class _DB:
-        def get_session_title(self, _key):
-            return "parent-title"
-
-        def get_next_title_in_lineage(self, base):
-            return f"{base} 2"
-
-        def create_session(self, new_key, **kwargs):
-            create_calls.append((new_key, kwargs))
-            return new_key
-
-        def append_message(self, **_kwargs):
-            return None
-
-        def set_session_title(self, _key, _title):
-            return None
-
-    monkeypatch.setattr(server, "_get_db", lambda: _DB())
-    monkeypatch.setattr(server, "_resolve_model", lambda: "test/model")
-    monkeypatch.setattr(server, "_new_session_key", lambda: "20260101_000001_child0")
-    monkeypatch.setattr(
-        server,
-        "_make_agent",
-        lambda _sid, key, session_id=None, session_db=None: types.SimpleNamespace(
-            model="test/model", session_id=session_id or key
-        ),
-    )
-    monkeypatch.setattr(server, "_init_session", lambda *_a, **_k: None)
-    monkeypatch.setattr(server, "_set_session_context", lambda *_a, **_k: [])
-    monkeypatch.setattr(server, "_clear_session_context", lambda *_a, **_k: None)
-    monkeypatch.setattr(server, "_session_cwd", lambda _s: "/tmp/branch-cwd")
-
-    parent_sid = "parent01"
-    parent_key = "20260101_000000_parent"
-    server._sessions[parent_sid] = {
-        "session_key": parent_key,
-        "history": [{"role": "user", "content": "hello"}],
-        "history_lock": threading.Lock(),
-        "cols": 80,
-    }
-
-    resp = server.handle_request(
-        {"id": "b1", "method": "session.branch", "params": {"session_id": parent_sid}}
-    )
-
-    assert "error" not in resp, resp
-    assert len(create_calls) == 1
-    new_key, kwargs = create_calls[0]
-    assert new_key == "20260101_000001_child0"
-    assert kwargs["parent_session_id"] == parent_key
-    # The marker — without it the branch is invisible in /resume and /sessions.
-    assert kwargs["model_config"] == {"_branched_from": parent_key}
 
 
 def test_make_agent_accepts_list_system_prompt(server, monkeypatch):

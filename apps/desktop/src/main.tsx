@@ -11,6 +11,7 @@ import App from './app'
 import { ErrorBoundary } from './components/error-boundary'
 import { HapticsProvider } from './components/haptics-provider'
 import { I18nProvider } from './i18n'
+import { I18nProvider as LocaleI18nProvider } from '@/store/i18n'
 import { installClipboardShim } from './lib/clipboard'
 import { queryClient } from './lib/query-client'
 import { ThemeProvider } from './themes/context'
@@ -26,17 +27,12 @@ if (import.meta.env.MODE !== 'production') {
   import('./app/chat/perf-probe')
 }
 
-// The pet overlay rides this same bundle (`?win=overlay`) but mounts a tiny,
-// transparent, gateway-less surface instead of the full app. Branch before any
-// app-shell work so the overlay window stays cheap.
-if (new URLSearchParams(window.location.search).get('win') === 'overlay') {
-  void import('./app/pet-overlay/overlay-root').then(({ mountPetOverlay }) => mountPetOverlay())
-} else {
-  createRoot(document.getElementById('root')!).render(
-    <StrictMode>
-      <ErrorBoundary label="root">
-        <QueryClientProvider client={queryClient}>
-          <I18nProvider>
+createRoot(document.getElementById('root')!).render(
+  <StrictMode>
+    <ErrorBoundary label="root">
+      <QueryClientProvider client={queryClient}>
+        <I18nProvider>
+          <LocaleI18nProvider>
             <ThemeProvider>
               <HapticsProvider>
                 <HashRouter>
@@ -44,9 +40,9 @@ if (new URLSearchParams(window.location.search).get('win') === 'overlay') {
                 </HashRouter>
               </HapticsProvider>
             </ThemeProvider>
-          </I18nProvider>
-        </QueryClientProvider>
-      </ErrorBoundary>
-    </StrictMode>
-  )
-}
+          </LocaleI18nProvider>
+        </I18nProvider>
+      </QueryClientProvider>
+    </ErrorBoundary>
+  </StrictMode>
+)

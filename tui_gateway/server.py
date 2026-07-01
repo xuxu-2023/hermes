@@ -284,14 +284,6 @@ class _SlashWorker:
         self._closed = False
         from hermes_cli._subprocess_compat import windows_hide_flags
 
-        # start_new_session=True detaches the slash worker into its own
-        # process group / session. Without this, the worker inherits the
-        # gateway's pgid (= TUI parent PID). When mcp_tool's
-        # _kill_orphaned_mcp_children races with slash_worker spawn and sweeps
-        # the gateway's child set, it captures the worker PID, records the
-        # inherited pgid, and killpg() then kills the TUI parent itself.
-        # See agent/lsp/client.py for the symmetric LSP server fix and
-        # tools/mcp_tool.py _filter_mcp_children for defense-in-depth.
         self.proc = subprocess.Popen(
             argv,
             stdin=subprocess.PIPE,
@@ -304,7 +296,6 @@ class _SlashWorker:
             # Tier-1 secrets (gateway/GitHub/infra) are still stripped (#29157).
             env=hermes_subprocess_env(inherit_credentials=True),
             creationflags=windows_hide_flags(),
-            start_new_session=True,
         )
         threading.Thread(target=self._drain_stdout, daemon=True).start()
         threading.Thread(target=self._drain_stderr, daemon=True).start()
@@ -4085,134 +4076,7 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
     return info
 
 
-def _schedule_mcp_late_refresh(sid: str, agent) -> None:
-    """Refresh a session's tool snapshot when MCP discovery lands late.
-
-    The agent snapshots ``agent.tools`` once at build time and never re-reads
-    the registry (run_agent/agent_init). ``_make_agent`` briefly joins the
-    background MCP discovery thread (``wait_for_mcp_discovery``, bounded by the
-    ``mcp_discovery_timeout`` config value, default 1.5s) so
-    already-spawning servers land in that snapshot — but a server that takes
-    longer than the bound to connect (common for an HTTP MCP server on first
-    connect) lands *after* the agent is built. Its tools are then absent from
-    both the agent and the banner for the whole session, even though the
-    classic CLI shows them (the CLI re-derives ``get_tool_definitions`` at
-    banner render time, which re-waits, so it picks them up).
-
-    This schedules an off-critical-path daemon that waits for discovery to
-    finish, then rebuilds the snapshot and re-emits ``session.info`` so both
-    the agent's callable tools and the banner count catch up — the same
-    rebuild ``/reload-mcp`` performs, but automatic.
-
-    Cache safety: the rebuild only runs while the session is still pre-first-
-    turn (no API call made yet → nothing cached to invalidate). If the user
-    has already sent a message, we leave the snapshot frozen rather than
-    invalidate the prompt cache mid-conversation — those late tools then
-    require an explicit ``/reload-mcp`` (which gates on user consent), exactly
-    as today. No-op when discovery already finished before the agent build.
-    """
-    try:
-        from tui_gateway.entry import mcp_discovery_in_flight, join_mcp_discovery
-    except Exception:
-        return
-    if not mcp_discovery_in_flight():
-        return
-
-    def _wait_then_refresh() -> None:
-        # Bounded but generous — a server still not connected after this is
-        # genuinely slow/dead; the user can /reload-mcp once it recovers.
-        if not join_mcp_discovery(timeout=30.0):
-            return
-        with _sessions_lock:
-            session = _sessions.get(sid)
-            # Session may have been closed/reset while we waited.
-            if session is None or session.get("agent") is not agent:
-                return
-            # Cache safety: never rebuild the tool list once the conversation
-            # has started — that would invalidate the cached prompt prefix.
-            if (
-                int(getattr(agent, "_user_turn_count", 0) or 0) > 0
-                or int(getattr(agent, "_api_call_count", 0) or 0) > 0
-            ):
-                return
-            try:
-                from tools.mcp_tool import refresh_agent_mcp_tools
-
-                added = refresh_agent_mcp_tools(agent, quiet_mode=True)
-            except Exception as exc:
-                logger.warning(
-                    "Late MCP refresh: tool snapshot rebuild failed for %s: %s",
-                    sid,
-                    exc,
-                )
-                return
-            # No new tools landed (discovery added nothing) → don't churn the client.
-            if not added:
-                return
-            info = _session_info(agent, session)
-        # Emit outside the lock — write_json must not block under _sessions_lock.
-        _emit("session.info", sid, info)
-    threading.Thread(
-        target=_wait_then_refresh,
-        name=f"tui-mcp-late-refresh-{sid}",
-        daemon=True,
-    ).start()
-
-
-def _resolve_runtime_with_fallback(
-    resolve_kwargs: dict | None = None,
-) -> dict:
-    """Resolve runtime provider with init-time fallback on auth failure.
-
-    Mirrors the fallback pattern in ``cron/scheduler.py`` and
-    ``hermes_cli/cli_agent_setup_mixin.py``: when the primary provider
-    raises ``AuthError``, walk the configured ``fallback_providers`` /
-    ``fallback_model`` chain before giving up.
-    """
-    from hermes_cli.auth import AuthError
-    from hermes_cli.runtime_provider import resolve_runtime_provider
-
-    kwargs = resolve_kwargs or {}
-    try:
-        return resolve_runtime_provider(**kwargs)
-    except AuthError as primary_exc:
-        fb_chain = _load_fallback_model() or []
-        for entry in fb_chain:
-            if not isinstance(entry, dict):
-                continue
-            fb_provider = (entry.get("provider") or "").strip()
-            if not fb_provider:
-                continue
-            try:
-                fb_kwargs: dict = {"requested": fb_provider}
-                if entry.get("base_url"):
-                    fb_kwargs["explicit_base_url"] = entry["base_url"]
-                if entry.get("api_key"):
-                    fb_kwargs["explicit_api_key"] = entry["api_key"]
-                runtime = resolve_runtime_provider(**fb_kwargs)
-                import logging
-
-                logging.getLogger(__name__).warning(
-                    "Primary auth failed (%s), falling back to %s",
-                    primary_exc,
-                    fb_provider,
-                )
-                return runtime
-            except Exception:
-                continue
-        raise
-
-
-def _make_agent(
-    sid: str,
-    key: str,
-    session_id: str | None = None,
-    session_db=None,
-    model_override: dict | str | None = None,
-    provider_override: str | None = None,
-    reasoning_config_override: dict | None = None,
-    service_tier_override: str | None = None,
-):
+def _make_agent(sid: str, key: str, session_id: str | None = None, session_db=None):
     from run_agent import AIAgent
 
     # MCP tool discovery runs in a background daemon thread at startup so a
@@ -5272,19 +5136,7 @@ def _(rid, params: dict) -> dict:
         cols = int(params.get("cols", 80))
     except (TypeError, ValueError):
         cols = 80
-    # ``profile`` (app-global remote mode): resume a session that lives in another
-    # local profile's state.db. None/own profile → the launch profile (unchanged).
-    profile = (params.get("profile") or "").strip() or None
-    profile_home = _profile_home(profile)
-
-    # In a profile scope, the agent OWNS a long-lived db handle bound to that
-    # profile (do NOT auto-close it here). Otherwise reuse the shared launch db.
-    if profile_home is not None:
-        from hermes_state import SessionDB
-
-        db = SessionDB(db_path=profile_home / "state.db")
-    else:
-        db = _get_db()
+    db = _get_db()
     if db is None:
         return _db_unavailable_error(rid, code=5000)
 
@@ -5542,9 +5394,6 @@ def _(rid, params: dict) -> dict:
         if lease is not None:
             lease.release()
         return _err(rid, 5000, f"resume failed: {e}")
-    finally:
-        if home_token is not None:
-            reset_hermes_home_override(home_token)
 
     # Double-checked locking: another concurrent resume may have created the
     # live session while we were building. Re-check under the lock; if it won,
@@ -5594,12 +5443,6 @@ def _(rid, params: dict) -> dict:
                         "model_override"
                     ]
                 _sessions[sid]["display_history_prefix"] = display_history_prefix
-                # Remember the profile home so each turn re-binds HERMES_HOME (the
-                # agent persists to its own db, but mid-turn home reads — memory,
-                # skills — must resolve to the resumed profile too).
-                if profile_home is not None:
-                    _sessions[sid]["profile_home"] = str(profile_home)
-                _sessions[sid]["active_session_lease"] = lease
         except Exception as e:
             if lease is not None:
                 lease.release()
@@ -7730,13 +7573,33 @@ def _(rid, params: dict) -> dict:
 @method("session.close")
 def _(rid, params: dict) -> dict:
     sid = params.get("session_id", "")
-    # Serialize against the WS-orphan reaper (which also pops under
-    # _session_resume_lock) so a disconnect-reap and an explicit close can't
-    # both tear the same session down. _close_session_by_id is the single
-    # idempotent teardown path (pop + _teardown_session) and returns False
-    # when the session is already gone.
+    current = _sessions.get(sid)
+    if not current:
+        return _ok(rid, {"closed": False})
     with _session_resume_lock:
-        return _ok(rid, {"closed": _close_session_by_id(sid, end_reason="tui_close")})
+        session = _sessions.pop(sid, None)
+        if not session:
+            return _ok(rid, {"closed": False})
+        _finalize_session(session)
+        try:
+            from tools.approval import unregister_gateway_notify
+
+            unregister_gateway_notify(session["session_key"])
+        except Exception:
+            pass
+        try:
+            agent = session.get("agent")
+            if agent and hasattr(agent, "close"):
+                agent.close()
+        except Exception:
+            pass
+        try:
+            worker = session.get("slash_worker")
+            if worker:
+                worker.close()
+        except Exception:
+            pass
+    return _ok(rid, {"closed": True})
 
 
 @method("session.branch")

@@ -960,15 +960,6 @@ def create_job(
         context_from = None
 
     prompt_text = _coerce_job_text(prompt)
-
-    # Reject cron jobs that schedule gateway-lifecycle commands. Prevents
-    # agent-driven SIGTERM-respawn loops under launchd/systemd KeepAlive
-    # (#30719). Enforced here (not only in the CLI layer) so the agent's
-    # `cronjob` model tool — which calls create_job directly — is also
-    # covered, not just `hermes cron create`.
-    from cron.lifecycle_guard import check_gateway_lifecycle
-    check_gateway_lifecycle(prompt_text, normalized_script)
-
     label_source = (prompt_text or (normalized_skills[0] if normalized_skills else None) or (normalized_script if normalized_no_agent else None)) or "cron job"
 
     provider_snapshot, model_snapshot = _compute_provider_model_snapshots(
@@ -1112,17 +1103,8 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 else:
                     updates["workdir"] = _normalize_workdir(_wd)
 
-            previous_inference_axes = _normalized_inference_axes(job)
-            updated = _apply_skill_fields({**job, **updates})
-            schedule_changed = "schedule" in updates
-            inference_fields_changed = bool(
-                {"provider", "model", "base_url", "no_agent"}.intersection(updates)
-            ) and _normalized_inference_axes(updated) != previous_inference_axes
-
-            if "skills" in updates or "skill" in updates:
-                normalized_skills = _normalize_skill_list(updated.get("skill"), updated.get("skills"))
-                updated["skills"] = normalized_skills
-                updated["skill"] = normalized_skills[0] if normalized_skills else None
+        updated = _apply_skill_fields({**job, **updates})
+        schedule_changed = "schedule" in updates
 
             if schedule_changed:
                 updated_schedule = updated["schedule"]
