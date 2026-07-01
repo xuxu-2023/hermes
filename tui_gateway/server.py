@@ -1933,7 +1933,11 @@ def _resolve_model() -> str:
         return str(m.get("default", "") or "").strip()
     if isinstance(m, str) and m:
         return m.strip()
-    return "anthropic/claude-sonnet-4"
+    # Return empty string instead of hardcoded placeholder — a placeholder
+    # like "anthropic/claude-sonnet-4" gets persisted into sessions and
+    # causes permanent 404s when the endpoint doesn't serve that model.
+    # An empty string lets the session use the config default on resume.
+    return ""
 
 
 def _config_model_target() -> tuple[str, str]:
