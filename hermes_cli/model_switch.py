@@ -1634,6 +1634,28 @@ def list_authenticated_providers(
 
         # Check if any env var is set
         has_creds = any(os.environ.get(ev) for ev in env_vars)
+        # Gate copilot behind explicit configuration.  GH_TOKEN /
+        # COPILOT_GITHUB_TOKEN set for `gh` CLI or from stale Docker
+        # env should not leak copilot into the picker unless the user
+        # actually selected copilot as their provider.
+        if has_creds and hermes_id == "copilot":
+            try:
+                from hermes_cli.auth import _load_auth_store
+                store = _load_auth_store()
+                active = (store.get("active_provider") or "").strip().lower()
+                is_active = active == "copilot"
+            except Exception:
+                is_active = False
+            try:
+                from hermes_cli.config import load_config
+                cfg = load_config()
+                model_cfg = cfg.get("model") if cfg else {}
+                cfg_provider = (model_cfg.get("provider") or "").strip().lower() if isinstance(model_cfg, dict) else ""
+                is_cfg_provider = cfg_provider == "copilot"
+            except Exception:
+                is_cfg_provider = False
+            if not is_active and not is_cfg_provider:
+                has_creds = False
         if not has_creds:
             try:
                 from hermes_cli.auth import _load_auth_store

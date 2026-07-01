@@ -1923,6 +1923,17 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
         # Copilot tokens are resolved dynamically via `gh auth token` or
         # env vars (COPILOT_GITHUB_TOKEN / GH_TOKEN).  They don't live in
         # the auth store or credential pool, so we resolve them here.
+        #
+        # Gate on explicit configuration, mirroring the anthropic guard
+        # above.  Without this, a GH_TOKEN set for `gh` CLI silently
+        # auto-seeds copilot into the credential pool and makes it appear
+        # in the TUI model picker — even if the user never configured it.
+        try:
+            from hermes_cli.auth import is_provider_explicitly_configured
+            if not is_provider_explicitly_configured("copilot"):
+                return changed, active_sources
+        except ImportError:
+            pass
         try:
             from hermes_cli.copilot_auth import resolve_copilot_token, get_copilot_api_token
             token, source = resolve_copilot_token()
