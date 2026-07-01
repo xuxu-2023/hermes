@@ -1822,6 +1822,24 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     else:
         path = (scripts_dir / raw).resolve()
 
+    # When running under a profile (HERMES_HOME=<root>/profiles/<name>),
+    # scripts placed in the root HERMES_HOME/scripts/ are not reachable
+    # because the profile's scripts/ directory shadows them.  Fall back
+    # to the root scripts dir so jobs without an explicit profile don't
+    # break when scripts live in the shared root.  See #49158.
+    if not path.exists() and not raw.is_absolute():
+        from hermes_constants import get_default_hermes_root
+        default_scripts_dir = get_default_hermes_root() / "scripts"
+        default_path = (default_scripts_dir / raw).resolve()
+        if default_path.exists() and default_path.is_file():
+            # Validate the fallback path stays within the default scripts dir.
+            try:
+                default_path.relative_to(default_scripts_dir.resolve())
+                path = default_path
+                scripts_dir_resolved = default_scripts_dir.resolve()
+            except ValueError:
+                pass  # fall through to the original "not found" error
+
     # Guard against path traversal, absolute path injection, and symlink
     # escape — scripts MUST reside within HERMES_HOME/scripts/.
     try:
