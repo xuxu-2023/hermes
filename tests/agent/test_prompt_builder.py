@@ -551,6 +551,49 @@ class TestBuildSkillsSystemPrompt:
         assert "web-search" in result
         assert "old-tool" not in result
 
+
+    def test_bound_skills_scopes_index_to_listed_skills(self, monkeypatch, tmp_path):
+        """When bound_skills=[X], only X appears in the skill index — not other skills."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "tools"
+        skills_dir.mkdir(parents=True)
+
+        bound_skill = skills_dir / "web-crawler"
+        bound_skill.mkdir()
+        (bound_skill / "SKILL.md").write_text(
+            "---\nname: web-crawler\ndescription: Crawl web pages\n---\n"
+        )
+
+        unbound_skill = skills_dir / "freshrss"
+        unbound_skill.mkdir()
+        (unbound_skill / "SKILL.md").write_text(
+            "---\nname: freshrss\ndescription: Read FreshRSS feeds\n---\n"
+        )
+
+        result = build_skills_system_prompt(bound_skills=["web-crawler"])
+
+        assert "web-crawler" in result
+        assert "freshrss" not in result
+
+    def test_bound_skills_none_returns_full_index(self, monkeypatch, tmp_path):
+        """When bound_skills=None (default), the full skill index is returned unchanged."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "tools"
+        skills_dir.mkdir(parents=True)
+
+        for name in ("web-crawler", "freshrss", "github"):
+            d = skills_dir / name
+            d.mkdir()
+            (d / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: {name} skill\n---\n"
+            )
+
+        result = build_skills_system_prompt(bound_skills=None)
+
+        assert "web-crawler" in result
+        assert "freshrss" in result
+        assert "github" in result
+
     def test_rebuilds_prompt_when_disabled_skills_change(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         skill_dir = tmp_path / "skills" / "tools" / "cached-skill"
