@@ -69,10 +69,11 @@ from hermes_cli.config import (
     write_platform_config_field,
     _deep_merge,
 )
-from hermes_cli.memory_providers import (
-    MemoryProvider,
+from plugins.memory.config_schema import (
+    ProviderConfigSchema,
     ProviderField,
-    get_memory_provider,
+    STORAGE_HONCHO_HOST_BLOCK,
+    get_provider_config_schema,
 )
 from gateway.status import (
     derive_gateway_busy,
@@ -3874,12 +3875,111 @@ def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
     return config
 
 
-def _memory_provider_config_path(provider: MemoryProvider) -> Path:
+# ── Memory provider config: one generic GET/PUT pair, dispatching on storage ──
+
+
+def _provider_field_entry(field: ProviderField) -> Dict[str, Any]:
+    """Static, storage-independent shape of one field for the UI payload."""
+
+    return {
+        "key": field.key,
+        "label": field.label,
+        "kind": field.kind,
+        "description": field.description,
+        "placeholder": field.placeholder,
+        "inline": field.inline,
+        "group": field.group,
+        "options": [
+            {"value": opt.value, "label": opt.label, "description": opt.description}
+            for opt in field.options
+        ],
+    }
+
+
+# Sentinel: remove this key so it falls back to the host or built-in default.
+_UNSET: Any = object()
+
+
+def _coerce_field_value(field: ProviderField, raw: str) -> Any:
+    """Coerce a submitted non-secret value to its native JSON type.
+
+    Values arrive as strings over the API; this converts them to the type the
+    Honcho resolver expects (bool/number/list/dict), so e.g. a boolean is stored
+    as a JSON ``false`` rather than the string ``"false"`` (which would read as
+    truthy). Returns ``_UNSET`` when the field should be removed. Raises
+    ``ValueError`` on malformed input.
+    """
+
+    value = (raw or "").strip()
+    kind = field.kind
+
+    if kind == "select":
+        if not value:
+            value = field.default
+        if value not in field.allowed_values():
+            raise ValueError(f"Invalid value for '{field.key}'")
+        return value
+
+    if kind == "bool":
+        from utils import is_truthy_value
+
+        return is_truthy_value(value)
+
+    if kind == "number":
+        if not value:
+            return _UNSET
+        try:
+            number = float(value)
+        except ValueError as exc:
+            raise ValueError(f"Invalid number for '{field.key}'") from exc
+        return int(number) if number.is_integer() else number
+
+    if kind == "json":
+        if not value:
+            return _UNSET
+        try:
+            parsed = json.loads(value)
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f"Invalid JSON for '{field.key}'") from exc
+        if not isinstance(parsed, (dict, list)):
+            raise ValueError(f"'{field.key}' must be a JSON object or array")
+        return parsed
+
+    # text / secret — blank clears the key so it falls back to host/default.
+    return value if value else _UNSET
+
+
+def _serialize_field_value(field: ProviderField, value: Any) -> str:
+    """Render a stored native value as the string the generic UI edits.
+
+    ``None`` (key absent) yields the field's declared default. Bools become
+    ``"true"``/``"false"``, JSON objects/arrays are re-encoded, numbers are
+    stringified — so the renderer's per-kind controls always get the shape they
+    expect regardless of how the value sits on disk.
+    """
+
+    if value is None:
+        return field.default
+    if field.kind == "bool":
+        from utils import is_truthy_value
+
+        return "true" if is_truthy_value(value) else "false"
+    if field.kind == "json":
+        if isinstance(value, (dict, list)):
+            return json.dumps(value)
+        return str(value)
+    return str(value)
+
+
+# — flat-json backend (default; reusable for simple providers) —
+
+
+def _flat_json_path(provider: ProviderConfigSchema) -> Path:
     return get_hermes_home() / provider.name / "config.json"
 
 
-def _read_memory_provider_file(provider: MemoryProvider) -> Dict[str, Any]:
-    path = _memory_provider_config_path(provider)
+def _read_flat_json(provider: ProviderConfigSchema) -> Dict[str, Any]:
+    path = _flat_json_path(provider)
     if not path.exists():
         return {}
     try:
@@ -3890,134 +3990,226 @@ def _read_memory_provider_file(provider: MemoryProvider) -> Dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def _read_field_value(field: ProviderField, data: Dict[str, Any]) -> str:
-    """Resolve the stored value for a non-secret field, honoring legacy reads."""
+def _read_field(field: ProviderField, sources: tuple, env: Dict[str, str]) -> Any:
+    """Return the stored native value from the first source holding it, or ``None``.
 
-    for source_key in (field.key, *field.aliases):
-        value = data.get(source_key)
-        if value:
-            return str(value)
+    Presence (``key in source``) decides, not truthiness, so a stored ``False``
+    or ``0`` survives instead of being mistaken for "unset".
+    """
 
-    env_on_disk = load_env()
+    for source in sources:
+        for source_key in (field.key, *field.aliases):
+            if source_key in source and source[source_key] is not None:
+                return source[source_key]
     for env_key in field.env_fallbacks:
-        value = env_on_disk.get(env_key)
+        value = env.get(env_key)
         if value:
-            return str(value)
+            return value
+    return None
 
-    return field.default
 
-
-def _field_is_set(field: ProviderField, data: Dict[str, Any]) -> bool:
-    """Whether a secret field has a value anywhere it may have been written."""
-
-    env_on_disk = load_env()
+def _field_is_set(field: ProviderField, sources: tuple, env: Dict[str, str]) -> bool:
     for env_key in (field.env_key, *field.env_fallbacks):
-        if env_key and env_on_disk.get(env_key):
+        if env_key and env.get(env_key):
             return True
-    return any(data.get(source_key) for source_key in (field.key, *field.aliases))
+    return any(source.get(k) for source in sources for k in (field.key, *field.aliases))
 
 
-def _memory_provider_payload(provider: MemoryProvider) -> Dict[str, Any]:
-    data = _read_memory_provider_file(provider)
+# — honcho host-block backend —
+
+
+def _honcho_resolvers():
+    """Lazily import the Honcho plugin's resolvers (optional plugin)."""
+
+    from plugins.memory.honcho.client import _host_block, resolve_active_host, resolve_config_path
+
+    return resolve_active_host, resolve_config_path, _host_block
+
+
+def _honcho_read_sources() -> tuple[Dict[str, Any], str, Dict[str, Any]]:
+    """Return (root config, active host key, host block) for the current profile."""
+
+    resolve_active_host, resolve_config_path, host_block_of = _honcho_resolvers()
+    host = resolve_active_host()
+    path = resolve_config_path()
+    raw: Dict[str, Any] = {}
+    if path.exists():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            raw = loaded if isinstance(loaded, dict) else {}
+        except Exception:
+            _log.warning("Failed to read Honcho config from %s", path, exc_info=True)
+    return raw, host, host_block_of(raw, host)
+
+
+def _memory_provider_payload(provider: ProviderConfigSchema) -> Dict[str, Any]:
     fields: List[Dict[str, Any]] = []
+    env = load_env()
+    is_honcho = provider.storage == STORAGE_HONCHO_HOST_BLOCK
+
+    if is_honcho:
+        raw, host, host_block = _honcho_read_sources()
+
+        def sources_for(field: ProviderField) -> tuple:
+            return (host_block, raw) if field.scope == "host" else (raw,)
+    else:
+        host = ""
+        data = _read_flat_json(provider)
+
+        def sources_for(field: ProviderField) -> tuple:
+            return (data,)
 
     for field in provider.fields:
-        entry: Dict[str, Any] = {
-            "key": field.key,
-            "label": field.label,
-            "kind": field.kind,
-            "description": field.description,
-            "placeholder": field.placeholder,
-            "options": [
-                {"value": opt.value, "label": opt.label, "description": opt.description}
-                for opt in field.options
-            ],
-        }
+        entry = _provider_field_entry(field)
+        sources = sources_for(field)
 
         if field.is_secret:
-            # Secrets are write-only over the API; only expose whether one is set.
-            entry["value"] = ""
-            entry["is_set"] = _field_is_set(field, data)
-        else:
-            value = _read_field_value(field, data)
-            if field.kind == "select" and value not in field.allowed_values():
-                value = field.default
-            entry["value"] = value
-            entry["is_set"] = bool(value)
+            entry["value"] = ""  # secrets are write-only over the API
+            entry["is_set"] = _field_is_set(field, sources, env)
+            fields.append(entry)
+            continue
 
+        native = _read_field(field, sources, env)
+        if is_honcho and not field.placeholder and field.key in {"workspace", "aiPeer"}:
+            # Blank fields surface the resolved host Honcho will actually use.
+            entry["placeholder"] = host
+
+        value = _serialize_field_value(field, native)
+        if field.kind == "select" and value not in field.allowed_values():
+            value = field.default
+        entry["value"] = value
+        # Presence, not truthiness — a stored False/0 is still "set".
+        entry["is_set"] = native is not None if is_honcho else bool(value)
         fields.append(entry)
 
-    return {"name": provider.name, "label": provider.label, "fields": fields}
+    return {"name": provider.name, "label": provider.label, "docs_url": provider.docs_url, "fields": fields}
 
 
-def _coerce_field_value(field: ProviderField, raw: str) -> str:
-    """Validate and normalize a submitted non-secret value, or raise ValueError."""
+def _apply_field_values(provider: ProviderConfigSchema, values: Dict[str, str], target_for) -> None:
+    """Apply submitted non-secret fields to their backend dict, in place.
 
-    value = (raw or "").strip()
-    if field.kind == "select":
-        if not value:
-            value = field.default
-        if value not in field.allowed_values():
-            raise ValueError(f"Invalid value for '{field.key}'")
-        return value
-    return value or field.default
+    Only keys present in ``values`` are touched, so a partial save never
+    clobbers fields owned by another surface. ``_UNSET`` clears the key (and
+    its aliases) so it falls back to the host/default mapping.
+    """
+
+    for field in provider.fields:
+        if field.is_secret or field.key not in values:
+            continue
+        target = target_for(field)
+        coerced = _coerce_field_value(field, values[field.key])
+        if coerced is _UNSET:
+            target.pop(field.key, None)
+            for alias in field.aliases:
+                target.pop(alias, None)
+        else:
+            target[field.key] = coerced
+
+
+def _write_provider_flat(provider: ProviderConfigSchema, values: Dict[str, str]) -> None:
+    from utils import atomic_json_write
+
+    existing = _read_flat_json(provider)
+
+    for field in provider.fields:
+        if field.is_secret:
+            submitted = (values.get(field.key) or "").strip()
+            if submitted and field.env_key:
+                save_env_value(field.env_key, submitted)
+
+    _apply_field_values(provider, values, lambda field: existing)
+
+    path = _flat_json_path(provider)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_json_write(path, existing, mode=0o600)
+
+
+def _write_provider_honcho(provider: ProviderConfigSchema, values: Dict[str, str]) -> None:
+    """Persist submitted fields to Honcho's real config for the active host.
+
+    Only keys present in ``values`` are touched, so a partial save (e.g. the
+    inline panel) never clobbers fields owned by the full-config editor. Blank
+    text clears a key so it falls back to the host/default mapping.
+    """
+
+    from plugins.memory.honcho.oauth import ACCESS_TOKEN_PREFIX, _config_refresh_lock
+    from utils import atomic_json_write
+
+    resolve_active_host, resolve_config_path, host_block_of = _honcho_resolvers()
+    host = resolve_active_host()
+    # Write the file reads resolve, or a save shadows it with a sparse copy.
+    path = resolve_config_path()
+
+    # OAuth rotation is single-use; an unlocked RMW here can revoke the grant.
+    with _config_refresh_lock(path):
+        cfg: Dict[str, Any] = {}
+        if path.exists():
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                cfg = loaded if isinstance(loaded, dict) else {}
+            except Exception:
+                _log.warning("Failed to read Honcho config from %s", path, exc_info=True)
+
+        hosts = cfg.get("hosts")
+        cfg["hosts"] = hosts = hosts if isinstance(hosts, dict) else {}
+        # Update the block reads resolve (legacy dot-form included), never shadow it.
+        existing = host_block_of(cfg, host)
+        host_key = next((k for k, v in hosts.items() if v is existing), host) if existing else host
+        host_block = hosts.setdefault(host_key, existing)
+
+        for field in provider.fields:
+            if not field.is_secret:
+                continue
+            submitted = (values.get(field.key) or "").strip()
+            if not submitted:
+                continue
+            if field.env_key:
+                save_env_value(field.env_key, submitted)
+            # Persist where the client reads first; an OAuth token owns that slot.
+            stored = host_block.get(field.key)
+            if not (isinstance(stored, str) and stored.startswith(ACCESS_TOKEN_PREFIX)):
+                host_block[field.key] = submitted
+
+        _apply_field_values(provider, values, lambda field: host_block if field.scope == "host" else cfg)
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_json_write(path, cfg, mode=0o600)
 
 
 @app.get("/api/memory/providers/{name}/config")
 async def get_memory_provider_config(name: str):
-    provider = get_memory_provider(name)
+    provider = await asyncio.to_thread(get_provider_config_schema, name)
     if provider is None:
         # Undeclared providers (e.g. builtin) have no config surface. Return an
         # empty schema so the generic panel simply renders nothing.
-        return {"name": name, "label": name, "fields": []}
-    return _memory_provider_payload(provider)
+        return {"name": name, "label": name, "docs_url": "", "fields": []}
+    return await asyncio.to_thread(_memory_provider_payload, provider)
+
+
+def _update_memory_provider_config(provider: ProviderConfigSchema, values: Dict[str, str]) -> None:
+    if provider.storage == STORAGE_HONCHO_HOST_BLOCK:
+        _write_provider_honcho(provider, values)
+    else:
+        _write_provider_flat(provider, values)
+
+    config = load_config()
+    memory_config = config.get("memory")
+    if not isinstance(memory_config, dict):
+        memory_config = {}
+        config["memory"] = memory_config
+    if memory_config.get("provider") != provider.name:
+        memory_config["provider"] = provider.name
+        save_config(config)
 
 
 @app.put("/api/memory/providers/{name}/config")
 async def update_memory_provider_config(name: str, body: MemoryProviderConfigUpdate):
-    provider = get_memory_provider(name)
+    provider = await asyncio.to_thread(get_provider_config_schema, name)
     if provider is None:
         raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")
 
-    values = body.values or {}
-
     try:
-        existing = _read_memory_provider_file(provider)
-        json_values: Dict[str, Any] = {}
-        secrets: Dict[str, str] = {}
-
-        for field in provider.fields:
-            if field.is_secret:
-                submitted = (values.get(field.key) or "").strip()
-                if submitted and field.env_key:
-                    secrets[field.env_key] = submitted
-                continue
-
-            raw = (
-                values[field.key]
-                if field.key in values
-                else str(existing.get(field.key, field.default))
-            )
-            json_values[field.key] = _coerce_field_value(field, raw)
-
-        config = load_config()
-        memory_config = config.get("memory")
-        if not isinstance(memory_config, dict):
-            memory_config = {}
-            config["memory"] = memory_config
-        memory_config["provider"] = provider.name
-        save_config(config)
-
-        path = _memory_provider_config_path(provider)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        existing.update(json_values)
-        from utils import atomic_json_write
-
-        atomic_json_write(path, existing, mode=0o600)
-
-        for env_key, secret in secrets.items():
-            save_env_value(env_key, secret)
-
+        await asyncio.to_thread(_update_memory_provider_config, provider, body.values or {})
         return {"ok": True}
     except HTTPException:
         raise

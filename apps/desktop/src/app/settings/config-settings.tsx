@@ -24,7 +24,7 @@ import { enumOptionsFor, getNested, prettyName, setNested } from './helpers'
 import { MemoryConnect } from './memory/connect'
 import { ModelSettings } from './model-settings'
 import { EmptyState, ListRow, LoadingState, SettingsContent } from './primitives'
-import { ProviderConfigPanel } from './provider-config-panel'
+import { ProviderConfigPanel } from './memory/provider-config-panel'
 
 // On the Voice page, only surface the sub-fields of the *selected* TTS/STT
 // provider — otherwise every provider's options render at once (the "totally
@@ -411,7 +411,7 @@ export function ConfigSettings({
                 value={getNested(config, key)}
               />
               {key === 'memory.provider' && typeof getNested(config, key) === 'string' && getNested(config, key) ? (
-                <ProviderConfigPanel provider={String(getNested(config, key))} />
+                <ProviderConfigPanel key={String(getNested(config, key))} provider={String(getNested(config, key))} />
               ) : null}
             </div>
           ))}
