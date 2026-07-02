@@ -6347,6 +6347,56 @@ def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
     return config
 
 
+def _normalize_disabled_toolsets(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Coerce a scalar ``agent.disabled_toolsets`` into a list.
+
+    The natural YAML hand-edit is the scalar form
+    ``agent.disabled_toolsets: memory`` rather than the list ``[memory]``.
+    Consumers (``_get_platform_tools``, the cron resolver) iterate the value to
+    build a disable set, so a bare string is iterated character-by-character
+    (``{'m','e','o','r','y'}``) and silently disables nothing — the toolset
+    stays enabled with no error or warning. Normalizing a scalar to a
+    single-element list at load time makes the scalar form behave identically
+    to the list form for every consumer of ``load_config()``.
+
+    A value that is already a list/tuple/set is preserved (non-string members
+    are dropped, mirroring the ``{str(ts) for ts in ...}`` coercion consumers
+    already do). Each member is stripped and empty members are dropped so a
+    value like ``" memory "`` matches the consumers' exact-string key equality
+    (``_get_platform_tools`` compares without its own ``.strip()``). A
+    non-iterable scalar (``int``/``bool``) can't name a toolset and would make
+    those consumers raise ``TypeError`` when they iterate it, so it is dropped
+    to an empty list to fail safe. ``None`` is left untouched.
+    """
+    agent_in = config.get("agent")
+    if not isinstance(agent_in, dict):
+        return config
+    raw = agent_in.get("disabled_toolsets")
+    if raw is None:
+        return config
+
+    if isinstance(raw, str):
+        stripped = raw.strip()
+        normalized_value: list[str] = [stripped] if stripped else []
+    elif isinstance(raw, (list, tuple, set)):
+        normalized_value = [
+            ts.strip() for ts in raw if isinstance(ts, str) and ts.strip()
+        ]
+    else:
+        # A non-iterable scalar (int/bool) can't name a toolset and would make
+        # consumers (``{str(ts) for ts in ...}``) raise TypeError — drop it.
+        normalized_value = []
+
+    if normalized_value == raw:
+        return config
+
+    config = dict(config)
+    agent_config = dict(agent_in)
+    agent_config["disabled_toolsets"] = normalized_value
+    config["agent"] = agent_config
+    return config
+
+
 def cfg_get(cfg: Optional[Dict[str, Any]], *keys: str, default: Any = None) -> Any:
     """Traverse nested dict keys safely, returning ``default`` on any miss.
 
@@ -6649,7 +6699,9 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             except Exception as e:
                 _warn_config_parse_failure(config_path, e)
 
-        normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
+        normalized = _normalize_disabled_toolsets(
+            _normalize_root_model_keys(_normalize_max_turns_config(config))
+        )
         expanded = _expand_env_vars(normalized)
         # Managed scope wins at the leaf. Applied AFTER user expansion so a user
         # ${VAR} cannot shadow a managed literal: managed values are expanded only
