@@ -1,6 +1,7 @@
 """Regression tests for sudo detection and sudo password handling."""
 
 import tools.terminal_tool as terminal_tool
+from tools.terminal_tool import _check_write_safe_root
 
 
 def setup_function():
@@ -299,3 +300,62 @@ def test_transform_sudo_command_pipes_one_password_line_per_invocation(monkeypat
 def test_count_real_sudo_invocations_ignores_mentions(monkeypatch):
     assert terminal_tool._count_real_sudo_invocations("grep sudo README.md") == 0
     assert terminal_tool._count_real_sudo_invocations("sudo a; sudo b") == 2
+
+# ---------------------------------------------------------------------------
+# HERMES_WRITE_SAFE_ROOT heuristic guard — terminal commands
+# ---------------------------------------------------------------------------
+
+
+class TestTerminalWriteSafeRoot:
+    """_check_write_safe_root() blocks shell commands writing outside the safe root."""
+
+    def test_safe_root_blocks_redirect_outside(self, tmp_path, monkeypatch):
+        """Output redirection to a path outside the safe root is blocked."""
+        safe_root = tmp_path / "session"
+        safe_root.mkdir()
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+        result = _check_write_safe_root("echo data > /etc/output.txt")
+        assert result is not None
+        assert "Blocked" in result
+
+    def test_safe_root_allows_redirect_inside(self, tmp_path, monkeypatch):
+        """Output redirection to a path inside the safe root is allowed."""
+        safe_root = tmp_path / "session"
+        safe_root.mkdir()
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+        target = str(safe_root / "output.txt")
+        result = _check_write_safe_root(f"echo data > {target}")
+        assert result is None
+
+    def test_safe_root_blocks_python_open_outside(self, tmp_path, monkeypatch):
+        """A python3 -c one-liner writing to a path outside the safe root is blocked."""
+        safe_root = tmp_path / "session"
+        safe_root.mkdir()
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+        result = _check_write_safe_root("python3 -c \"open('/root/evil.txt','w').write('x')\"")
+        assert result is not None
+        assert "Blocked" in result
+
+    def test_safe_root_blocks_tee_outside(self, tmp_path, monkeypatch):
+        """A tee command writing to a path outside the safe root is blocked."""
+        safe_root = tmp_path / "session"
+        safe_root.mkdir()
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+        result = _check_write_safe_root("echo hello | tee /etc/output.txt")
+        assert result is not None
+        assert "Blocked" in result
+
+    def test_safe_root_unset_allows_all(self, monkeypatch):
+        """When HERMES_WRITE_SAFE_ROOT is unset, all commands are allowed."""
+        monkeypatch.delenv("HERMES_WRITE_SAFE_ROOT", raising=False)
+        result = _check_write_safe_root("echo data > /etc/output.txt")
+        assert result is None
+
+    def test_safe_root_blocks_cp_mv_outside(self, tmp_path, monkeypatch):
+        """cp/mv targeting a path outside the safe root is blocked."""
+        safe_root = tmp_path / "session"
+        safe_root.mkdir()
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+        result = _check_write_safe_root("cp file.txt /root/file.txt")
+        assert result is not None
+        assert "Blocked" in result
