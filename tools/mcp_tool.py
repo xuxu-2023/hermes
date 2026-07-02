@@ -515,6 +515,22 @@ def _prepend_path(env: dict, directory: str) -> dict:
     return updated
 
 
+def _which_with_subprocess_env(command: str, *, path: str | None, env: dict) -> str | None:
+    """Resolve *command* using PATH/PATHEXT from the intended subprocess env."""
+    if os.name != "nt" or "PATHEXT" not in env:
+        return shutil.which(command, path=path)
+
+    previous = os.environ.get("PATHEXT")
+    try:
+        os.environ["PATHEXT"] = str(env.get("PATHEXT") or "")
+        return shutil.which(command, path=path)
+    finally:
+        if previous is None:
+            os.environ.pop("PATHEXT", None)
+        else:
+            os.environ["PATHEXT"] = previous
+
+
 def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
     """Resolve a stdio MCP command against the exact subprocess environment.
 
@@ -526,7 +542,11 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
 
     if os.sep not in resolved_command:
         path_arg = resolved_env["PATH"] if "PATH" in resolved_env else None
-        which_hit = shutil.which(resolved_command, path=path_arg)
+        which_hit = _which_with_subprocess_env(
+            resolved_command,
+            path=path_arg,
+            env=resolved_env,
+        )
         if which_hit:
             resolved_command = which_hit
         elif resolved_command in {"npx", "npm", "node"}:
