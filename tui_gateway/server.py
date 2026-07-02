@@ -1364,6 +1364,14 @@ def _completion_cwd(params: dict | None = None) -> str:
         # profile's config before falling back to the launch profile's env var.
         or _profile_configured_cwd(_profile_home(params.get("profile")))
         or os.environ.get("TERMINAL_CWD")
+        # Fall back to the LAUNCH profile's own config.yaml terminal.cwd.
+        # TERMINAL_CWD is normally bridged from config.yaml when cli.py is
+        # imported, but some entry points (e.g. `hermes dashboard`'s
+        # cmd_dashboard()) can reach this code without that bridge having
+        # run in this process, leaving the only remaining fallback as
+        # os.getcwd() -- which on a launchd-started process can resolve to
+        # "/" and break non-image file attachments (issue #48314).
+        or _profile_configured_cwd(Path(_hermes_home))
         or os.getcwd()
     )
     try:
