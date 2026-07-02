@@ -2680,6 +2680,17 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             runtime_kwargs = {
                 "requested": job.get("provider"),
             }
+            # Pass target_model so api_mode / base_url are derived from the
+            # model the job will actually use, not from model.default. Without
+            # this, opencode-go + a non-default model falls through to
+            # model.default, which can pick the wrong API surface (e.g. an
+            # anthropic_messages model on the opencode-go provider when the
+            # cron job is configured for a chat_completions model like
+            # deepseek-v4-flash) and 400 every request. The bug only surfaces
+            # when model.default is itself an anthropic-routed model on the
+            # same provider — silent until that config change.
+            if model:
+                runtime_kwargs["target_model"] = model
             if job.get("base_url"):
                 runtime_kwargs["explicit_base_url"] = job.get("base_url")
             runtime = resolve_runtime_provider(**runtime_kwargs)
