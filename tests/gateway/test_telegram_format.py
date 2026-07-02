@@ -37,7 +37,9 @@ _ensure_telegram_mock()
 
 from plugins.platforms.telegram.adapter import (  # noqa: E402
     TelegramAdapter,
+    _TABLE_SEPARATOR_RE,
     _escape_mdv2,
+    _normalize_pipe_table_markdown,
     _strip_mdv2,
     _wrap_markdown_tables,
 )
@@ -1134,3 +1136,96 @@ class TestTelegramGuestMentionGating:
         message.caption_entities = [_guest_mention_entity(text)]
 
         assert adapter._should_process_message(message) is True
+
+
+# =========================================================================
+# _normalize_pipe_table_markdown — repair model-mangled pipe tables (#53632)
+# =========================================================================
+
+# The reporter's canonical payload: heading + a pipe table whose rows the model
+# both pre-escaped (``\|``) and collapsed onto a single physical line.
+_BROKEN_REPORTER_TABLE = (
+    "**\U0001f4c5 2-Week Forward Calendar (key dates only)**\n"
+    "\\| Date \\| Event \\| Category \\| Expected Impact \\| "
+    "\\|:-----\\|:------\\|:---------\\|:----------------\\| "
+    "\\| 2026-07-15 \\| Fed Beige Book \\| Macro \\| Regional growth signals \\| "
+    "\\| 2026-07-30 \\| ECB Meeting \\| Policy \\| Rate path clarification \\|"
+)
+
+
+class TestNormalizePipeTableMarkdown:
+    def test_collapsed_preescaped_table_is_relined(self):
+        """The reporter's single-line escaped table becomes proper GFM rows."""
+        out = _normalize_pipe_table_markdown(_BROKEN_REPORTER_TABLE)
+        lines = out.splitlines()
+        # Heading preserved verbatim.
+        assert lines[0] == "**\U0001f4c5 2-Week Forward Calendar (key dates only)**"
+        # No backslash-escaped bars survive.
+        assert "\\|" not in out
+        # Header, separator and both data rows now sit on their own lines.
+        assert "| Date | Event | Category | Expected Impact |" in lines
+        assert any(_TABLE_SEPARATOR_RE.match(line) for line in lines)
+        assert "| 2026-07-15 | Fed Beige Book | Macro | Regional growth signals |" in lines
+        assert "| 2026-07-30 | ECB Meeting | Policy | Rate path clarification |" in lines
+
+    def test_relined_table_routes_to_rich_renderer(self, adapter):
+        """Before: rich router can't see the table; after: it can."""
+        assert adapter._needs_rich_rendering(_BROKEN_REPORTER_TABLE) is False
+        repaired = _normalize_pipe_table_markdown(_BROKEN_REPORTER_TABLE)
+        assert adapter._needs_rich_rendering(repaired) is True
+
+    def test_relined_table_converts_to_bullets_on_legacy_path(self):
+        """The repaired table feeds the existing table→bullets helper cleanly."""
+        bullets = _wrap_markdown_tables(_normalize_pipe_table_markdown(_BROKEN_REPORTER_TABLE))
+        assert "\\|" not in bullets
+        assert "• Event: Fed Beige Book" in bullets
+        assert "• Category: Macro" in bullets
+
+    def test_multiline_preescaped_table_is_unescaped(self):
+        """A pre-escaped table that kept its newlines just loses the backslashes."""
+        src = (
+            "\\| Date \\| Event \\| Category \\|\n"
+            "\\|:-----\\|:------\\|:---------\\|\n"
+            "\\| 2026-07-15 \\| Fed \\| Macro \\|\n"
+            "\\| 2026-07-30 \\| ECB \\| Policy \\|"
+        )
+        out = _normalize_pipe_table_markdown(src)
+        assert "\\|" not in out
+        assert any(_TABLE_SEPARATOR_RE.match(line) for line in out.splitlines())
+
+    def test_idempotent(self):
+        once = _normalize_pipe_table_markdown(_BROKEN_REPORTER_TABLE)
+        twice = _normalize_pipe_table_markdown(once)
+        assert once == twice
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Today's news digest. No tables in here at all.",
+            "Compute a \\| b \\| c then compare the totals.",  # arithmetic, not a row
+            "Use the A \\| B fallback operator when needed.",  # lone inline pipe
+            "| A | B |\n|:--|:--|\n| 1 | 2 |",  # already-clean table
+            "```\n| a \\| b |\n```",  # escaped pipe inside a code fence
+            "- first\n- second\n- third",  # bullet list
+        ],
+    )
+    def test_non_table_content_is_left_untouched(self, text):
+        assert _normalize_pipe_table_markdown(text) == text
+
+
+@pytest.mark.asyncio
+async def test_legacy_send_repairs_collapsed_escaped_table(adapter):
+    """End-to-end: a cron-style broken table no longer reaches Telegram as
+    literal ``\\|`` text; the legacy path renders it as bullet groups (#53632)."""
+    adapter._bot = MagicMock()
+    adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+    adapter._bot.send_chat_action = AsyncMock()
+    adapter._rich_send_disabled = True  # force the legacy MarkdownV2 path
+
+    result = await adapter.send("12345", _BROKEN_REPORTER_TABLE, metadata={"job_id": "daily-news"})
+
+    assert result.success is True
+    sent = "".join(call.kwargs["text"] for call in adapter._bot.send_message.await_args_list)
+    # The user-visible symptom (escaped bars) is gone; bullets render instead.
+    assert "\\|" not in _strip_mdv2(sent)
+    assert "Fed Beige Book" in _strip_mdv2(sent)

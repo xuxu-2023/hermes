@@ -229,6 +229,94 @@ from gateway.platforms.helpers import (
 )
 
 
+# A run of >= 2 GFM separator cells (``|:---|:---|``) — the fingerprint of a
+# pipe table whose rows the model collapsed onto a single physical line.
+_TABLE_SEP_RUN_RE = re.compile(r'\|(?:\s*:?-+:?\s*\|){2,}')
+
+
+def _split_collapsed_table(clean: str, n_cols: int) -> Optional[List[str]]:
+    """Re-split a single-line GFM table into ``n_cols``-wide rows.
+
+    ``clean`` is one physical line holding a whole table whose row breaks were
+    lost (``| h | h | |:--|:--| | a | b |``). Outer pipes give a leading and
+    trailing empty token and a single empty token between rows, so the cells
+    regroup deterministically even when a real cell is empty. Returns ``None``
+    (caller leaves the line alone) if the shape doesn't line up exactly.
+    """
+    parts = clean.split('|')
+    if not (parts and parts[0].strip() == '' and parts[-1].strip() == ''):
+        return None  # require outer pipes on the collapsed run
+    parts = parts[1:-1]
+    rows: List[List[str]] = []
+    i = 0
+    while i < len(parts):
+        row = parts[i:i + n_cols]
+        if len(row) != n_cols:
+            return None
+        rows.append([cell.strip() for cell in row])
+        i += n_cols
+        if i < len(parts):  # the empty token separating two rows
+            if parts[i].strip() != '':
+                return None
+            i += 1
+    if len(rows) < 3:  # header + separator + at least one data row
+        return None
+    return ['| ' + ' | '.join(row) + ' |' for row in rows]
+
+
+def _normalize_pipe_table_markdown(text: str) -> str:
+    r"""Repair pipe tables an LLM mangled before they reach Telegram.
+
+    Two model-side defects defeat GFM table detection downstream (#53632):
+
+    * **Pre-escaped bars** — a prompt that says "use Telegram MarkdownV2"
+      makes the model emit ``\| Date \| Event \|``. ``format_message`` then
+      escapes again, so Telegram shows the literal ``\|`` instead of a table.
+    * **Collapsed rows** — the model emits the whole table on one physical
+      line, so the GFM separator never sits on its own line and neither the
+      rich-render router nor the table→bullets helper recognises it.
+
+    Only lines shaped like a GFM table row (bounded by pipes) are touched:
+    ``\|`` is un-escaped and a collapsed single-line table is re-split into
+    proper rows. Prose, code fences, and arithmetic are left untouched. The
+    repaired text feeds the existing table machinery, so the table renders
+    natively via the rich path or as bullet groups on the legacy path.
+    """
+    if '|' not in text:
+        return text
+
+    out: List[str] = []
+    in_fence = False
+    for line in text.split('\n'):
+        if line.lstrip().startswith('```'):
+            in_fence = not in_fence
+            out.append(line)
+            continue
+        if in_fence or '|' not in line:
+            out.append(line)
+            continue
+
+        clean = line.replace('\\|', '|')
+        stripped = clean.strip()
+        if not (stripped.startswith('|') and stripped.endswith('|')
+                and stripped.count('|') >= 2):
+            out.append(line)  # not a pipe-bounded table row — leave verbatim
+            continue
+
+        sep = _TABLE_SEP_RUN_RE.search(clean)
+        if sep and not _TABLE_SEPARATOR_RE.match(stripped):
+            # A separator run sharing its line with header/data cells means the
+            # rows were collapsed; re-split using the separator's column count.
+            n_cols = len([c for c in sep.group(0).split('|') if c.strip()])
+            rows = _split_collapsed_table(clean, n_cols)
+            if rows:
+                out.extend(rows)
+                continue
+        out.append(clean)
+
+    return '\n'.join(out)
+
+
 # ---------------------------------------------------------------------------
 # Rich-message newline normalization
 # ---------------------------------------------------------------------------
@@ -3257,7 +3345,12 @@ class TelegramAdapter(BasePlatformAdapter):
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
-        
+
+        # Repair pipe tables the model pre-escaped (``\|``) or collapsed onto a
+        # single line before the rich/legacy split, so both paths detect the
+        # table instead of emitting literal backslash-pipes (#53632).
+        content = _normalize_pipe_table_markdown(content)
+
         try:
             # Bot API 10.1 rich fast-path: send the raw agent markdown via
             # sendRichMessage so tables/task lists/etc. render natively. Falls
