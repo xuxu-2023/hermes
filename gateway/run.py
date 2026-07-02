@@ -17330,16 +17330,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception as _sc_err:
                     logger.debug("Could not set up stream consumer: %s", _sc_err)
 
+            # Captures the agent's most recent interim assistant text so the
+            # exec-approval prompt can show *why* the command is being run
+            # (its contextual rationale), the way Codex surfaces reasoning.
+            # Keep only the last non-empty chunk so the approval card shows
+            # the most recent rationale, not an accumulation of every
+            # streaming segment.
+            _last_assistant_rationale = ""
+
             def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
+                nonlocal _last_assistant_rationale
                 if not _run_still_current():
                     return
+                _stripped = str(text or "").strip()
+                if _stripped:
+                    _last_assistant_rationale = _stripped
                 if _stream_consumer is not None:
                     if already_streamed:
                         _stream_consumer.on_segment_break()
                     else:
                         _stream_consumer.on_commentary(text)
                     return
-                if already_streamed or not _status_adapter or not str(text or "").strip():
+                if already_streamed or not _status_adapter or not _stripped:
                     return
                 safe_schedule_threadsafe(
                     _status_adapter.send(
@@ -17801,6 +17813,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                 cmd = approval_data.get("command", "")
                 desc = approval_data.get("description", "dangerous command")
+                # The agent's latest reasoning text — forwarded to the adapter
+                # so the approval card explains *why* the command needs to run.
+                _rationale = _last_assistant_rationale
 
                 # Redact credentials from the command before displaying it in
                 # the approval prompt — Tirith's findings are already redacted,
@@ -17821,6 +17836,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 command=cmd,
                                 session_key=_approval_session_key,
                                 description=desc,
+                                contextual_reason=_rationale,
                                 metadata=_status_thread_metadata,
                             ),
                             _loop_for_step,
@@ -17847,8 +17863,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Slack threads and reserved by Matrix clients.
                 _p = getattr(_status_adapter, "typed_command_prefix", "/")
                 cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
+                # Include the agent's rationale in the plain-text fallback too,
+                # so platforms without native approval cards still surface it.
+                _rationale_block = f"{_rationale}\n\n" if _rationale else ""
                 msg = (
                     f"⚠️ **Dangerous command requires approval:**\n"
+                    f"{_rationale_block}"
                     f"```\n{cmd_preview}\n```\n"
                     f"Reason: {desc}\n\n"
                     f"Reply `{_p}approve` to execute, `{_p}approve session` to approve this pattern "

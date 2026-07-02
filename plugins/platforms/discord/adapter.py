@@ -5269,10 +5269,15 @@ class DiscordAdapter(BasePlatformAdapter):
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
+        contextual_reason: str = "",
         metadata: Optional[dict] = None,
     ) -> SendResult:
         """
         Send a button-based exec approval prompt for a dangerous command.
+
+        ``contextual_reason`` (optional) is the agent's latest rationale; it is
+        rendered above the command (within the embed description budget) so the
+        user sees *why* approval is needed.
 
         The buttons call ``resolve_gateway_approval()`` to unblock the waiting
         agent thread — this replaces the text-based ``/approve`` flow on Discord.
@@ -5290,12 +5295,28 @@ class DiscordAdapter(BasePlatformAdapter):
             if not channel:
                 channel = await self._client.fetch_channel(int(target_id))
 
-            # Discord embed description limit is 4096; show full command up to that
+            # Discord embed description limit is 4096; budget the rationale +
+            # command so the combined description stays under it.  Reserve up
+            # to ~1500 chars for the rationale, then fit the command in what
+            # remains; truncate each with an ellipsis as needed.
             max_desc = 4088
-            cmd_display = command if len(command) <= max_desc else command[: max_desc - 3] + "..."
+            _rationale_block = ""
+            if contextual_reason:
+                _r = contextual_reason
+                if len(_r) > 1500:
+                    _r = _r[:1497] + "..."
+                _rationale_block = f"{_r}\n\n"
+            # Account for the rationale block and the ```\n ... \n``` fences.
+            _cmd_budget = max_desc - len(_rationale_block) - len("```\n\n```")
+            if _cmd_budget < 0:
+                _cmd_budget = 0
+            cmd_display = (
+                command if len(command) <= _cmd_budget
+                else command[: max(_cmd_budget - 3, 0)] + "..."
+            )
             embed = discord.Embed(
                 title="⚠️ Command Approval Required",
-                description=f"```\n{cmd_display}\n```",
+                description=f"{_rationale_block}```\n{cmd_display}\n```",
                 color=discord.Color.orange(),
             )
             embed.add_field(name="Reason", value=description, inline=False)

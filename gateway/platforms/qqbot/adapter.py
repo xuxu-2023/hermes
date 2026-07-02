@@ -2659,9 +2659,14 @@ class QQAdapter(BasePlatformAdapter):
             command: str,
             session_key: str,
             description: str = "dangerous command",
+            contextual_reason: str = "",
             metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a button-based exec-approval prompt for a dangerous command.
+
+        ``contextual_reason`` (optional) is the agent's latest rationale; when
+        present it is sent as a short leading message before the approval card
+        so the user sees *why* approval is needed.
 
         Called by ``gateway/run.py``'s ``_approval_notify_sync`` when the
         agent is blocked waiting for approval. Button clicks resolve via
@@ -2682,6 +2687,16 @@ class QQAdapter(BasePlatformAdapter):
             command_preview=command,
             timeout_sec=self._APPROVAL_TIMEOUT_SECONDS,
         )
+        # Prepend contextual rationale (truncated) if available so the user
+        # sees the agent's reasoning before the approval card.
+        if contextual_reason:
+            _r = contextual_reason
+            if len(_r) > 1500:
+                _r = _r[:1497] + "..."
+            try:
+                await self.send(chat_id, _r, reply_to=msg_id)
+            except Exception as _rc_err:
+                logger.debug("[QQ] failed to send contextual rationale: %s", _rc_err)
         return await self.send_approval_request(
             chat_id, req, reply_to=msg_id,
         )

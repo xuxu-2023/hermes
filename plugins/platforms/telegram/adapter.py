@@ -4204,20 +4204,34 @@ class TelegramAdapter(BasePlatformAdapter):
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
+        contextual_reason: str = "",
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send an inline-keyboard approval prompt with interactive buttons.
 
         The buttons call ``resolve_gateway_approval()`` to unblock the waiting
         agent thread — same mechanism as the text ``/approve`` flow.
+
+        ``contextual_reason`` (optional) is the agent's latest rationale; it is
+        rendered above the command so the user sees *why* approval is needed.
         """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
         try:
-            cmd_preview = command[:3800] + "..." if len(command) > 3800 else command
+            # Telegram caps a message at 4096 chars.  Budget the rationale so
+            # the combined payload (rationale + command + framing) stays well
+            # under the cap; truncate the rationale with an ellipsis if needed.
+            _rationale_html = ""
+            if contextual_reason:
+                _rationale = contextual_reason
+                if len(_rationale) > 1000:
+                    _rationale = _rationale[:997] + "..."
+                _rationale_html = f"{_html.escape(_rationale)}\n\n"
+            cmd_preview = command[:3000] + "..." if len(command) > 3000 else command
             text = (
                 f"⚠️ <b>Command Approval Required</b>\n\n"
+                f"{_rationale_html}"
                 f"<pre>{_html.escape(cmd_preview)}</pre>\n\n"
                 f"Reason: {_html.escape(description)}"
             )

@@ -1999,16 +1999,28 @@ class MatrixAdapter(BasePlatformAdapter):
         command: str,
         session_key: str,
         description: str = "dangerous command",
+        contextual_reason: str = "",
         metadata: Optional[dict] = None,
     ) -> SendResult:
-        """Send a reaction-based exec approval prompt for Matrix."""
+        """Send a reaction-based exec approval prompt for Matrix.
+
+        ``contextual_reason`` (optional) is the agent's latest rationale; it is
+        rendered above the command so the user sees *why* approval is needed.
+        """
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
         requester_user_id = str((metadata or {}).get("requester_user_id") or "") or None
         cmd_preview = command[:2000] + "..." if len(command) > 2000 else command
+        _rationale_block = ""
+        if contextual_reason:
+            _r = contextual_reason
+            if len(_r) > 1500:
+                _r = _r[:1497] + "..."
+            _rationale_block = f"{_r}\n\n"
         text = (
             "⚠️ **Dangerous command requires approval**\n"
+            f"{_rationale_block}"
             f"```\n{cmd_preview}\n```\n"
             f"Reason: {description}\n\n"
             "Reply `!approve` to execute, `!approve session` to approve this pattern for the session, "

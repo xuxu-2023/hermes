@@ -1090,9 +1090,14 @@ class TeamsAdapter(BasePlatformAdapter):
         command: str,
         session_key: str,
         description: str = "dangerous command",
+        contextual_reason: str = "",
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send an Adaptive Card approval prompt with Allow/Deny buttons."""
+        """Send an Adaptive Card approval prompt with Allow/Deny buttons.
+
+        ``contextual_reason`` (optional) is the agent's latest rationale; it is
+        rendered above the command so the user sees *why* approval is needed.
+        """
         if not self._app:
             return SendResult(success=False, error="Teams app not initialized")
 
@@ -1104,14 +1109,23 @@ class TeamsAdapter(BasePlatformAdapter):
             "desc": description,
         }
 
+        _body_blocks = [
+            TextBlock(text="⚠️ Command Approval Required", wrap=True, weight="Bolder"),
+        ]
+        if contextual_reason:
+            _r = contextual_reason
+            if len(_r) > 1500:
+                _r = _r[:1497] + "..."
+            _body_blocks.append(TextBlock(text=_r, wrap=True))
+        _body_blocks.extend([
+            TextBlock(text=f"```\n{cmd_preview}\n```", wrap=True),
+            TextBlock(text=f"Reason: {description}", wrap=True, isSubtle=True),
+        ])
+
         card = (
             AdaptiveCard()
             .with_version("1.4")
-            .with_body([
-                TextBlock(text="⚠️ Command Approval Required", wrap=True, weight="Bolder"),
-                TextBlock(text=f"```\n{cmd_preview}\n```", wrap=True),
-                TextBlock(text=f"Reason: {description}", wrap=True, isSubtle=True),
-            ])
+            .with_body(_body_blocks)
             .with_actions([
                 ExecuteAction(
                     title="Allow Once",

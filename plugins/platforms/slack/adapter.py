@@ -3233,12 +3233,16 @@ class SlackAdapter(BasePlatformAdapter):
         command: str,
         session_key: str,
         description: str = "dangerous command",
+        contextual_reason: str = "",
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a Block Kit approval prompt with interactive buttons.
 
         The buttons call ``resolve_gateway_approval()`` to unblock the waiting
         agent thread — same mechanism as the text ``/approve`` flow.
+
+        ``contextual_reason`` (optional) is the agent's latest rationale; it is
+        rendered above the command so the user sees *why* approval is needed.
         """
         if not self._app:
             return SendResult(success=False, error="Not connected")
@@ -3255,7 +3259,19 @@ class SlackAdapter(BasePlatformAdapter):
             # reason are added.
             header = ":warning: *Command Approval Required*\n"
             reason = f"Reason: {description[:500]}"
-            budget = 3000 - len(header) - len(reason) - len("``````\n") - len("...")
+            # Reserve up to ~900 chars of the 3000-char section budget for the
+            # rationale, truncating it (with ellipsis) so the combined payload
+            # never overflows and trips ``invalid_blocks``.
+            rationale_text = ""
+            if contextual_reason:
+                _r = contextual_reason
+                if len(_r) > 900:
+                    _r = _r[:897] + "..."
+                rationale_text = f"{_r}\n\n"
+            budget = (
+                3000 - len(header) - len(rationale_text)
+                - len(reason) - len("``````\n") - len("...")
+            )
             cmd_preview = command[:budget] + "..." if len(command) > budget else command
 
             blocks = [
@@ -3263,7 +3279,7 @@ class SlackAdapter(BasePlatformAdapter):
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"{header}```{cmd_preview}```\n{reason}",
+                        "text": f"{header}{rationale_text}```{cmd_preview}```\n{reason}",
                     },
                 },
                 {
