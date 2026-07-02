@@ -21,8 +21,8 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 | **Threads** | Hermes supports Matrix threads (MSC3440). If you reply in a thread, Hermes keeps the thread context isolated from the main room timeline. Threads where the bot has already participated do not require a mention. |
 | **Auto-threading** | By default, Hermes auto-creates a thread for each message it responds to in a room. This keeps conversations isolated. Set `MATRIX_AUTO_THREAD=false` to disable. Set `MATRIX_DM_AUTO_THREAD=true` (default false) to also auto-create threads for DM messages — this is distinct from `MATRIX_DM_MENTION_THREADS`, which only starts a thread when the bot is `@mentioned` in a DM. |
 | **Commands** | Hermes accepts normal `/commands` when your Matrix client sends them. If your client reserves `/` for local commands, use `!commands` instead; Hermes normalizes known `!command` aliases to `/command`. |
-| **Interactive controls** | Dangerous-command approval and `/model` selection can use Matrix reactions. Approval reactions can be limited to the user who requested the action. |
-| **Thinking and tool activity** | Matrix uses threaded, editable thinking/tool-activity panes when gateway progress is enabled, so updates do not flood the main room timeline. |
+| **Interactive controls** | Dangerous-command approval and `/model` selection use Matrix reactions. Approval reactions can be limited to the user who requested the action. |
+| **Thinking and tool activity** | Matrix shows live tool activity by default in one edited message. Raw thinking text and response streaming are off by default because Matrix clients often treat edits as read-marker-relevant events. |
 | **Shared rooms with multiple users** | By default, Hermes isolates session history per user inside the room. Two people talking in the same room do not share one transcript unless you explicitly disable that. |
 
 :::tip
@@ -50,6 +50,12 @@ are disabled, opportunistic, or required.
 | video | yes |
 | E2EE | off / optional / required |
 | diagnostics | yes |
+
+:::note
+Matrix thinking panes are available, but disabled by default with Matrix live
+progress/streaming. Enable them only if your Matrix client handles edited
+messages without jumping read position.
+:::
 
 ### Session Model in Matrix
 
@@ -416,21 +422,68 @@ In Matrix conversations, Hermes exposes Matrix-specific tools to the agent:
 - `matrix_fetch_history`
 - `matrix_set_presence`
 
-These tools are scoped to Matrix contexts and are not available in non-Matrix toolsets. Admin-style tools are disabled by default: redaction requires `MATRIX_TOOLS_ALLOW_REDACTION=true`, invites require `MATRIX_TOOLS_ALLOW_INVITES=true`, and room creation requires `MATRIX_TOOLS_ALLOW_ROOM_CREATE=true`. Public room creation also requires `MATRIX_ALLOW_PUBLIC_ROOMS=true`.
-Matrix tools are limited to the current Matrix room by default. Explicit
-cross-room targets require `MATRIX_TOOLS_ALLOW_CROSS_ROOM=true`; redaction and
-invite-like cross-room actions additionally require
-`MATRIX_TOOLS_ALLOW_CROSS_ROOM_DESTRUCTIVE=true`. If `MATRIX_ALLOWED_ROOMS` is
-set, Matrix tools may only target those rooms.
+These tools are scoped to Matrix contexts and are not available in non-Matrix toolsets.
+They are also room-scoped by default: if a tool call provides an explicit
+`room_id`, Hermes rejects it unless it matches the current Matrix room.
 
-Reaction controls use:
+Security-sensitive Matrix tool gates:
+
+| Capability | Default | Required opt-in |
+|------------|---------|-----------------|
+| Target a different room | Blocked | `MATRIX_TOOLS_ALLOW_CROSS_ROOM=true` |
+| Cross-room redaction or invite-like action | Blocked | `MATRIX_TOOLS_ALLOW_CROSS_ROOM_DESTRUCTIVE=true` |
+| Redact Matrix messages | Disabled | `MATRIX_TOOLS_ALLOW_REDACTION=true` |
+| Invite Matrix users | Disabled | `MATRIX_TOOLS_ALLOW_INVITES=true` |
+| Create Matrix rooms | Disabled | `MATRIX_TOOLS_ALLOW_ROOM_CREATE=true` |
+| Create public Matrix rooms | Disabled | `MATRIX_ALLOW_PUBLIC_ROOMS=true` |
+
+If `MATRIX_ALLOWED_ROOMS` is set, Matrix tools may only target those rooms even
+when cross-room tool access is enabled.
+
+### Matrix Interactive Controls
+
+Matrix does not currently provide a portable native button surface equivalent to
+Slack Block Kit, Discord components, or Telegram inline keyboards. Hermes uses
+Matrix reactions for interactive controls because they work across standard
+Matrix homeservers and clients without custom client code:
 
 - ✅ approve once
 - ♾️ approve always
 - ❌ deny
 - number reactions for `/model` choices
 
-Set `MATRIX_APPROVAL_REQUIRE_SENDER=false` if you intentionally want any authorized Matrix user in the room to operate an approval/model picker prompt. The default is requester-bound when Hermes knows who requested the action.
+Set `MATRIX_APPROVAL_REQUIRE_SENDER=false` if you intentionally want any
+authorized Matrix user in the room to operate an approval/model picker prompt.
+The default is requester-bound when Hermes knows who requested the action.
+
+Optional homeserver/client extensions can render richer controls, but the
+upstream Matrix adapter keeps the core approval path reaction-based so standard
+Matrix deployments remain compatible.
+
+### Matrix Progress and Streaming
+
+Matrix defaults to live tool activity without response/thinking streaming. Tool
+activity is sent as one Matrix formatted message using a `<details>` / `<summary>`
+block where the client supports it, with a plain-text fallback in the event body.
+Reasoning/thinking text is hidden by default.
+
+To tune Matrix progress:
+
+```yaml
+display:
+  platforms:
+    matrix:
+      tool_progress: new      # off | new | all | verbose
+      tool_preview_length: 320
+      show_reasoning: false   # true only if you want raw thinking panes
+      streaming: false        # true enables progressive response edits
+      interim_assistant_messages: false
+```
+
+Global `display.tool_progress` applies to Matrix unless overridden here.
+Global `display.interim_assistant_messages` and `streaming.enabled` do not make
+Matrix emit thinking/interim text or partial responses unless the Matrix-specific
+override is set.
 
 ### Media Limits
 
