@@ -2931,12 +2931,22 @@ def select_provider_and_model(args=None):
         if active_def is not None:
             active = active_def.id
         else:
-            warning = (
-                f"Unknown provider '{effective_provider}'. Check 'hermes model' for "
-                "available providers, or run 'hermes doctor' to diagnose config "
-                "issues."
-            )
-            print(f"Warning: {warning} Falling back to auto provider detection.")
+            # The provider may be valid but not in models.dev/HERMES_OVERLAYS
+            # (e.g. bedrock uses aws_sdk auth and has no models.dev entry).
+            # If the provider is known to PROVIDER_REGISTRY (auth.py), the
+            # user explicitly configured it and it works at runtime — respect
+            # that for display.  Only warn and fall back for truly unknown
+            # provider names.  #45838
+            from hermes_cli.auth import PROVIDER_REGISTRY
+            if effective_provider in PROVIDER_REGISTRY:
+                active = effective_provider
+            else:
+                warning = (
+                    f"Unknown provider '{effective_provider}'. Check 'hermes model' for "
+                    "available providers, or run 'hermes doctor' to diagnose config "
+                    "issues."
+                )
+                print(f"Warning: {warning} Falling back to auto provider detection.")
     if not active:
         try:
             active = resolve_provider("auto")
