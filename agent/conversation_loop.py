@@ -599,6 +599,8 @@ def run_conversation(
 
     # Main conversation loop counters (pure locals consumed by the loop below).
     api_call_count = 0
+    agent._turn_api_time = 0.0
+    agent._turn_tool_time = 0.0
     final_response = None
     interrupted = False
     failed = False
@@ -1240,7 +1242,8 @@ def run_conversation(
                 )
                 
                 api_duration = time.time() - api_start_time
-                
+                agent._turn_api_time += api_duration
+
                 # Stop thinking spinner silently -- the response box or tool
                 # execution messages that follow are more informative.
                 if thinking_spinner:
@@ -4529,7 +4532,9 @@ def run_conversation(
                     except Exception:
                         pass
 
+                _tool_phase_started = time.time()
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+                agent._turn_tool_time += time.time() - _tool_phase_started
 
                 if agent._tool_guardrail_halt_decision is not None:
                     decision = agent._tool_guardrail_halt_decision
@@ -5149,6 +5154,8 @@ def run_conversation(
         original_user_message=original_user_message,
         _should_review_memory=_should_review_memory,
         _turn_exit_reason=_turn_exit_reason,
+        turn_api_time=agent._turn_api_time,
+        turn_tool_time=agent._turn_tool_time,
     )
 
 

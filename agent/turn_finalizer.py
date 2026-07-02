@@ -42,6 +42,8 @@ def finalize_turn(
     original_user_message,
     _should_review_memory,
     _turn_exit_reason,
+    turn_api_time=0.0,
+    turn_tool_time=0.0,
 ):
     """Run the post-loop finalization and return the turn ``result`` dict.
 
@@ -402,6 +404,8 @@ def finalize_turn(
         "last_reasoning": last_reasoning,
         "messages": messages,
         "api_calls": api_call_count,
+        "api_time": float(turn_api_time or 0.0),
+        "tool_time": float(turn_tool_time or 0.0),
         "completed": completed,
         "turn_exit_reason": _turn_exit_reason,
         "failed": failed,

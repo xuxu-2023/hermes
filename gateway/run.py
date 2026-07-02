@@ -11251,6 +11251,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
                     cwd=os.environ.get("TERMINAL_CWD", ""),
+                    turn_time=_response_time,
+                    api_time=agent_result.get("api_time", 0.0) or 0.0,
+                    tool_time=agent_result.get("tool_time", 0.0) or 0.0,
+                    api_calls=_api_calls,
                 )
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)
@@ -18087,6 +18091,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "last_reasoning": result.get("last_reasoning"),
                 "messages": result_holder[0].get("messages", []) if result_holder[0] else [],
                 "api_calls": result_holder[0].get("api_calls", 0) if result_holder[0] else 0,
+                "api_time": result_holder[0].get("api_time", 0.0) if result_holder[0] else 0.0,
+                "tool_time": result_holder[0].get("tool_time", 0.0) if result_holder[0] else 0.0,
                 "completed": result_holder[0].get("completed") if result_holder[0] else None,
                 "interrupted": result_holder[0].get("interrupted", False) if result_holder[0] else False,
                 "partial": result_holder[0].get("partial", False) if result_holder[0] else False,
