@@ -1407,7 +1407,19 @@ class SlackAdapter(BasePlatformAdapter):
                     if broadcast and i == 0:
                         kwargs["reply_broadcast"] = True
 
-                last_result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+                client = self._get_client(chat_id)
+                try:
+                    last_result = await client.chat_postMessage(**kwargs)
+                except Exception as exc:
+                    if "blocks" not in kwargs or not self._is_invalid_blocks_error(exc):
+                        raise
+                    logger.warning(
+                        "[Slack] Block Kit payload rejected; retrying without blocks: %s",
+                        exc,
+                    )
+                    fallback_kwargs = dict(kwargs)
+                    fallback_kwargs.pop("blocks", None)
+                    last_result = await client.chat_postMessage(**fallback_kwargs)
 
             # Clear Slack Assistant status as soon as the final message is posted.
             if thread_ts:
@@ -1900,6 +1912,10 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception:  # pragma: no cover - renderer already guards itself
             logger.debug("[Slack] block render failed; using plain text", exc_info=True)
             return None
+
+    @staticmethod
+    def _is_invalid_blocks_error(exc: Exception) -> bool:
+        return "invalid_blocks" in str(exc)
 
     def format_message(self, content: str) -> str:
         """Convert standard markdown to Slack mrkdwn format.
