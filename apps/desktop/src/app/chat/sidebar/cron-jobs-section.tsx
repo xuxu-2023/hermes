@@ -169,8 +169,7 @@ export function SidebarCronJobsSection({
         </button>
       </div>
       {open && (
-        <SidebarGroupContent className="flex max-h-72 flex-col gap-px overflow-x-hidden overflow-y-auto overscroll-contain pb-1.75 compact:max-h-none compact:overflow-visible">
-          {shown.map(job => (
+        <SidebarGroupContent className="flex max-h-72 flex-col gap-px overflow-x-hidden overflow-y-auto overscroll-contain pb-1.75 compact:max-h-none compact:overflow-visible">          {shown.map(job => (
             <CronJobSidebarRow
               expanded={peekJobId === job.id}
               job={job}
@@ -217,6 +216,13 @@ function CronJobSidebarRow({
   const next = nextRunMs(job)
   const label = jobTitle(job)
 
+  // Pulse the dot while the job is executing. The backend doesn't set
+  // state='running', but the scheduler sets next_run_at to the current
+  // time when it fires a job. Once the job completes, next_run_at is
+  // recalculated to the future interval. If next_run_at is in the recent
+  // past (< 5 min), the job is actively running.
+  const displayState = (next !== null && nowMs - next < 300_000 && nowMs - next > 0) ? 'running' : state
+
   const meta = INACTIVE_STATES.has(state) ? (c.states[state] ?? state) : next !== null ? relativeTime(next, nowMs) : '—'
 
   return (
@@ -239,8 +245,8 @@ function CronJobSidebarRow({
               aria-hidden="true"
               className={cn(
                 'size-1 rounded-full',
-                STATE_DOT[state] ?? 'bg-(--ui-text-quaternary)',
-                state === 'running' && 'size-1.5 animate-pulse'
+                STATE_DOT[displayState] ?? 'bg-(--ui-text-quaternary)',
+                displayState === 'running' && "relative size-1.5 bg-(--ui-accent) shadow-[0_0_0.625rem_color-mix(in_srgb,var(--ui-accent)_55%,transparent)] before:absolute before:inset-0 before:animate-ping before:rounded-full before:bg-(--ui-accent) before:opacity-70 before:content-['']"
               )}
             />
           </span>
