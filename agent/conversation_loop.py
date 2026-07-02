@@ -1214,11 +1214,23 @@ def run_conversation(
                         _use_streaming = False
 
                 def _perform_api_call(next_api_kwargs):
-                    if _use_streaming:
-                        return agent._interruptible_streaming_api_call(
-                            next_api_kwargs, on_first_delta=_stop_spinner
-                        )
-                    return agent._interruptible_api_call(next_api_kwargs)
+                    # Z.AI / GLM returns 429/1305 under concurrent load. Bound
+                    # the in-flight count to that one provider so a subagent
+                    # swarm doesn't keep the endpoint pegged; every other
+                    # provider passes straight through (no-op handle). See
+                    # agent/zai_concurrency.py for scope and limitations.
+                    from agent.zai_concurrency import acquire_zai_slot
+
+                    with acquire_zai_slot(
+                        provider=agent.provider,
+                        model=agent.model,
+                        base_url=agent.base_url,
+                    ):
+                        if _use_streaming:
+                            return agent._interruptible_streaming_api_call(
+                                next_api_kwargs, on_first_delta=_stop_spinner
+                            )
+                        return agent._interruptible_api_call(next_api_kwargs)
 
                 from hermes_cli.middleware import run_llm_execution_middleware
 
