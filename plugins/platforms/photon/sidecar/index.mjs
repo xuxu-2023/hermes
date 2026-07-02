@@ -454,6 +454,29 @@ async function normalizeContent(content) {
     }
     return { type: "group", items };
   }
+  if (content.type === "richlink") {
+    // Rich links carry a URL plus optional async title/summary accessors.
+    // Resolve them eagerly so the Python adapter receives a structured
+    // {type, url, title?, summary?} object with plain string values.
+    const out = { type: "richlink", url: content.url || "" };
+    if (typeof content.title === "function") {
+      try {
+        const title = await content.title();
+        if (title) out.title = title;
+      } catch { /* accessor may fail if metadata fetch didn't complete */ }
+    } else if (typeof content.title === "string") {
+      out.title = content.title;
+    }
+    if (typeof content.summary === "function") {
+      try {
+        const summary = await content.summary();
+        if (summary) out.summary = summary;
+      } catch { /* same — metadata fetch may not have completed */ }
+    } else if (typeof content.summary === "string") {
+      out.summary = content.summary;
+    }
+    return out;
+  }
   if (content.type === "reaction") {
     const target = content.target;
     return {
