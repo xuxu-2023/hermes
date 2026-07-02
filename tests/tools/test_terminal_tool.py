@@ -284,6 +284,49 @@ def test_invalidate_cached_sudo_on_auth_failure_keeps_env_password(monkeypatch):
     assert terminal_tool._get_cached_sudo_password() == "wrong-pass"
 
 
+def test_sudo_wrong_password_failure_detects_real_single_attempt_output():
+    # Real `sudo -S` prints a counted summary on a rejected piped password.
+    # Before the count-independent marker this returned False, so the stale
+    # cached password was never dropped.
+    output = "Sorry, try again.\nsudo: 1 incorrect password attempt\n"
+    assert terminal_tool._sudo_wrong_password_failure(output) is True
+
+
+def test_invalidate_cached_sudo_clears_cache_on_real_single_attempt(monkeypatch):
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    terminal_tool._set_cached_sudo_password("wrong-pass")
+
+    cleared = terminal_tool._invalidate_cached_sudo_on_auth_failure(
+        "sudo apt install fprintd",
+        "Sorry, try again.\nsudo: 1 incorrect password attempt\n",
+    )
+
+    assert cleared is True
+    assert terminal_tool._get_cached_sudo_password() == ""
+
+
+def test_sudo_wrong_password_failure_ignores_unprefixed_phrase():
+    # Ordinary command output may legitimately contain the phrase "incorrect
+    # password attempt" without the `sudo: N` prefix (e.g. a build/scan log).
+    # That MUST NOT be treated as a sudo auth failure — otherwise a successful
+    # sudo command would clear the cached password as a false positive.
+    output = "build log: 2 incorrect password attempt warnings\n"
+    assert terminal_tool._sudo_wrong_password_failure(output) is False
+
+
+def test_invalidate_cached_sudo_keeps_cache_on_unprefixed_phrase(monkeypatch):
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    terminal_tool._set_cached_sudo_password("correct-pass")
+
+    cleared = terminal_tool._invalidate_cached_sudo_on_auth_failure(
+        "sudo ./run-scanner.sh",
+        "build log: 2 incorrect password attempt warnings\n",
+    )
+
+    assert cleared is False
+    assert terminal_tool._get_cached_sudo_password() == "correct-pass"
+
+
 def test_transform_sudo_command_pipes_one_password_line_per_invocation(monkeypatch):
     monkeypatch.setenv("SUDO_PASSWORD", "testpass")
     monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
