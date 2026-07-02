@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import shutil
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -204,6 +206,33 @@ def test_missing_file_becomes_warning(sample_repo: Path):
     assert result.expanded
     assert len(result.warnings) == 1
     assert "not found" in result.message.lower()
+
+
+@pytest.mark.skipif(shutil.which("rg") is None, reason="rg is required for folder listing tests")
+def test_folder_listing_handles_non_utf8_filenames(tmp_path: Path):
+    from agent.context_references import preprocess_context_references
+
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    (workspace / "visible.txt").write_text("hello\n", encoding="utf-8")
+
+    bad_path = os.fsencode(workspace) + b"/bad-\xff.txt"
+    fd = os.open(bad_path, os.O_WRONLY | os.O_CREAT, 0o644)
+    try:
+        os.write(fd, b"x")
+    finally:
+        os.close(fd)
+
+    result = preprocess_context_references(
+        "Check @folder:.",
+        cwd=workspace,
+        context_length=100_000,
+    )
+
+    assert result.expanded
+    assert "visible.txt" in result.message
+    assert "bad-" in result.message
+    assert not result.blocked
 
 
 def test_binary_file_yields_actionable_block_not_a_dead_warning(sample_repo: Path):
