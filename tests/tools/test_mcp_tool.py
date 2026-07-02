@@ -2535,7 +2535,6 @@ except ImportError:
 from tools.mcp_tool import (
     CreateMessageResultWithTools,
     SamplingHandler,
-    SamplingToolsCapability,
     ToolUseContent,
     _safe_numeric,
 )
@@ -3321,7 +3320,9 @@ class TestSessionKwargs:
         kwargs = handler.session_kwargs()
         cap = kwargs["sampling_capabilities"]
         assert isinstance(cap, SamplingCapability)
-        assert isinstance(cap.tools, SamplingToolsCapability)
+        # tools field should be None (omitted from JSON) to avoid
+        # "Unrecognized field 'tools'" errors from Java MCP SDK (#55469)
+        assert cap.tools is None
 
 
 # ---------------------------------------------------------------------------
