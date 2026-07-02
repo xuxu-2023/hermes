@@ -969,6 +969,20 @@ DEFAULT_CONFIG = {
         # compounds over a long conversation.  Costs ~70 tokens in the cached
         # system prompt.  Set False to disable globally.
         "parallel_tool_call_guidance": True,
+        # Auto session summary — after every turn, automatically append a
+        # one-line summary entry to the running session summary file
+        # (~/.hermes/sessions/<id>/running_summary.md).  Uses a local
+        # Ollama model (auto_summary_model) to produce a one-sentence
+        # summary; falls back to a mechanical format if Ollama is
+        # unavailable.  Survives context compression so the agent can
+        # read back what happened without loading full transcripts.
+        # Set False to disable (the agent can still use session_summary
+        # manually).
+        "auto_session_summary": True,
+        # Ollama model used for auto session summaries.  Default is
+        # llama3.2:1b (1.3 GB, ~0.6s per summary, free).  Set to an
+        # empty string to force the mechanical fallback format.
+        "auto_summary_model": "llama3.2:1b",
         # Local-environment toolchain probe — surfaces Python/pip/uv/PEP-668
         # state in the system prompt when something non-default is detected
         # (e.g. python3 has no pip module, pip→python version mismatch, PEP
@@ -2046,6 +2060,13 @@ DEFAULT_CONFIG = {
     # a plugin in plugins/context_engine/<name>/ or ~/.hermes/plugins/.
     "context": {
         "engine": "compressor",
+        # Context windowing — when set to a positive integer, only the last N
+        # messages are sent verbatim to the model.  Everything older is
+        # replaced by a summary block (read from the running session summary
+        # file).  Cuts per-turn token cost by 70-80% in long sessions.
+        # Set to 0 to disable windowing (full history, current behavior).
+        # Default 6 keeps ~3 turns of verbatim context.
+        "max_verbatim_messages": 6,
     },
 
     # Persistent memory -- bounded curated memory injected into system prompt
