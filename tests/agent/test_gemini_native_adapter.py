@@ -461,3 +461,95 @@ def test_explicit_max_tokens_is_respected():
 
     req = build_gemini_request(messages=[{"role": "user", "content": "hi"}], max_tokens=4096)
     assert req["generationConfig"]["maxOutputTokens"] == 4096
+
+
+def test_translate_response_preserves_native_function_call_id():
+    """Gemini 3 returns a unique id per functionCall; it must become the tool_call id."""
+    from agent.gemini_native_adapter import translate_gemini_response
+
+    payload = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"functionCall": {"id": "fc_abc123", "name": "search", "args": {"q": "x"}}},
+                    ]
+                },
+                "finishReason": "STOP",
+            }
+        ],
+    }
+
+    response = translate_gemini_response(payload, model="gemini-3.5-flash")
+    assert response.choices[0].message.tool_calls[0].id == "fc_abc123"
+
+
+def test_translate_response_generates_id_when_absent():
+    """Older models without a functionCall id still get a generated tool_call id."""
+    from agent.gemini_native_adapter import translate_gemini_response
+
+    payload = {
+        "candidates": [
+            {
+                "content": {"parts": [{"functionCall": {"name": "search", "args": {}}}]},
+                "finishReason": "STOP",
+            }
+        ],
+    }
+
+    response = translate_gemini_response(payload, model="gemini-2.5-flash")
+    call_id = response.choices[0].message.tool_calls[0].id
+    assert call_id and call_id.startswith("call_")
+
+
+def test_tool_result_echoes_native_id_round_trip():
+    """The functionResponse must carry the id from the matching functionCall."""
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=[
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "fc_abc123",
+                        "type": "function",
+                        "function": {"name": "get_weather", "arguments": '{"city": "Paris"}'},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "fc_abc123",
+                "content": '{"forecast": "sunny"}',
+            },
+        ],
+        tools=[],
+        tool_choice=None,
+    )
+
+    function_response = request["contents"][1]["parts"][0]["functionResponse"]
+    assert function_response["id"] == "fc_abc123"
+    assert function_response["name"] == "get_weather"
+
+
+def test_stream_event_preserves_native_function_call_id():
+    """Streaming path must also surface Gemini's native functionCall id."""
+    from agent.gemini_native_adapter import translate_stream_event
+
+    event = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"functionCall": {"id": "fc_stream_9", "name": "search", "args": {"q": "abc"}}}
+                    ]
+                }
+            }
+        ]
+    }
+
+    chunks = translate_stream_event(event, model="gemini-3.5-flash", tool_call_indices={})
+    tool_chunks = [c for c in chunks if c.choices[0].delta.tool_calls]
+    assert tool_chunks[0].choices[0].delta.tool_calls[0].id == "fc_stream_9"
