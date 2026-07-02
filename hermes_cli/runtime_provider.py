@@ -960,6 +960,41 @@ def _resolve_named_custom_runtime(
             "requested_provider": requested_provider,
         }
 
+    # GitHub #46506: local-server aliases (ollama, vllm, llamacpp, ...) that
+    # resolve to "custom" but have no explicit base_url should use a sensible
+    # default rather than silently falling through to OpenRouter.
+    _DEFAULT_LOCAL_BASE_URLS = {
+        "ollama": "http://localhost:11434/v1",
+    }
+    _p_original = (requested_provider or "").strip().lower()
+    if (
+        requested_norm == "custom"
+        and not explicit_base_url
+        and _p_original in _DEFAULT_LOCAL_BASE_URLS
+    ):
+        # Check config.yaml model.base_url first — the user may have configured
+        # an explicit LAN/WireGuard endpoint for this alias.
+        _mc_base = ""
+        try:
+            _mc = _get_model_config()
+            _mc_provider = str(_mc.get("provider") or "").strip().lower()
+            if _mc_provider == _p_original:
+                _mc_base = str(_mc.get("base_url") or "").strip().rstrip("/")
+        except Exception:
+            pass
+        base_url = _mc_base or _DEFAULT_LOCAL_BASE_URLS[_p_original]
+        # Only use the default when there isn't a named custom provider entry
+        # that the user explicitly configured for this alias.
+        if not _get_named_custom_provider(_p_original):
+            return {
+                "provider": "custom",
+                "api_mode": _detect_api_mode_for_url(base_url) or "chat_completions",
+                "base_url": base_url,
+                "api_key": "no-key-required",
+                "source": "direct-alias",
+                "requested_provider": requested_provider,
+            }
+
     custom_provider = _get_named_custom_provider(requested_provider)
     if not custom_provider:
         return None
