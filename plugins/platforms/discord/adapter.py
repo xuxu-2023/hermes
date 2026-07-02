@@ -7337,6 +7337,78 @@ def _standalone_sanitize_error(text) -> str:
     )
 
 
+# Bounded 429 retry for the standalone REST path — parity with the Telegram
+# retry helper in tools/send_message_tool (3 attempts, honors retry_after).
+_STANDALONE_RETRY_ATTEMPTS = 3
+# A retry_after above this is a long-lived (likely global) rate limit; the
+# standalone path is a blocking CLI/tool call, so give up instead of stalling.
+_STANDALONE_MAX_RETRY_AFTER = 10.0
+
+
+def _standalone_retry_after_seconds(resp, body: str) -> Optional[float]:
+    """Extract retry_after seconds from a Discord 429: JSON body first
+    (Discord reports it there with sub-second precision), headers second.
+    """
+    try:
+        parsed = json.loads(body)
+        if isinstance(parsed, dict) and parsed.get("retry_after") is not None:
+            return max(float(parsed["retry_after"]), 0.0)
+    except (ValueError, TypeError):
+        pass
+    header = resp.headers.get("Retry-After") or resp.headers.get("X-RateLimit-Reset-After")
+    if header is None:
+        return None
+    try:
+        return max(float(header), 0.0)
+    except (TypeError, ValueError):
+        return None
+
+
+async def _standalone_post_with_retry(
+    session,
+    url: str,
+    *,
+    headers: Dict[str, str],
+    req_kw: Dict[str, Any],
+    json_payload: Optional[dict] = None,
+    form_factory: Optional[Callable[[], Any]] = None,
+    attempts: int = _STANDALONE_RETRY_ATTEMPTS,
+) -> Tuple[int, Any]:
+    """POST with bounded retry on 429s, honoring Discord's ``retry_after``.
+
+    Returns ``(status, data)``: parsed JSON on 200/201, raw body text
+    otherwise.  ``form_factory`` rebuilds the multipart body per attempt —
+    an aiohttp ``FormData`` cannot be sent twice.
+    """
+    body = ""
+    for attempt in range(attempts):
+        kwargs = dict(req_kw)
+        if json_payload is not None:
+            kwargs["json"] = json_payload
+        if form_factory is not None:
+            kwargs["data"] = form_factory()
+        async with session.post(url, headers=headers, **kwargs) as resp:
+            status = resp.status
+            if status in {200, 201}:
+                return status, await resp.json()
+            body = await resp.text()
+            if status != 429 or attempt >= attempts - 1:
+                return status, body
+            delay = _standalone_retry_after_seconds(resp, body)
+        if delay is None:
+            delay = float(2 ** attempt)
+        if delay > _STANDALONE_MAX_RETRY_AFTER:
+            return status, body
+        logger.warning(
+            "Discord standalone send rate limited (attempt %d/%d), retrying in %.2fs",
+            attempt + 1,
+            attempts,
+            delay,
+        )
+        await asyncio.sleep(delay)
+    return 429, body
+
+
 async def _standalone_send(
     pconfig,
     chat_id: str,
@@ -7445,40 +7517,47 @@ async def _standalone_send(
                         starter_message = {"content": message, "attachments": attachments_meta}
                         payload_json = json.dumps({"name": thread_name, "message": starter_message})
 
-                        form = aiohttp.FormData()
-                        form.add_field("payload_json", payload_json, content_type="application/json")
-
                         try:
+                            file_payloads = []
                             for idx, media_path in enumerate(valid_media):
                                 with open(media_path, "rb") as fh:
-                                    form.add_field(
-                                        f"files[{idx}]",
-                                        fh.read(),
-                                        filename=os.path.basename(media_path),
+                                    file_payloads.append(
+                                        (idx, os.path.basename(media_path), fh.read())
                                     )
-                            async with session.post(thread_url, headers=auth_headers, data=form, **_req_kw) as resp:
-                                if resp.status not in {200, 201}:
-                                    body = await resp.text()
-                                    return {"error": f"Discord forum thread creation error ({resp.status}): {body}"}
-                                data = await resp.json()
+
+                            def _build_thread_form():
+                                form = aiohttp.FormData()
+                                form.add_field("payload_json", payload_json, content_type="application/json")
+                                for idx, filename, payload in file_payloads:
+                                    form.add_field(f"files[{idx}]", payload, filename=filename)
+                                return form
+
+                            status, data = await _standalone_post_with_retry(
+                                session,
+                                thread_url,
+                                headers=auth_headers,
+                                req_kw=_req_kw,
+                                form_factory=_build_thread_form,
+                            )
+                            if status not in {200, 201}:
+                                return {"error": f"Discord forum thread creation error ({status}): {data}"}
                         except Exception as e:
                             return {"error": _standalone_sanitize_error(f"Discord forum thread upload failed: {e}")}
                     else:
                         # No media — simple JSON POST creates the thread with
                         # just the text starter.
-                        async with session.post(
+                        status, data = await _standalone_post_with_retry(
+                            session,
                             thread_url,
                             headers=json_headers,
-                            json={
+                            req_kw=_req_kw,
+                            json_payload={
                                 "name": thread_name,
                                 "message": {"content": message},
                             },
-                            **_req_kw,
-                        ) as resp:
-                            if resp.status not in {200, 201}:
-                                body = await resp.text()
-                                return {"error": f"Discord forum thread creation error ({resp.status}): {body}"}
-                            data = await resp.json()
+                        )
+                        if status not in {200, 201}:
+                            return {"error": f"Discord forum thread creation error ({status}): {data}"}
 
                 thread_id_created = data.get("id")
                 starter_msg_id = (data.get("message") or {}).get("id", thread_id_created)
@@ -7498,11 +7577,16 @@ async def _standalone_send(
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             # Send text message (skip if empty and media is present)
             if message.strip() or not media_files:
-                async with session.post(url, headers=json_headers, json={"content": message}, **_req_kw) as resp:
-                    if resp.status not in {200, 201}:
-                        body = await resp.text()
-                        return {"error": f"Discord API error ({resp.status}): {body}"}
-                    last_data = await resp.json()
+                status, data = await _standalone_post_with_retry(
+                    session,
+                    url,
+                    headers=json_headers,
+                    req_kw=_req_kw,
+                    json_payload={"content": message},
+                )
+                if status not in {200, 201}:
+                    return {"error": f"Discord API error ({status}): {data}"}
+                last_data = data
 
             # Send each media file as a separate multipart upload
             for media_path, _is_voice in media_files:
