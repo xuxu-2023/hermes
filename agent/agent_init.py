@@ -287,7 +287,9 @@ def init_agent(
     """
     _install_safe_stdio()
 
-    agent.model = model
+    # Defensive: strip accidentally duplicated model-name prefix (see #54511).
+    from agent.chat_completion_helpers import _dedupe_model_name
+    agent.model = _dedupe_model_name(model)
     agent.max_iterations = max_iterations
     # Shared iteration budget — parent creates, children inherit.
     # Consumed by every LLM turn across parent + all subagents.
