@@ -704,6 +704,11 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         ),
         "options": ["stash", "discard"],
     },
+    "power.prevent_sleep.mode": {
+        "type": "select",
+        "description": "Host sleep-prevention mode",
+        "options": ["system", "display"],
+    },
 }
 
 # Categories with fewer fields get merged into "general" to avoid tab sprawl.
