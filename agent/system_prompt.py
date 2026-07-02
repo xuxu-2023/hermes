@@ -24,6 +24,7 @@ Pure helpers that read the agent's state.  AIAgent keeps thin forwarders.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.prompt_builder import (
@@ -108,6 +109,20 @@ def _resolve_platform_hint(agent: Any, platform_key: str, default_hint: str) -> 
     if isinstance(append_text, str) and append_text.strip():
         return f"{base}\n\n{append_text.strip()}".strip()
     return base
+
+
+def _display_hermes_root() -> str:
+    """Return the root Hermes directory used in prompt-visible profile hints."""
+    try:
+        from hermes_constants import get_default_hermes_root
+
+        root = get_default_hermes_root()
+    except Exception:
+        root = Path("~/.hermes").expanduser()
+    try:
+        return "~/" + str(root.relative_to(Path.home()))
+    except ValueError:
+        return str(root)
 
 
 def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
@@ -348,10 +363,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             pass
 
     # Active-profile hint — names the Hermes profile the agent is running
-    # under so it doesn't conflate ~/.hermes/skills/ (default profile) with
-    # ~/.hermes/profiles/<active>/skills/ (this profile's). Deterministic
-    # for the lifetime of the agent — profile name doesn't change
-    # mid-session, so this doesn't break the prompt cache.
+    # under so it doesn't conflate the default profile's scoped directories
+    # with this profile's. Deterministic for the lifetime of the agent —
+    # profile name doesn't change mid-session, so this doesn't break the
+    # prompt cache.
     # See file_safety._resolve_active_profile_name + classify_cross_profile_target
     # for the matching tool-side guard.
     try:
@@ -359,21 +374,22 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         active_profile = _resolve_active_profile_name()
     except Exception:
         active_profile = "default"
+    hermes_root = _display_hermes_root()
     if active_profile == "default":
         stable_parts.append(
             "Active Hermes profile: default. Other profiles (if any) live "
-            "under ~/.hermes/profiles/<name>/. Each profile has its own "
-            "skills/, plugins/, cron/, and memories/ that affect a different "
-            "session than this one. Do not modify another profile's "
-            "skills/plugins/cron/memories unless the user explicitly directs "
-            "you to."
+            f"under {hermes_root}/profiles/<name>/. Each profile has its own "
+            f"skills/, plugins/, cron/, and memories/ that affect a different "
+            f"session than this one. Do not modify another profile's "
+            f"skills/plugins/cron/memories unless the user explicitly directs "
+            f"you to."
         )
     else:
         stable_parts.append(
             f"Active Hermes profile: {active_profile}. This session reads "
-            f"and writes ~/.hermes/profiles/{active_profile}/. The default "
-            f"profile's data lives at ~/.hermes/skills/, ~/.hermes/plugins/, "
-            f"~/.hermes/cron/, ~/.hermes/memories/ — those belong to a "
+            f"and writes {hermes_root}/profiles/{active_profile}/. The default "
+            f"profile's data lives at {hermes_root}/skills/, {hermes_root}/plugins/, "
+            f"{hermes_root}/cron/, {hermes_root}/memories/ — those belong to a "
             f"different session run from a different shell. Do NOT modify "
             f"another profile's skills/plugins/cron/memories unless the user "
             f"explicitly directs you to. The cross-profile write guard will "
