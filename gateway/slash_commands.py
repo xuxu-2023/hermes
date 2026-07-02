@@ -84,6 +84,58 @@ def _model_switch_skew_guard() -> Optional[str]:
     )
 
 
+def _normalize_model_allowlist(raw: Any) -> frozenset[str]:
+    """Normalize ``model.allowlist`` config into a set of lowercased model ids.
+
+    The allowlist restricts which models ``/model`` may switch to. Missing,
+    empty, or malformed config yields an EMPTY set, which the callers treat as
+    "no restriction" — so the feature is opt-in and the default behaviour is
+    unchanged.
+    """
+    if not isinstance(raw, (list, tuple)):
+        return frozenset()
+    return frozenset(
+        item.strip().lower()
+        for item in raw
+        if isinstance(item, str) and item.strip()
+    )
+
+
+def _model_blocked_by_allowlist(model: str, allowlist: frozenset[str]) -> bool:
+    """True when an allowlist is configured AND ``model`` is not in it.
+
+    An empty allowlist means unrestricted, so this never blocks then.
+    """
+    if not allowlist:
+        return False
+    return (model or "").strip().lower() not in allowlist
+
+
+def _filter_providers_to_allowlist(providers: list, allowlist: frozenset[str]) -> list:
+    """Return ``providers`` with each provider's ``models`` filtered to the
+    allowlist, dropping providers left with no allowed models.
+
+    Used to shape the ``/model`` picker + text list so a hire only ever sees
+    models they're permitted to switch to. A no-op when the allowlist is empty.
+    """
+    if not allowlist:
+        return providers
+    filtered = []
+    for p in providers:
+        models = [
+            m for m in (p.get("models") or [])
+            if (m or "").strip().lower() in allowlist
+        ]
+        if not models:
+            continue
+        q = dict(p)
+        q["models"] = models
+        if "total_models" in q:
+            q["total_models"] = len(models)
+        filtered.append(q)
+    return filtered
+
+
 class GatewaySlashCommandsMixin:
     """In-session slash-command handlers for GatewayRunner."""
 
@@ -1416,6 +1468,9 @@ class GatewaySlashCommandsMixin:
         current_api_key = ""
         user_provs = None
         custom_provs = None
+        # Operator-configured allowlist of models /model may switch to. Empty =
+        # unrestricted (the default), so this feature is fully opt-in.
+        model_allowlist: frozenset[str] = frozenset()
         config_path = _hermes_home / "config.yaml"
         try:
             cfg = _load_gateway_config()
@@ -1425,6 +1480,7 @@ class GatewaySlashCommandsMixin:
                     current_model = model_cfg.get("default", "")
                     current_provider = model_cfg.get("provider", current_provider)
                     current_base_url = model_cfg.get("base_url", "")
+                    model_allowlist = _normalize_model_allowlist(model_cfg.get("allowlist"))
                 user_provs = cfg.get("providers")
                 try:
                     from hermes_cli.config import get_compatible_custom_providers
@@ -1470,11 +1526,18 @@ class GatewaySlashCommandsMixin:
                         current_model=current_model,
                         user_providers=user_provs,
                         custom_providers=custom_provs,
-                        max_models=50,
+                        # When an allowlist is active, don't pre-truncate: filter
+                        # the FULL catalog to the allowlist instead, so an allowed
+                        # model ranked outside the top-N isn't silently dropped.
+                        max_models=None if model_allowlist else 50,
                         include_moa=True,
                     )
                 except Exception:
                     providers = []
+
+                # Shape the picker to the operator's allowlist so a hire only
+                # sees models they're allowed to switch to (no-op when unset).
+                providers = _filter_providers_to_allowlist(providers, model_allowlist)
 
                 if providers:
                     # Build a callback closure for when the user picks a model.
@@ -1511,6 +1574,15 @@ class GatewaySlashCommandsMixin:
                         )
                         if not result.success:
                             return t("gateway.model.error_prefix", error=result.error_message)
+                        # Allowlist gate (defense in depth — the picker is already
+                        # filtered). Checked on the RESOLVED model so an alias or
+                        # provider auto-detect can't slip past the set.
+                        if _model_blocked_by_allowlist(result.new_model, model_allowlist):
+                            return t(
+                                "gateway.model.not_allowed",
+                                model=result.new_model,
+                                allowed=", ".join(sorted(model_allowlist)),
+                            )
 
                         try:
                             from hermes_cli.context_switch_guard import (
@@ -1698,8 +1770,14 @@ class GatewaySlashCommandsMixin:
                     current_model=current_model,
                     user_providers=user_provs,
                     custom_providers=custom_provs,
-                    max_models=5,
+                    # See the picker path: skip the top-N truncation when an
+                    # allowlist is active so a low-ranked allowed model still
+                    # shows (and the "+N more" hint stays truthful post-filter).
+                    max_models=None if model_allowlist else 5,
                 )
+                # Restrict the listed models to the operator's allowlist (no-op
+                # when unset) so the text fallback matches the picker.
+                providers = _filter_providers_to_allowlist(providers, model_allowlist)
                 for p in providers:
                     tag = t("gateway.model.current_tag") if p["is_current"] else ""
                     lines.append(f"**{p['name']}** `--provider {p['slug']}`{tag}:")
@@ -1741,6 +1819,17 @@ class GatewaySlashCommandsMixin:
 
         if not result.success:
             return t("gateway.model.error_prefix", error=result.error_message)
+
+        # Allowlist gate for the typed path. Checked on the RESOLVED model (after
+        # alias expansion / --provider auto-detect) and BEFORE any expensive-model
+        # confirm or apply, so a disallowed switch is refused outright. Empty
+        # allowlist = unrestricted.
+        if _model_blocked_by_allowlist(result.new_model, model_allowlist):
+            return t(
+                "gateway.model.not_allowed",
+                model=result.new_model,
+                allowed=", ".join(sorted(model_allowlist)),
+            )
 
         try:
             from hermes_cli.context_switch_guard import (
