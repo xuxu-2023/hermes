@@ -1117,7 +1117,7 @@ def _run_chrome_fallback_command(
             proc.wait()
             return {"success": False, "error": f"Chrome fallback '{cmd}' timed out"}
         try:
-            with open(stdout_path, "r", encoding="utf-8") as f:
+            with open(stdout_path, "r", encoding="utf-8", errors="replace") as f:
                 stdout = f.read().strip()
             if stdout:
                 return json.loads(stdout.split("\n")[-1])
@@ -2474,9 +2474,9 @@ def _run_browser_command(
             }
             # Fall through to fallback check below
         else:
-            with open(stdout_path, "r", encoding="utf-8") as f:
+            with open(stdout_path, "r", encoding="utf-8", errors="replace") as f:
                 stdout = f.read()
-            with open(stderr_path, "r", encoding="utf-8") as f:
+            with open(stderr_path, "r", encoding="utf-8", errors="replace") as f:
                 stderr = f.read()
             returncode = proc.returncode
 
