@@ -139,7 +139,7 @@ HERMES_AGENT_HELP_GUIDANCE = (
     "it — or when you need to understand your own features, tools, or capabilities, "
     "the documentation at https://hermes-agent.nousresearch.com/docs is your "
     "authoritative reference and always holds the latest, most up-to-date "
-    "information. Load the `hermes-agent` skill with skill_view(name='hermes-agent') "
+    "information. Load the `hermes-agent` skill via the skill_view tool "
     "for additional guidance and proven workflows, but treat the docs as the source "
     "of truth when the two differ."
 )

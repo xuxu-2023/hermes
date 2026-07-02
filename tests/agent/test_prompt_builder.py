@@ -33,6 +33,7 @@ from agent.prompt_builder import (
     SESSION_SEARCH_GUIDANCE,
     PLATFORM_HINTS,
     WSL_ENVIRONMENT_HINT,
+    HERMES_AGENT_HELP_GUIDANCE,
 )
 from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatures
 
@@ -43,6 +44,11 @@ from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatu
 
 
 class TestGuidanceConstants:
+    def test_hermes_help_guidance_avoids_plaintext_tool_call_syntax(self):
+        assert "skill_view(name='hermes-agent')" not in HERMES_AGENT_HELP_GUIDANCE
+        assert "`hermes-agent` skill" in HERMES_AGENT_HELP_GUIDANCE
+        assert "skill_view tool" in HERMES_AGENT_HELP_GUIDANCE
+
     def test_memory_guidance_discourages_task_logs(self):
         assert "durable facts" in MEMORY_GUIDANCE
         assert "Do NOT save task progress" in MEMORY_GUIDANCE
