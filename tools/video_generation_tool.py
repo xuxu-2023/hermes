@@ -472,29 +472,19 @@ def _build_dynamic_video_schema() -> Dict[str, Any]:
     """
     parts: List[str] = [_GENERIC_DESCRIPTION]
 
-    configured = _read_configured_video_provider()
     configured_model = _read_configured_video_model()
 
-    if not configured:
-        parts.append(
-            "\nNo video backend is configured. Calls will return an error "
-            "until the user picks one via `hermes tools` → Video Generation."
-        )
-        return {"description": "\n".join(parts)}
-
-    try:
-        from agent.video_gen_registry import get_provider
-        from hermes_cli.plugins import _ensure_plugins_discovered
-
-        _ensure_plugins_discovered()
-        provider = get_provider(configured)
-    except Exception:
-        provider = None
+    # Reflect the *resolved* active provider (same resolution the handler uses
+    # in _resolve_active_provider): an explicit ``video_gen.provider``, or —
+    # when unset — the single available registered backend. Keeping the
+    # description in sync with execution stops the agent from being told
+    # "no backend configured" while a call would actually succeed.
+    provider = _resolve_active_provider()
 
     if provider is None:
         parts.append(
-            f"\nActive backend: {configured} (plugin not yet loaded — the "
-            f"tool will retry discovery on first call)."
+            "\nNo video backend is available. Calls will return an error "
+            "until the user picks one via `hermes tools` → Video Generation."
         )
         return {"description": "\n".join(parts)}
 
