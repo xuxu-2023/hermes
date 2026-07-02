@@ -1180,14 +1180,15 @@ def setup_terminal_backend(config: dict):
     terminal_choices = [
         "Local - run directly on this machine (default)",
         "Docker - isolated container with configurable resources",
+        "WSL2 - Windows Subsystem for Linux (native, no Docker overhead)",
         "Modal - serverless cloud sandbox",
         "SSH - run on a remote machine",
         "Daytona - persistent cloud development environment",
     ]
-    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona"}
-    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4}
+    idx_to_backend = {0: "local", 1: "docker", 2: "wsl", 3: "modal", 4: "ssh", 5: "daytona"}
+    backend_to_idx = {"local": 0, "docker": 1, "wsl": 2, "modal": 3, "ssh": 4, "daytona": 5}
 
-    next_idx = 5
+    next_idx = 6
     if is_linux:
         terminal_choices.append("Singularity/Apptainer - HPC-friendly container")
         idx_to_backend[next_idx] = "singularity"
