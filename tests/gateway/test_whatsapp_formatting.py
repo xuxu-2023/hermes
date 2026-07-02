@@ -109,6 +109,35 @@ class TestFormatMessage:
         assert adapter.format_message("# **Title**") == "*Title*"
         assert adapter.format_message("## __Strong__") == "*Strong*"
 
+    def test_header_partial_emphasis_no_literal_asterisks(self):
+        """A header with emphasis on only PART of the line must still bold the
+        whole line without leaking literal "**" or a stray "*" (WhatsApp renders
+        those verbatim). Sibling to the combined-emphasis fix in #55298, which
+        covers step-3 ***bold-italic***; this covers the step-4 header wrap."""
+        adapter = _make_adapter()
+        out1 = adapter.format_message("# *italic* heading")
+        assert "**" not in out1
+        assert out1 == "*italic heading*"
+        out2 = adapter.format_message("# normal *em* tail")
+        assert "**" not in out2
+        assert out2 == "*normal em tail*"
+        # An UNMATCHED lone "*" must not survive into the wrap either: a
+        # balanced-span strip alone would leave "# *nix" -> "**nix*" (leading
+        # literal "**"). The surviving asterisk is dropped before wrapping.
+        out3 = adapter.format_message("# *nix")
+        assert "**" not in out3
+        assert out3 == "*nix*"
+        out4 = adapter.format_message("# C* programming")
+        assert "**" not in out4
+        assert out4 == "*C programming*"
+        # Odd asterisk count: one balanced span strips, the stray pair is dropped.
+        out5 = adapter.format_message("# a *b* c *d*")
+        assert "**" not in out5
+        assert out5 == "*a b c d*"
+        # existing whole-line cases still hold
+        assert adapter.format_message("# **Title**") == "*Title*"
+        assert adapter.format_message("# Title") == "*Title*"
+
     def test_links_converted(self):
         adapter = _make_adapter()
         result = adapter.format_message("[click here](https://example.com)")
