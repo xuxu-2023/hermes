@@ -321,6 +321,27 @@ def test_include_unconfigured_skips_already_present_slugs():
     assert or_rows[0]["models"] == ["m1"]  # the authenticated row, not skeleton
 
 
+def test_include_unconfigured_keeps_current_provider_visible_without_credentials():
+    """If the saved provider is currently unauthenticated, keep a visible row
+    with the saved model so GUI pickers don't silently jump to another
+    authenticated provider."""
+    ctx = _empty_ctx(provider="deepseek", model="deepseek-v4-pro")
+    with _list_auth_returning([]):
+        payload = build_models_payload(
+            ctx, include_unconfigured=True, picker_hints=True,
+        )
+
+    deepseek = next(r for r in payload["providers"] if r["slug"] == "deepseek")
+    assert deepseek["source"] == "configured-current"
+    assert deepseek["is_current"] is True
+    assert deepseek["authenticated"] is False
+    assert deepseek["models"] == ["deepseek-v4-pro"]
+    assert deepseek["total_models"] == 1
+    assert deepseek["auth_type"] == "api_key"
+    assert "DEEPSEEK_API_KEY" in deepseek["warning"]
+    assert "saved model only" in deepseek["warning"]
+
+
 # ─── picker_hints ──────────────────────────────────────────────────────
 
 
@@ -766,4 +787,3 @@ def test_list_authenticated_providers_refresh_busts_cache():
         assert clear.call_count == 0
         model_switch.list_authenticated_providers(refresh=True)
         assert clear.call_count == 1
-
