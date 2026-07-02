@@ -864,19 +864,25 @@ class MattermostAdapter(BasePlatformAdapter):
         sender_id = post.get("user_id", "")
         sender_name = data.get("sender_name", "").lstrip("@") or sender_id
 
-        # Thread support: if the post is in a thread, use root_id. In
-        # thread mode, top-level channel posts are valid roots for progress.
-        thread_id = post.get("root_id") or None
-        if (
-            not thread_id
-            and self._reply_mode == "thread"
-            and channel_type_raw != "D"
-            and post_id
-        ):
-            thread_id = post_id
+        # Mattermost uses root_id for replies inside a thread. Top-level
+        # channel posts have no root_id, but each one is still its own thread
+        # root in CRT. Use the post id so concurrent root posts do not share
+        # one Hermes session/active-session guard. DMs keep the historical
+        # channel-scoped session behavior.
+        thread_id = post.get("root_id") or (post_id if chat_type != "dm" else None)
 
-        # Determine message type.
+        # Ignore textless posts with no files. After mention stripping, a bare
+        # mention or empty wake-up would otherwise become a blank user turn and
+        # can replay the previous interrupted tool intent.
         file_ids = post.get("file_ids") or []
+        if not str(message_text or "").strip() and not file_ids:
+            logger.debug(
+                "Mattermost: ignoring empty post with no attachments (channel=%s, post=%s)",
+                channel_id,
+                post_id,
+            )
+            return
+
         msg_type = MessageType.TEXT
         if message_text.startswith("/"):
             msg_type = MessageType.COMMAND

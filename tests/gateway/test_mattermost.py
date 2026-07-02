@@ -193,7 +193,7 @@ def _make_adapter():
     config = PlatformConfig(
         enabled=True,
         token="test-token",
-        extra={"url": "https://mm.example.com"},
+        extra={"url": "https://mm.example.com", "allowed_channels": ""},
     )
     adapter = MattermostAdapter(config)
     return adapter
@@ -611,6 +611,64 @@ class TestMattermostWebSocketParsing:
         assert self.adapter.handle_message.called
         msg_event = self.adapter.handle_message.call_args[0][0]
         assert msg_event.source.thread_id == "root_post_123"
+
+    @pytest.mark.parametrize(
+        ("post_id", "channel_type", "expected_thread_id"),
+        [
+            ("root_post_456", "O", "root_post_456"),
+            ("dm_post_456", "D", None),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_top_level_thread_session_scope(
+        self, post_id, channel_type, expected_thread_id
+    ):
+        """Channel roots get independent sessions; DMs keep channel scope."""
+        post_data = {
+            "id": post_id,
+            "user_id": "user_123",
+            "channel_id": "chan_456",
+            "message": "@bot_user_id New root thread",
+        }
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": channel_type,
+                "sender_name": "@alice",
+            },
+        }
+
+        await self.adapter._handle_ws_event(event)
+        handler = self.adapter.handle_message
+        assert getattr(handler, "called")
+        msg_event = getattr(handler, "call_args")[0][0]
+        assert msg_event.source.thread_id == expected_thread_id
+
+    @pytest.mark.parametrize(
+        ("message", "channel_type"),
+        [("@bot_user_id   ", "O"), ("   ", "D")],
+    )
+    @pytest.mark.asyncio
+    async def test_blank_posts_without_files_are_ignored(self, message, channel_type):
+        """Blank posts must not create turns that replay interrupted tools."""
+        post_data = {
+            "id": "post_blank",
+            "user_id": "user_123",
+            "channel_id": "chan_456",
+            "message": message,
+        }
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": channel_type,
+                "sender_name": "@alice",
+            },
+        }
+
+        await self.adapter._handle_ws_event(event)
+        assert not getattr(self.adapter.handle_message, "called")
 
     @pytest.mark.asyncio
     async def test_invalid_post_json_ignored(self):
