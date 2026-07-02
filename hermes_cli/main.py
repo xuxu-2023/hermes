@@ -1749,7 +1749,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         )
         sys.exit(1)
 
-    if not ext_dir:
+    if not ext_dir and not _find_bundled_tui():
         _ensure_tui_workspace(tui_dir)
 
     # 1. Prebuilt bundle (nix / packaged release): just run it.
