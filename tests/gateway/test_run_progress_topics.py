@@ -1137,7 +1137,7 @@ async def test_run_agent_matrix_suppresses_thinking_by_default(monkeypatch, tmp_
     assert result["final_response"] == "done"
     all_contents = [call["content"] for call in adapter.sent + adapter.edits]
     assert not any("Thinking" in text for text in all_contents)
-    assert not any("Need view minimax ref" in text for text in all_contents)
+    assert not any("weighing the options" in text for text in all_contents)
 
 
 @pytest.mark.asyncio
@@ -1218,7 +1218,7 @@ async def test_run_agent_matrix_requires_platform_opt_in_for_thinking(monkeypatc
     assert result["final_response"] == "done"
     all_contents = [call["content"] for call in adapter.sent + adapter.edits]
     assert not any("Thinking" in text for text in all_contents)
-    assert not any("Need view minimax ref" in text for text in all_contents)
+    assert not any("weighing the options" in text for text in all_contents)
 
 
 @pytest.mark.asyncio
@@ -1257,10 +1257,10 @@ async def test_run_agent_matrix_thinking_progress_uses_collapsible_pane(monkeypa
         for meta in matrix_metadata
     ]
     assert any("<details><summary>💭 Thinking</summary>" in body for body in formatted_bodies)
-    assert any("Need view minimax ref." in body for body in formatted_bodies)
+    assert any("weighing the options here" in body for body in formatted_bodies)
     assert any(
         "💭 Thinking" in (meta.get("matrix_body") or "")
-        and "Need view minimax ref." in (meta.get("matrix_body") or "")
+        and "weighing the options here" in (meta.get("matrix_body") or "")
         for meta in matrix_metadata
     )
 
