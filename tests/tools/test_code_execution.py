@@ -18,6 +18,7 @@ import pytest
 import json
 import os
 import socket
+import tempfile
 import time
 
 os.environ["TERMINAL_ENV"] = "local"
@@ -282,6 +283,37 @@ print(f"file lines: {r2['total_lines']}")
         result = self._run(code)
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["tool_calls_made"], 2)
+
+    def test_read_file_write_file_round_trip_preserves_content(self):
+        """Programmatic read_file() output should be safe to write back."""
+        with tempfile.TemporaryDirectory(dir=os.getcwd()) as tmpdir:
+            source = os.path.join(tmpdir, "source.txt")
+            dest = os.path.join(tmpdir, "backup.txt")
+            with open(source, "w", encoding="utf-8") as f:
+                f.write("important data")
+
+            code = f"""
+from hermes_tools import read_file, write_file
+content = read_file({source!r})["content"]
+print(write_file({dest!r}, content))
+"""
+            with patch(
+                "tools.code_execution_tool._load_config",
+                return_value={"timeout": 30, "max_tool_calls": 10, "mode": "project"},
+            ), patch(
+                "tools.approval.check_execute_code_guard",
+                return_value={"approved": True, "message": None},
+            ):
+                raw = execute_code(
+                    code=code,
+                    task_id="test-read-write-roundtrip",
+                    enabled_tools=["read_file", "write_file"],
+                )
+
+            result = json.loads(raw)
+            self.assertEqual(result["status"], "success", msg=result)
+            with open(dest, encoding="utf-8") as f:
+                self.assertEqual(f.read(), "important data")
 
     def test_syntax_error(self):
         """Script with a syntax error returns error status."""
