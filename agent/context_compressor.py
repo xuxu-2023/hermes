@@ -650,6 +650,8 @@ class ContextCompressor(ContextEngine):
         self._summary_failure_cooldown_until = 0.0  # transient errors must not block a fresh session
         self._last_summary_error = None
         self._last_compress_aborted = False
+        self._aux_context_overflow_warned = False
+        self._threshold_was_auto_lowered = False
         self.last_real_prompt_tokens = 0
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
@@ -684,6 +686,8 @@ class ContextCompressor(ContextEngine):
         self._ineffective_compression_count = 0
         self._summary_failure_cooldown_until = 0.0
         self._last_compress_aborted = False
+        self._aux_context_overflow_warned = False
+        self._threshold_was_auto_lowered = False
         self._context_probed = False
         self._context_probe_persistable = False
         self.last_real_prompt_tokens = 0
@@ -843,6 +847,12 @@ class ContextCompressor(ContextEngine):
         self.last_compression_rough_tokens = 0
         self.awaiting_real_usage_after_compression = False
         self._ineffective_compression_count = 0
+        self._aux_context_overflow_warned = False
+        # NOTE: _threshold_was_auto_lowered is NOT reset here — it reflects
+        # the aux model's context, which doesn't change when the main model
+        # switches.  Resetting it would disable the threshold escape and
+        # could re-trigger the #53008 loop after a model switch.  Only
+        # on_session_reset (a true fresh start) clears it.
 
     # When the MINIMUM_CONTEXT_LENGTH floor meets/exceeds a small context
     # window, compacting at the percentage (50% → 32K of a 64K window) wastes
@@ -1001,6 +1011,18 @@ class ContextCompressor(ContextEngine):
         # Anti-thrashing: track whether last compression was effective
         self._last_compression_savings_pct: float = 100.0
         self._ineffective_compression_count: int = 0
+        # Aux compression model's context length, set by
+        # check_compression_model_feasibility().  When the compression
+        # window exceeds this, compress() proactively falls back to the
+        # main model instead of sending content the aux model cannot
+        # process.  (#53008)
+        self._aux_compression_context_length: int = 0
+        self._aux_context_overflow_warned: bool = False
+        # True only when check_compression_model_feasibility actually
+        # lowered threshold_tokens.  The threshold escape in compress()
+        # uses this to know it is allowed to raise the threshold back —
+        # it must never override a user-configured threshold. (#53008)
+        self._threshold_was_auto_lowered: bool = False
         self._summary_failure_cooldown_until: float = 0.0
         self._last_summary_error: Optional[str] = None
         # When summary generation fails and a static fallback is inserted,
@@ -2769,7 +2791,53 @@ This compaction should PRIORITISE preserving all information related to the focu
 
         # Phase 3: Generate structured summary
         summary_focus_topic = focus_topic or self._derive_auto_focus_topic(messages)
-        summary = self._generate_summary(turns_to_summarize, focus_topic=summary_focus_topic)
+
+        # Proactive main-model fallback (#53008): if the compression window
+        # (the middle turns sent to the summariser) exceeds the aux model's
+        # context window, the aux model cannot process it — the API call
+        # will either error out (context too long) or be silently truncated
+        # to a near-useless summary.  Fall back to the main model for this
+        # pass instead.  The aux model is restored afterwards so future
+        # passes (on a smaller post-compression session) can use it again.
+        #
+        # We compare the actual window size (turns_to_summarize), NOT the
+        # full session — the tail (protected recent messages) and head
+        # (system prompt + first exchange) are never sent to the summariser,
+        # so a session can be larger than the aux context while the window
+        # still fits.
+        _window_tokens = estimate_messages_tokens_rough(turns_to_summarize)
+        _saved_summary_model = ""
+        _aux_context = getattr(self, "_aux_compression_context_length", 0)
+        if (
+            _aux_context > 0
+            and _window_tokens > _aux_context
+            and self.summary_model
+            and self.summary_model != self.model
+        ):
+            _saved_summary_model = self.summary_model
+            self.summary_model = ""
+            if not getattr(self, "_aux_context_overflow_warned", False):
+                self._aux_context_overflow_warned = True
+                if not self.quiet_mode:
+                    logger.warning(
+                        "Compression window (~%d tokens) exceeds the "
+                        "auxiliary compression model's context window "
+                        "(%d tokens) — using the main model for this "
+                        "compression pass. Consider a larger compression "
+                        "model or /new to start a fresh session.",
+                        _window_tokens,
+                        _aux_context,
+                    )
+
+        try:
+            summary = self._generate_summary(turns_to_summarize, focus_topic=summary_focus_topic)
+        finally:
+            # Restore the aux summary model for future passes — after
+            # compression the session may be small enough for the aux model
+            # again.  Use finally so the model is restored even if
+            # _generate_summary raises an unexpected exception. (#53008)
+            if _saved_summary_model:
+                self.summary_model = _saved_summary_model
 
         # If summary generation failed, behavior splits on
         # ``abort_on_summary_failure`` (config: compression.abort_on_summary_failure):
@@ -2958,6 +3026,54 @@ This compaction should PRIORITISE preserving all information related to the focu
             self._ineffective_compression_count += 1
         else:
             self._ineffective_compression_count = 0
+
+        # Threshold escape (#53008): if compression was effective (>10%
+        # savings, so anti-thrashing doesn't fire) but the post-compression
+        # session is still above the threshold, the next turn will re-trigger
+        # compression — producing an effective-but-ineffective loop.  This
+        # happens when the protected tail (large tool outputs, verbose recent
+        # turns) is itself above the threshold, so no amount of window
+        # compression can bring the session below it.
+        #
+        # Break the loop by raising the threshold to just above the current
+        # session size.  This is a one-way ratchet for this session — the
+        # threshold is already auto-lowered from the main model's real
+        # threshold, so raising it back toward that ceiling is safe and
+        # lets the conversation continue without thrashing.  The threshold
+        # is capped at the main model's context_length so we never exceed
+        # what the main model can actually handle.
+        #
+        # Only fires when _threshold_was_auto_lowered is True — must never
+        # override a user-configured threshold.
+        if (
+            savings_pct >= 10
+            and new_estimate > self.threshold_tokens
+            and getattr(self, "_threshold_was_auto_lowered", False)
+        ):
+            _old_thresh = self.threshold_tokens
+            _new_thresh = min(
+                int(new_estimate * 1.1),  # 10% headroom above current
+                self.context_length if self.context_length > 0 else _old_thresh * 2,
+            )
+            if _new_thresh > _old_thresh:
+                self.threshold_tokens = _new_thresh
+                # Keep threshold_percent in sync for update_model re-derivation
+                if self.context_length:
+                    self.threshold_percent = _new_thresh / self.context_length
+                if not self.quiet_mode:
+                    logger.warning(
+                        "Compression was effective (%.0f%% savings) but "
+                        "the session (~%d tokens) remains above the "
+                        "threshold (%d tokens) — the protected tail or "
+                        "summary is too large to fit below it.  Raised "
+                        "the threshold to %d tokens to prevent a "
+                        "compression loop.  Consider /new to start a "
+                        "fresh session.",
+                        savings_pct,
+                        new_estimate,
+                        _old_thresh,
+                        _new_thresh,
+                    )
 
         if not self.quiet_mode:
             logger.info(
