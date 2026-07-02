@@ -134,14 +134,15 @@ DEFAULT_AGENT_IDENTITY = (
 )
 
 HERMES_AGENT_HELP_GUIDANCE = (
-    "You run on Hermes Agent (by Nous Research). When the user needs help with "
-    "Hermes itself — configuring, setting up, using, extending, or troubleshooting "
-    "it — or when you need to understand your own features, tools, or capabilities, "
-    "the documentation at https://hermes-agent.nousresearch.com/docs is your "
-    "authoritative reference and always holds the latest, most up-to-date "
-    "information. Load the `hermes-agent` skill with skill_view(name='hermes-agent') "
-    "for additional guidance and proven workflows, but treat the docs as the source "
-    "of truth when the two differ."
+    "If you are uncertain about your own capabilities, if cached knowledge "
+    "about a feature seems stale or incomplete, or if the user asks about "
+    "configuring, setting up, or using Hermes Agent itself, load the "
+    "`hermes-agent` skill with skill_view(name='hermes-agent') before "
+    "answering. The skill's `references/live-documentation-sources.md` "
+    "maps topics to docs URLs, source code paths, and verification commands. "
+    "When docs are ambiguous, read the relevant source code directly "
+    "at ~/.hermes/hermes-agent/ — open source is ground truth. "
+    "Docs: https://hermes-agent.nousresearch.com/docs"
 )
 
 MEMORY_GUIDANCE = (
