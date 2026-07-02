@@ -1640,6 +1640,33 @@ class TestParallelToolCallGuidance:
         # Gemini/Gemma would receive the instruction twice in one prompt.
         assert "parallel tool call" not in GOOGLE_MODEL_OPERATIONAL_GUIDANCE.lower()
 
+    def test_importable_from_system_prompt_module(self):
+        # Regression guard: system_prompt.py imports PARALLEL_TOOL_CALL_GUIDANCE
+        # from prompt_builder.  If the symbol is ever removed from prompt_builder
+        # (or renamed) while the import in system_prompt still references the old
+        # name, every agent startup will throw ImportError.  This test catches
+        # that window — it fails the moment the two modules diverge.
+        import importlib
+        import sys
+
+        # Reload both modules fresh so the test is not fooled by a previously
+        # cached import that survived from an earlier module state.
+        for mod in ("agent.prompt_builder", "agent.system_prompt"):
+            sys.modules.pop(mod, None)
+
+        pb = importlib.import_module("agent.prompt_builder")
+        sp = importlib.import_module("agent.system_prompt")
+
+        # The symbol must exist in prompt_builder…
+        assert hasattr(pb, "PARALLEL_TOOL_CALL_GUIDANCE"), (
+            "PARALLEL_TOOL_CALL_GUIDANCE missing from agent.prompt_builder — "
+            "update the import in agent.system_prompt to match"
+        )
+        # …and system_prompt must have consumed it without ImportError
+        # (the import block runs at module load time, so getting here is enough;
+        # we also verify the value round-trips correctly).
+        assert pb.PARALLEL_TOOL_CALL_GUIDANCE == PARALLEL_TOOL_CALL_GUIDANCE
+
 
 # =========================================================================
 # Budget warning history stripping
