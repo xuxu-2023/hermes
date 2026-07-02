@@ -193,6 +193,7 @@ class WebhookAdapter(BasePlatformAdapter):
 
         app = web.Application()
         app.router.add_get("/health", self._handle_health)
+        app.router.add_get("/readyz", self._handle_health)
         app.router.add_post("/webhooks/{route_name}", self._handle_webhook)
         # Multi-profile multiplexing: a /p/<profile>/webhooks/<route> prefix
         # routes the inbound event to that profile. Same handler; the profile is
