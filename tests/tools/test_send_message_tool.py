@@ -1513,6 +1513,101 @@ class TestParseTargetRefE164:
         assert _parse_target_ref("matrix", "+15551234567")[2] is False
 
 
+class TestParseTargetRefSignalGroup:
+    """_parse_target_ref recognizes explicit Signal group targets."""
+
+    group_id = "w3W0kYAdHINWdTXDFl18LiH9O1xVwIadYMhVOD9tFaE="
+
+    def test_signal_group_id_is_explicit(self):
+        """signal:group:<id> targets must not fall back to directory resolution."""
+        chat_id, thread_id, is_explicit = _parse_target_ref(
+            "signal",
+            f"group:{self.group_id}",
+        )
+        assert chat_id == f"group:{self.group_id}"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_signal_group_id_strips_inner_whitespace(self):
+        """Whitespace after group: is not passed through as part of groupId."""
+        chat_id, thread_id, is_explicit = _parse_target_ref(
+            "signal",
+            f"group:  {self.group_id}  ",
+        )
+        assert chat_id == f"group:{self.group_id}"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_signal_group_prefix_accepts_future_id_forms(self):
+        """The explicit group: prefix is an escape hatch for non-GV2 id forms."""
+        chat_id, thread_id, is_explicit = _parse_target_ref(
+            "signal",
+            "group:abc-def_123",
+        )
+        assert chat_id == "group:abc-def_123"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_signal_bare_base64_group_id_is_explicit(self):
+        """Bare GV2 group IDs are accepted without directory lookup."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("signal", self.group_id)
+        assert chat_id == f"group:{self.group_id}"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_signal_group_dot_alias_is_not_explicit(self):
+        """group.<id> is not the adapter's group:<id> form."""
+        chat_id, thread_id, is_explicit = _parse_target_ref(
+            "signal",
+            f"group.{self.group_id}",
+        )
+        assert chat_id is None
+        assert thread_id is None
+        assert is_explicit is False
+
+    def test_signal_short_base64_like_string_is_not_group(self):
+        """Short base64-like strings are still treated as names to resolve."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("signal", "aGVsbG8=")
+        assert chat_id is None
+        assert thread_id is None
+        assert is_explicit is False
+
+    def test_signal_hex_sha_is_not_group(self):
+        """Long hex digests should not be reinterpreted as Signal groups."""
+        chat_id, thread_id, is_explicit = _parse_target_ref(
+            "signal",
+            "0123456789abcdef0123456789abcdef01234567",
+        )
+        assert chat_id is None
+        assert thread_id is None
+        assert is_explicit is False
+
+    def test_signal_long_digits_stay_numeric_target_not_group(self):
+        """Long digit strings keep the existing numeric recipient behavior."""
+        digits = "1234567890123456789012345678901234567890"
+        chat_id, thread_id, is_explicit = _parse_target_ref("signal", digits)
+        assert chat_id == digits
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_signal_wrong_length_base64_like_string_is_not_group(self):
+        """Base64-like strings must match the exact GV2 length to be bare IDs."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("signal", f"{'A' * 41}=")
+        assert chat_id is None
+        assert thread_id is None
+        assert is_explicit is False
+
+    def test_signal_uuid_is_not_group(self):
+        """UUIDs are not Signal group IDs."""
+        chat_id, thread_id, is_explicit = _parse_target_ref(
+            "signal",
+            "123e4567-e89b-12d3-a456-426614174000",
+        )
+        assert chat_id is None
+        assert thread_id is None
+        assert is_explicit is False
+
+
 class TestParseTargetRefWhatsAppJID:
     """_parse_target_ref accepts native WhatsApp JIDs as explicit targets.
 
