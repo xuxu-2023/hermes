@@ -837,18 +837,17 @@ def _collect_gateway_skill_entries(
     try:
         from agent.skill_commands import get_skill_commands
         from tools.skills_tool import SKILLS_DIR
-        from agent.skill_utils import get_external_skills_dirs
+        from agent.skill_utils import get_all_skills_dirs
         _skills_dir = str(SKILLS_DIR.resolve())
         _hub_dir = str((SKILLS_DIR / ".hub").resolve()).rstrip("/") + "/"
         # Build set of allowed directory prefixes: local skills dir + any
-        # user-configured ``skills.external_dirs``. Ensure each prefix ends
-        # with ``/`` so ``/my-skills`` does not also match ``/my-skills-extra``.
-        # Without this widening, external skills are visible in
-        # ``hermes skills list`` and the agent's ``/skill-name`` dispatch but
-        # silently excluded from gateway slash menus (#8110).
+        # user-configured ``skills.external_dirs`` + global default skills dir.
+        # Ensure each prefix ends with ``/`` so ``/my-skills`` does not also
+        # match ``/my-skills-extra``.
         _allowed_prefixes = [_skills_dir.rstrip("/") + "/"]
         _allowed_prefixes.extend(
-            str(d).rstrip("/") + "/" for d in get_external_skills_dirs()
+            str(d.resolve()).rstrip("/") + "/"
+            for d in get_all_skills_dirs()[1:]
         )
         skill_cmds = get_skill_commands()
         for cmd_key in sorted(skill_cmds):
@@ -1016,17 +1015,17 @@ def discord_skill_commands_by_category(
 
     try:
         from agent.skill_commands import get_skill_commands
-        from agent.skill_utils import get_external_skills_dirs
+        from agent.skill_utils import get_all_skills_dirs
         from tools.skills_tool import SKILLS_DIR
 
         _skills_dir = SKILLS_DIR.resolve()
         _hub_dir = (SKILLS_DIR / ".hub").resolve()
-        # Build list of (resolved_root, is_local) tuples. Each external dir
-        # becomes its own scan root for category derivation — a skill at
-        # ``<external>/mlops/foo/SKILL.md`` is still categorized as "mlops".
+        # Build list of (resolved_root, is_local) tuples. Each dir (local,
+        # global default, external) becomes its own scan root for category
+        # derivation.
         _scan_roots: list[_P] = [_skills_dir]
         try:
-            for ext in get_external_skills_dirs():
+            for ext in get_all_skills_dirs()[1:]:
                 try:
                     _scan_roots.append(_P(ext).resolve())
                 except Exception:

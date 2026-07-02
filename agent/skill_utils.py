@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from hermes_constants import get_config_path, get_skills_dir, is_termux
+from hermes_constants import get_config_path, get_default_hermes_root, get_skills_dir, is_termux
 
 logger = logging.getLogger(__name__)
 
@@ -497,12 +497,21 @@ def get_external_skills_dirs() -> List[Path]:
 
 
 def get_all_skills_dirs() -> List[Path]:
-    """Return all skill directories: local ``~/.hermes/skills/`` first, then external.
+    """Return all skill directories in precedence order.
 
-    The local dir is always first (and always included even if it doesn't exist
-    yet — callers handle that).  External dirs follow in config order.
+    1. Profile-scoped skills dir (``HERMES_HOME/skills/``) — highest priority
+    2. Global default skills dir (e.g. ``~/.hermes/skills/``) — visible when
+       a non-default profile is active, deduplicated when HERMES_HOME IS
+       the global default
+    3. External dirs from ``skills.external_dirs`` config
+
+    Profile skills shadow global skills with the same name (first-seen-wins
+    in callers using a ``seen_names`` set).
     """
     dirs = [get_skills_dir()]
+    global_default = get_default_hermes_root() / "skills"
+    if global_default.resolve() != get_skills_dir().resolve():
+        dirs.append(global_default)
     dirs.extend(get_external_skills_dirs())
     return dirs
 
