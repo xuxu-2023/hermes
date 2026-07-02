@@ -343,13 +343,10 @@ export const workspaceCwdForNewSession = (): string => {
     return getRememberedWorkspaceCwd()
   }
 
-  // A bare new chat starts DETACHED — no inherited cwd, so the composer's coding
-  // rail (which keys off $currentCwd) shows no branch and the first message runs
-  // in the gateway's default rather than silently in the last repo you touched.
-  // Only an explicit default-project-dir setting pre-attaches. Entering a
-  // project/worktree attaches its cwd directly (startSessionInWorkspace), so the
-  // "remember where I was when I'm in a project" case is unaffected.
-  return getConfiguredDefaultProjectDir()
+  // Desktop renderer only: gateway/TUI/CLI resolve their cwd server-side and never
+  // call this, so reviving last-folder inheritance here can't affect them. Safe to
+  // inherit in the desktop because the right-sidebar picker can re-point the folder.
+  return getConfiguredDefaultProjectDir() || getRememberedWorkspaceCwd() || $currentCwd.get().trim()
 }
 
 export const setCurrentBranch = (next: Updater<string>) => updateAtom($currentBranch, next)

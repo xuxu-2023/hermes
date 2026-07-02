@@ -415,7 +415,7 @@ export function DesktopController() {
     [activeSessionIdRef, updateSessionState]
   )
 
-  const { refreshProjectBranch } = useCwdActions({
+  const { changeSessionCwd, refreshProjectBranch } = useCwdActions({
     activeSessionId,
     activeSessionIdRef,
     onSessionRuntimeInfo: updateActiveSessionRuntimeInfo,
@@ -1094,6 +1094,7 @@ export function DesktopController() {
         key={currentCwd || 'no-cwd'}
         onActivateFile={path => composer.insertContextPathInlineRef(path)}
         onActivateFolder={path => composer.insertContextPathInlineRef(path, true)}
+        onChangeCwd={changeSessionCwd}
       />
     </Pane>
   )
