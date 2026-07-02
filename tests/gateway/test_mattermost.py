@@ -187,6 +187,22 @@ class TestMattermostConfigLoading:
 # Adapter format / truncate
 # ---------------------------------------------------------------------------
 
+
+def test_file_post_message_preserves_explicit_caption():
+    from plugins.platforms.mattermost.adapter import _file_post_message
+
+    assert _file_post_message("Here is the file", ["example.png"]) == "Here is the file"
+
+
+def test_file_post_message_uses_sanitized_filename_fallbacks():
+    from plugins.platforms.mattermost.adapter import _file_post_message
+
+    assert _file_post_message("", [" example.png "]) == "📎 example.png"
+    assert _file_post_message(None, ["@channel\nimage.png"]) == "📎 @\u200bchannel image.png"
+    assert _file_post_message("", ["one.png", "two.png"]) == "📎 one.png\n📎 two.png"
+    assert _file_post_message("", ["", "   "]) == "📎 Attachment"
+
+
 def _make_adapter():
     """Create a MattermostAdapter with mocked config."""
     from plugins.platforms.mattermost.adapter import MattermostAdapter
@@ -474,6 +490,50 @@ class TestMattermostSend:
         result = await self.adapter.send("channel_1", "Hello!")
 
         assert result.success is False
+
+
+    @pytest.mark.asyncio
+    async def test_send_image_file_uses_metadata_thread_id(self, tmp_path):
+        """Local file uploads should keep Mattermost thread context from metadata."""
+        self.adapter._reply_mode = "thread"
+        image_path = tmp_path / "example.png"
+        image_path.write_bytes(b"png")
+        self.adapter._upload_file = AsyncMock(return_value="file_123")
+        self.adapter._api_get = AsyncMock(return_value={"id": "root_post_123", "root_id": ""})
+        self.adapter._api_post = AsyncMock(return_value={"id": "post_with_file"})
+
+        result = await self.adapter.send_image_file(
+            "channel_1",
+            str(image_path),
+            metadata={"thread_id": "root_post_123"},
+        )
+
+        assert result.success is True
+        payload = self.adapter._api_post.call_args[0][1]
+        assert payload["root_id"] == "root_post_123"
+        assert payload["file_ids"] == ["file_123"]
+        assert payload["message"] == "📎 example.png"
+
+    @pytest.mark.asyncio
+    async def test_send_multiple_images_uses_metadata_thread_id(self, tmp_path):
+        """Batched MEDIA image uploads should stay inside the Mattermost thread."""
+        self.adapter._reply_mode = "thread"
+        image_path = tmp_path / "example.png"
+        image_path.write_bytes(b"png")
+        self.adapter._upload_file = AsyncMock(return_value="file_123")
+        self.adapter._api_get = AsyncMock(return_value={"id": "root_post_123", "root_id": ""})
+        self.adapter._api_post = AsyncMock(return_value={"id": "post_with_file"})
+
+        await self.adapter.send_multiple_images(
+            "channel_1",
+            [(f"file://{image_path}", "")],
+            metadata={"thread_id": "root_post_123"},
+        )
+
+        payload = self.adapter._api_post.call_args[0][1]
+        assert payload["root_id"] == "root_post_123"
+        assert payload["file_ids"] == ["file_123"]
+        assert payload["message"] == "📎 example.png"
 
 
 # ---------------------------------------------------------------------------
