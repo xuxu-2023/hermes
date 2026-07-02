@@ -354,6 +354,50 @@ class TestUpdateJob:
         assert fetched["schedule"]["minutes"] == 120
         assert fetched["schedule_display"] == "every 120m"
 
+    def test_resaving_same_interval_schedule_preserves_due_run(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 6, 29, 14, 0, 10, tzinfo=timezone.utc)
+        due_run = datetime(2026, 6, 29, 13, 0, 0, tzinfo=timezone.utc).isoformat()
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        job = create_job(prompt="Hourly report", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = due_run
+        save_jobs(jobs)
+
+        updated = update_job(
+            job["id"],
+            {
+                "name": "Renamed hourly report",
+                "schedule": job["schedule"],
+                "schedule_display": job["schedule_display"],
+            },
+        )
+
+        assert updated["next_run_at"] == due_run
+        assert get_job(job["id"])["next_run_at"] == due_run
+
+    def test_resaving_same_cron_schedule_preserves_due_run(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 6, 29, 14, 0, 10, tzinfo=timezone.utc)
+        due_run = datetime(2026, 6, 29, 13, 0, 0, tzinfo=timezone.utc).isoformat()
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        job = create_job(prompt="Hourly cron report", schedule="0 * * * *")
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = due_run
+        save_jobs(jobs)
+
+        updated = update_job(
+            job["id"],
+            {
+                "name": "Renamed cron report",
+                "schedule": job["schedule"],
+                "schedule_display": job["schedule_display"],
+            },
+        )
+
+        assert updated["next_run_at"] == due_run
+        assert get_job(job["id"])["next_run_at"] == due_run
+
     def test_update_enable_disable(self, tmp_cron_dir):
         job = create_job(prompt="Toggle me", schedule="every 1h")
         assert job["enabled"] is True
