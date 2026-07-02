@@ -1244,56 +1244,62 @@ class DiscordAdapter(BasePlatformAdapter):
         failures we close the client, set a retryable fatal error, and hand
         control back to the gateway's platform reconnect watcher.
         """
-        interval = self._liveness_interval_seconds
-        threshold = self._liveness_failure_threshold
-        fails = 0
-        while self._running:
-            try:
-                await asyncio.sleep(interval)
-            except asyncio.CancelledError:
-                return
-            client = self._client
-            if not self._running or client is None or getattr(self, "_disconnecting", False):
-                return
-            if hasattr(client, "is_closed") and client.is_closed():
-                return
-            user = getattr(client, "user", None)
-            if user is None:
-                continue
-            try:
-                await client.fetch_user(user.id)
-                fails = 0
-            except asyncio.CancelledError:
-                return
-            except Exception as exc:
-                fails += 1
-                logger.warning(
-                    "[%s] Discord liveness probe failed (%d/%d): %s",
-                    self.name, fails, threshold, exc,
-                )
-                if fails < threshold:
+        try:
+            interval = self._liveness_interval_seconds
+            threshold = self._liveness_failure_threshold
+            fails = 0
+            while self._running:
+                try:
+                    await asyncio.sleep(interval)
+                except asyncio.CancelledError:
+                    return
+                client = self._client
+                if not self._running or client is None or getattr(self, "_disconnecting", False):
+                    return
+                if hasattr(client, "is_closed") and client.is_closed():
+                    return
+                user = getattr(client, "user", None)
+                if user is None:
                     continue
-                logger.error(
-                    "[%s] Discord client appears dead, forcing reconnect", self.name,
-                )
                 try:
-                    await client.close()
-                except Exception:
-                    logger.debug(
-                        "[%s] Error closing wedged Discord client", self.name, exc_info=True,
+                    await client.fetch_user(user.id)
+                    fails = 0
+                except asyncio.CancelledError:
+                    return
+                except Exception as exc:
+                    fails += 1
+                    logger.warning(
+                        "[%s] Discord liveness probe failed (%d/%d): %s",
+                        self.name, fails, threshold, exc,
                     )
-                self._set_fatal_error(
-                    "liveness_probe_failed",
-                    f"Discord REST liveness probe failed {fails} times in a row",
-                    retryable=True,
-                )
-                try:
-                    await self._notify_fatal_error()
-                except Exception:
-                    logger.debug(
-                        "[%s] Fatal-error handler raised", self.name, exc_info=True,
+                    if fails < threshold:
+                        continue
+                    logger.error(
+                        "[%s] Discord client appears dead, forcing reconnect", self.name,
                     )
-                return
+                    try:
+                        await client.close()
+                    except Exception:
+                        logger.debug(
+                            "[%s] Error closing wedged Discord client", self.name, exc_info=True,
+                        )
+                    self._set_fatal_error(
+                        "liveness_probe_failed",
+                        f"Discord REST liveness probe failed {fails} times in a row",
+                        retryable=True,
+                    )
+                    try:
+                        await self._notify_fatal_error()
+                    except Exception:
+                        logger.debug(
+                            "[%s] Fatal-error handler raised", self.name, exc_info=True,
+                        )
+                    return
+        except Exception as exc:
+            logger.exception(
+                "[%s] Unexpected error in liveness probe loop, exiting to avoid gateway crash: %s",
+                self.name, exc,
+            )
 
     async def _cancel_liveness_task(self) -> None:
         """Cancel and await the liveness probe task, if running."""
