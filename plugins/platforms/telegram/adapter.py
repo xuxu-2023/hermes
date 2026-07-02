@@ -6377,7 +6377,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if not chat:
             return False
         chat_type = str(getattr(chat, "type", "")).split(".")[-1].lower()
-        return chat_type in {"group", "supergroup"}
+        return chat_type in {"group", "supergroup", "channel"}
 
     @classmethod
     def _effective_message_thread_id(cls, message: Message) -> Optional[str]:
