@@ -5,7 +5,7 @@
 // partial locales should use `defineLocale()` so missing desktop-only strings
 // fall back to English while new keys remain type-checked.
 
-export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja'
+export type Locale = 'en' | 'fr' | 'zh' | 'zh-hant' | 'ja'
 
 export type ToolTitleKey =
   | 'browser_click'
@@ -113,6 +113,8 @@ export interface Translations {
       startingDesktopConnection: string
       startingHermesDesktop: string
     }
+    connectingPrefix: string
+    connectingTail: string
     errors: {
       backgroundExited: string
       backgroundExitedDuringStartup: string
@@ -1905,6 +1907,23 @@ export interface Translations {
       title: string
       description: string
       toggle: string
+    }
+  }
+
+  uninstall: {
+    dangerZone: string
+    checking: string
+    confirmTitle: string
+    confirmBody: (consequence: string) => string
+    uninstalling: string
+    yesUninstall: string
+    cancel: string
+    uninstallHermes: string
+    uninstallDescription: string
+    options: {
+      gui: { title: string; description: string; consequence: string }
+      lite: { title: string; description: string; consequence: string }
+      full: { title: string; description: string; consequence: string }
     }
   }
 }

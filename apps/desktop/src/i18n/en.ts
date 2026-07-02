@@ -68,6 +68,8 @@ export const en: Translations = {
       startingDesktopConnection: 'Starting desktop connection',
       startingHermesDesktop: 'Starting Hermes Desktop…'
     },
+    connectingPrefix: 'Connecting',
+    connectingTail: '…',
     errors: {
       backgroundExited: 'Hermes background process exited.',
       backgroundExitedDuringStartup: 'Hermes background process exited during startup.',
@@ -2299,5 +2301,39 @@ export const en: Translations = {
       description: 'Displays the mobile sidebar.',
       toggle: 'Toggle Sidebar'
     }
-  }
+  },
+
+  uninstall: {
+    dangerZone: 'Danger zone',
+    checking: "Checking what's installed…",
+    confirmTitle: 'Confirm uninstall',
+    confirmBody: (consequence: string) => `This removes ${consequence}. This can't be undone.`,
+    uninstalling: 'Uninstalling…',
+    yesUninstall: 'Yes, uninstall',
+    cancel: 'Cancel',
+    uninstallHermes: 'Uninstall Hermes',
+    uninstallDescription:
+      'Choose how much to remove. The app closes to finish the job; reopen the installer any time to come back.',
+    options: {
+      gui: {
+        title: 'Uninstall Chat GUI only',
+        description: 'Remove this desktop app. The Hermes agent, your config, and chats all stay.',
+        consequence: 'the desktop Chat GUI (this app and its data)'
+      },
+      lite: {
+        title: 'Uninstall GUI + agent, keep my data',
+        description:
+          'Remove the app and the Hermes agent, but keep config, chats, and secrets for a future reinstall.',
+        consequence: 'the Chat GUI and the Hermes agent (config, chats, and secrets are kept)'
+      },
+      full: {
+        title: 'Uninstall everything',
+        description:
+          'Remove the app, the agent, and all user data — config, chats, scheduled jobs, secrets, logs.',
+        consequence:
+          'EVERYTHING — the Chat GUI, the Hermes agent, and all of your config, chats, secrets, and logs'
+      }
+    }
+  },
 }
+

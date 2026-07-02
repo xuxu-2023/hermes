@@ -31,6 +31,30 @@ const defaultConfigClient: I18nConfigClient = {
   }
 }
 
+const I18N_LOCALE_KEY = 'hermes-i18n-locale'
+
+function readStoredLocale(): unknown {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      return window.localStorage.getItem(I18N_LOCALE_KEY)
+    }
+  } catch {
+    // localStorage may throw in sandboxed contexts.
+  }
+
+  return undefined
+}
+
+function storeLocale(locale: Locale): void {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(I18N_LOCALE_KEY, locale)
+    }
+  } catch {
+    // Silently ignore — in-memory state is the source of truth.
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -82,7 +106,9 @@ export interface I18nProviderProps {
 }
 
 export function I18nProvider({ children, configClient = defaultConfigClient, initialLocale }: I18nProviderProps) {
-  const [locale, setLocaleState] = useState<Locale>(() => normalizeLocale(initialLocale))
+  const [locale, setLocaleState] = useState<Locale>(() =>
+    normalizeLocale(initialLocale ?? readStoredLocale())
+  )
   const [isLoadingConfig, setIsLoadingConfig] = useState(false)
   const [isSavingLocale, setIsSavingLocale] = useState(false)
   const [configLoadError, setConfigLoadError] = useState<Error | null>(null)
@@ -148,6 +174,8 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
         if (!result.ok) {
           throw new Error('Failed to save language')
         }
+
+        storeLocale(next)
       } catch (error) {
         const nextError = toError(error)
 

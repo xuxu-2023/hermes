@@ -1,18 +1,14 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
+import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { $desktopBoot } from '@/store/boot'
 import { $gatewayState } from '@/store/session'
 
-// Static, always-legible prefix; only TAIL ever scrambles. Splitting them at
-// the render level means no timer logic (even a stale HMR one) can ever
-// scramble "CONN".
-const PREFIX = 'CONN'
-const TAIL = 'ECTING'
 // Even-weight mono ascii so cycling glyphs don't jump width (matches the
 // nousnet-web download-button decode effect).
-const SCRAMBLE_CHARS = '/\\|-_=+<>~:*'
+const SCRAMBLE_CHARS = '/\\|-=_+<>~:*'
 const TICK_MS = 45
 
 // Exit choreography (ms): text fades down + out, hold, then the overlay fades.
@@ -39,13 +35,17 @@ function forcedPreview(): boolean {
   }
 }
 
-function scrambledTail(resolvedCount: number): string {
-  return Array.from(TAIL, (ch, i) =>
+function scrambledTail(tail: string, resolvedCount: number): string {
+  return Array.from(tail, (ch, i) =>
     i < resolvedCount ? ch : SCRAMBLE_CHARS[(Math.random() * SCRAMBLE_CHARS.length) | 0]
   ).join('')
 }
 
 export function GatewayConnectingOverlay() {
+  const { t } = useI18n()
+  const PREFIX = t.boot.connectingPrefix
+  const TAIL = t.boot.connectingTail
+
   const gatewayState = useStore($gatewayState)
   const boot = useStore($desktopBoot)
   const [previewing] = useState(forcedPreview)
@@ -92,11 +92,11 @@ export function GatewayConnectingOverlay() {
       }
 
       resolved += 0.5
-      setTail(scrambledTail(Math.floor(resolved)))
+      setTail(scrambledTail(TAIL, Math.floor(resolved)))
     }, TICK_MS)
 
     return () => window.clearInterval(id)
-  }, [phase, previewing, connecting])
+  }, [phase, previewing, connecting, TAIL])
 
   // Kick off the exit when connected: real connect, or a faked timer in preview.
   useEffect(() => {
@@ -117,7 +117,7 @@ export function GatewayConnectingOverlay() {
       setTail(TAIL)
       setPhase('text-out')
     }
-  }, [phase, previewing, gatewayState])
+  }, [phase, previewing, gatewayState, TAIL])
 
   // Advance the exit choreography: text-out -> overlay-out -> gone.
   useEffect(() => {
@@ -142,7 +142,7 @@ export function GatewayConnectingOverlay() {
 
       return () => window.clearTimeout(id)
     }
-  }, [phase, previewing])
+  }, [phase, previewing, TAIL])
 
   // Boot failed — BootFailureOverlay owns the screen; don't linger behind it.
   if (boot.error && !previewing) {
