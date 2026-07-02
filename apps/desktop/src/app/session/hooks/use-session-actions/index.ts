@@ -9,12 +9,7 @@ import { setSessionYolo } from '@/lib/yolo-session'
 import { clearQueuedPrompts } from '@/store/composer-queue'
 import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
-import {
-  $activeGatewayProfile,
-  $newChatProfile,
-  ensureGatewayProfile,
-  normalizeProfileKey
-} from '@/store/profile'
+import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { resolveNewSessionCwd, tombstoneSessions, untombstoneSessions } from '@/store/projects'
 import {
   $currentCwd,
@@ -48,11 +43,7 @@ import {
 } from '@/store/session'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { isWatchWindow } from '@/store/windows'
-import type {
-  SessionCreateResponse,
-  SessionResumeResponse,
-  UsageStats
-} from '@/types/hermes'
+import type { SessionCreateResponse, SessionResumeResponse, UsageStats } from '@/types/hermes'
 
 import { NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../../types'
@@ -71,6 +62,8 @@ import {
   toBranchMessages,
   upsertOptimisticSession
 } from './utils'
+
+const DESKTOP_SESSION_SOURCE = 'desktop'
 
 interface SessionActionsOptions {
   activeSessionId: string | null
@@ -185,6 +178,7 @@ export function useSessionActions({
 
         const created = await requestGateway<SessionCreateResponse>('session.create', {
           cols: 96,
+          source: DESKTOP_SESSION_SOURCE,
           ...(cwd && { cwd }),
           ...(newChatProfile ? { profile: newChatProfile } : {}),
           ...(uiModel ? { model: uiModel, ...(uiProvider ? { provider: uiProvider } : {}) } : {}),
@@ -469,6 +463,7 @@ export function useSessionActions({
         const resumePromise = requestGateway<SessionResumeResponse>('session.resume', {
           session_id: storedSessionId,
           cols: 96,
+          source: DESKTOP_SESSION_SOURCE,
           // Watch windows attach lazily (live mirror). Every other cold resume
           // gets the gateway's default deferred build: the RPC returns the
           // transcript immediately instead of blocking the switch on _make_agent
@@ -651,6 +646,7 @@ export function useSessionActions({
         // No title: the backend auto-names the branch from its parent's lineage.
         const branched = await requestGateway<SessionCreateResponse>('session.create', {
           cols: 96,
+          source: DESKTOP_SESSION_SOURCE,
           ...(cwd && { cwd }),
           messages: branchMessages.map(({ content, role }) => ({ content, role })),
           ...(parentStoredId && { parent_session_id: parentStoredId })
