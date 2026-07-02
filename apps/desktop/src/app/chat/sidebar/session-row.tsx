@@ -184,6 +184,10 @@ export function SidebarSessionRow({
               return
             }
 
+            if (isSelected) {
+              return
+            }
+
             onResume()
           }}
         >
