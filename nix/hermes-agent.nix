@@ -22,11 +22,14 @@
   wl-clipboard,
   xclip,
 
-  # Flake inputs — passed explicitly by packages.nix and overlays.nix
+  # Flake inputs — passed explicitly by packages.nix; overlay.nix sources the
+  # equivalents from inputs.nix (which reads flake.lock).
   uv2nix,
   pyproject-nix,
   pyproject-build-systems,
-  npm-lockfile-fix,
+  # null is supported for stable-Nix consumers that only build the core Python
+  # package; the node sub-packages (tui/web/desktop) require it.
+  npm-lockfile-fix ? null,
   # Locked git revision of the flake source — embedded so banner.py can
   # check for updates without needing a local .git directory. Null for
   # impure / dirty builds where flakes can't determine a rev.
