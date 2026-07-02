@@ -445,6 +445,12 @@ export interface Translations {
       remoteDesc: string
       remoteUrlTitle: string
       remoteUrlDesc: string
+      transportTitle: string
+      transportDesc: string
+      transportDirect: string
+      transportLocalMtlsProxy: string
+      effectiveUrlTitle: string
+      effectiveUrlDesc: string
       probing: string
       probeError: string
       signedIn: string
@@ -478,6 +484,7 @@ export interface Translations {
       restartingMessage: string
       savedMessage: string
       connectedTo: (baseUrl: string, version?: string) => string
+      connectedToViaProxy: (publicUrl: string, effectiveUrl: string, version?: string) => string
       reachableTitle: string
       signedOutTitle: string
       signedOutMessage: string

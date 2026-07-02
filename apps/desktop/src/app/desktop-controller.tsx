@@ -199,6 +199,16 @@ export function DesktopController() {
 
   const terminalSidebarOpen = chatOpen && terminalTakeover
 
+  const closeSettingsBeforeReconnect = useCallback(() => {
+    // `applyConnectionConfig` reloads the BrowserWindow from the main process.
+    // React Router navigation can be interrupted by that reload, so update the
+    // actual HashRouter history entry synchronously first; otherwise the app
+    // reloads back into #/settings?tab=gateway after a successful reconnect.
+    const nextHashRoute = `#${NEW_CHAT_ROUTE}`
+    window.history.replaceState(window.history.state, '', nextHashRoute)
+    navigate(NEW_CHAT_ROUTE, { replace: true })
+  }, [navigate])
+
   const titlebarToolGroups = useGroupRegistry<TitlebarTool>()
   const statusbarItemGroups = useGroupRegistry<StatusbarItem>()
   const setTitlebarToolGroup = titlebarToolGroups.set
@@ -960,6 +970,7 @@ export function DesktopController() {
               void refreshCurrentModel()
               void queryClient.invalidateQueries({ queryKey: ['model-options'] })
             }}
+            onReconnectApplied={closeSettingsBeforeReconnect}
           />
         </Suspense>
       )}

@@ -36,7 +36,7 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   'about'
 ]
 
-export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
+export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChanged, onReconnectApplied }: SettingsPageProps) {
   const { t } = useI18n()
   const [activeView, setActiveView] = useRouteEnumParam('tab', SETTINGS_VIEWS, 'config:model' as SettingsViewId)
   // Providers subnav (Accounts vs API keys) lives in its own param so each
@@ -219,7 +219,7 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
           ) : activeView === 'about' ? (
             <AboutSettings />
           ) : activeView === 'gateway' ? (
-            <GatewaySettings />
+            <GatewaySettings onReconnectApplied={onReconnectApplied} />
           ) : activeView.startsWith('config:') ? (
             <ConfigSettings
               activeSectionId={activeView.slice('config:'.length)}

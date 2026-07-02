@@ -104,6 +104,7 @@ const {
   cookiesHaveLiveSession,
   normAuthMode,
   normalizeRemoteBaseUrl,
+  normalizeRemoteTransport,
   pathWithGlobalRemoteProfile,
   profileRemoteOverride,
   resolveAuthMode,
@@ -4622,6 +4623,29 @@ function decryptDesktopSecret(secret) {
 }
 
 // Validate + normalize the per-profile remote overrides map read from disk.
+function sanitizeRemoteBlock(raw) {
+  const block = raw && typeof raw === 'object' ? raw : {}
+  const cleaned = {}
+  const legacyUrl = String(block.url || '').trim()
+  const publicUrl = String(block.publicUrl || legacyUrl).trim()
+  const effectiveUrl = String(block.effectiveUrl || legacyUrl || publicUrl).trim()
+
+  if (publicUrl) {
+    cleaned.url = publicUrl
+    cleaned.publicUrl = publicUrl
+  }
+  if (effectiveUrl) {
+    cleaned.effectiveUrl = effectiveUrl
+  }
+  cleaned.transportMode = block.transportMode === 'local_mtls_proxy' ? 'local_mtls_proxy' : 'direct'
+  cleaned.authMode = normAuthMode(block.authMode)
+  if (block.token && typeof block.token === 'object') {
+    cleaned.token = block.token
+  }
+
+  return cleaned
+}
+
 // Drops malformed names/entries and keeps only the recognized fields so a
 // hand-edited or stale connection.json can't inject junk into resolution.
 function sanitizeConnectionProfiles(raw) {
@@ -4638,15 +4662,7 @@ function sanitizeConnectionProfiles(raw) {
       continue
     }
 
-    const cleaned = { mode: entry.mode === 'remote' ? 'remote' : 'local' }
-    const url = String(entry.url || '').trim()
-    if (url) {
-      cleaned.url = url
-    }
-    cleaned.authMode = normAuthMode(entry.authMode)
-    if (entry.token && typeof entry.token === 'object') {
-      cleaned.token = entry.token
-    }
+    const cleaned = { mode: entry.mode === 'remote' ? 'remote' : 'local', ...sanitizeRemoteBlock(entry) }
     out[name] = cleaned
   }
 
@@ -4675,11 +4691,7 @@ function readDesktopConnectionConfig() {
     const parsed = JSON.parse(raw)
 
     if (parsed && typeof parsed === 'object') {
-      const remote = parsed.remote && typeof parsed.remote === 'object' ? parsed.remote : {}
-      // authMode lives on the remote sub-object: 'oauth' (cookie + ws-ticket)
-      // or 'token' (legacy static session token). Default to 'token' for
-      // backward compatibility with configs written before OAuth support.
-      remote.authMode = remote.authMode === 'oauth' ? 'oauth' : 'token'
+      const remote = sanitizeRemoteBlock(parsed.remote)
       config = {
         mode: parsed.mode === 'remote' ? 'remote' : 'local',
         remote,
@@ -4751,17 +4763,22 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
 
   const remoteToken = decryptDesktopSecret(block.token)
   const authMode = normAuthMode(block.authMode)
-  const remoteUrl = envOverride ? String(process.env.HERMES_DESKTOP_REMOTE_URL || '') : String(block.url || '')
+  const transport = envOverride
+    ? normalizeRemoteTransport({ url: process.env.HERMES_DESKTOP_REMOTE_URL })
+    : normalizeRemoteTransport(block)
+  const remoteUrl = transport.publicUrl
+  const remoteEffectiveUrl = transport.effectiveUrl
+  const remoteTransportMode = transport.transportMode
   const mode = envOverride || (key ? scoped?.mode : config.mode) === 'remote' ? 'remote' : 'local'
 
   let remoteOauthConnected = false
-  if (authMode === 'oauth' && remoteUrl) {
+  if (authMode === 'oauth' && remoteEffectiveUrl) {
     try {
       // Display signal: treat a live RT cookie as "connected" even if the AT
       // cookie has lapsed — the gateway refreshes the AT on the next request,
       // so the session is still usable. The authoritative liveness check is
       // the ws-ticket mint in resolveRemoteBackend at actual connect time.
-      remoteOauthConnected = await hasLiveOauthSession(remoteUrl)
+      remoteOauthConnected = await hasLiveOauthSession(remoteEffectiveUrl)
     } catch {
       remoteOauthConnected = false
     }
@@ -4772,7 +4789,10 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
     // Echo the scope back so the UI knows which profile (if any) this reflects.
     profile: key,
     remoteAuthMode: authMode,
+    remoteEffectiveUrl,
     remoteOauthConnected,
+    remotePublicUrl: remoteUrl,
+    remoteTransportMode,
     remoteUrl,
     remoteTokenPreview: tokenPreview(remoteToken),
     remoteTokenSet: Boolean(remoteToken),
@@ -4785,11 +4805,17 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
 // Build + validate a `{ url, authMode, token }` remote block. OAuth gateways
 // authenticate via the login-window session cookie (verified at connect time in
 // resolveRemoteBackend), so only token-auth remotes require a saved token.
-function buildRemoteBlock(remoteUrl, authMode, token) {
+function buildRemoteBlock(remoteUrl, authMode, token, options = {}) {
   if (authMode !== 'oauth' && !decryptDesktopSecret(token)) {
     throw new Error('Remote gateway session token is required.')
   }
-  return { url: normalizeRemoteBaseUrl(remoteUrl), authMode, token }
+  const transport = normalizeRemoteTransport({
+    url: remoteUrl,
+    publicUrl: options.publicUrl ?? remoteUrl,
+    effectiveUrl: options.effectiveUrl ?? remoteUrl,
+    transportMode: options.transportMode
+  })
+  return { ...transport, authMode, token }
 }
 
 function coerceDesktopConnectionConfig(input = {}, existing = readDesktopConnectionConfig(), options = {}) {
@@ -4799,7 +4825,9 @@ function coerceDesktopConnectionConfig(input = {}, existing = readDesktopConnect
 
   // The block being edited: a per-profile entry or the global remote block.
   const existingBlock = key ? existing.profiles?.[key] || {} : existing.remote || {}
-  const remoteUrl = String(input.remoteUrl ?? existingBlock.url ?? '').trim()
+  const remoteUrl = String(input.remotePublicUrl ?? input.remoteUrl ?? existingBlock.publicUrl ?? existingBlock.url ?? '').trim()
+  const remoteEffectiveUrl = String(input.remoteEffectiveUrl ?? existingBlock.effectiveUrl ?? existingBlock.url ?? remoteUrl).trim()
+  const remoteTransportMode = input.remoteTransportMode ?? existingBlock.transportMode
   // authMode: explicit input wins; otherwise inherit the saved value, default 'token'.
   const authMode = resolveAuthMode(input.remoteAuthMode, existingBlock.authMode)
   const incomingToken = typeof input.remoteToken === 'string' ? input.remoteToken.trim() : ''
@@ -4814,7 +4842,13 @@ function coerceDesktopConnectionConfig(input = {}, existing = readDesktopConnect
     // local entry clears the override so the profile inherits the default.
     const profiles = { ...(existing.profiles || {}) }
     if (mode === 'remote') {
-      profiles[key] = { mode: 'remote', ...buildRemoteBlock(remoteUrl, authMode, nextToken) }
+      profiles[key] = {
+        mode: 'remote',
+        ...buildRemoteBlock(remoteUrl, authMode, nextToken, {
+          effectiveUrl: remoteEffectiveUrl,
+          transportMode: remoteTransportMode
+        })
+      }
     } else {
       delete profiles[key]
     }
@@ -4823,8 +4857,20 @@ function coerceDesktopConnectionConfig(input = {}, existing = readDesktopConnect
 
   const nextRemote =
     mode === 'remote'
-      ? buildRemoteBlock(remoteUrl, authMode, nextToken)
-      : { url: remoteUrl ? normalizeRemoteBaseUrl(remoteUrl) : remoteUrl, authMode, token: nextToken }
+      ? buildRemoteBlock(remoteUrl, authMode, nextToken, {
+          effectiveUrl: remoteEffectiveUrl,
+          transportMode: remoteTransportMode
+        })
+      : {
+          ...normalizeRemoteTransport({
+            url: remoteUrl,
+            publicUrl: remoteUrl,
+            effectiveUrl: remoteEffectiveUrl || remoteUrl,
+            transportMode: remoteTransportMode
+          }),
+          authMode,
+          token: nextToken
+        }
 
   // Preserve per-profile overrides when saving the global connection.
   return { mode, remote: nextRemote, profiles: existing.profiles || {} }
@@ -4835,8 +4881,11 @@ function coerceDesktopConnectionConfig(input = {}, existing = readDesktopConnect
 // and is shared by the per-profile, env, and global resolution paths. `token`
 // is the DECRYPTED static token (or null in OAuth mode). `source` is a label
 // for diagnostics ('profile' | 'env' | 'settings').
-async function buildRemoteConnection(rawUrl, authMode, token, source) {
+async function buildRemoteConnection(rawUrl, authMode, token, source, options = {}) {
+  const publicUrl = normalizeRemoteBaseUrl(options.publicUrl || rawUrl)
   const baseUrl = normalizeRemoteBaseUrl(rawUrl)
+  const effectiveUrl = baseUrl
+  const transportMode = options.transportMode === 'local_mtls_proxy' ? 'local_mtls_proxy' : 'direct'
 
   if (authMode === 'oauth') {
     // OAuth gateway: auth comes from the session cookies in the OAuth
@@ -4870,9 +4919,12 @@ async function buildRemoteConnection(rawUrl, authMode, token, source) {
 
     return {
       baseUrl,
+      effectiveUrl,
       mode: 'remote',
+      publicUrl,
       source,
       authMode: 'oauth',
+      transportMode,
       // No static token in OAuth mode; REST is cookie-authed via the partition.
       token: null,
       wsUrl: buildGatewayWsUrlWithTicket(baseUrl, ticket)
@@ -4888,9 +4940,12 @@ async function buildRemoteConnection(rawUrl, authMode, token, source) {
 
   return {
     baseUrl,
+    effectiveUrl,
     mode: 'remote',
+    publicUrl,
     source,
     authMode: 'token',
+    transportMode,
     token,
     wsUrl: buildGatewayWsUrl(baseUrl, token)
   }
@@ -4912,7 +4967,10 @@ async function resolveRemoteBackend(profile) {
   const override = profileRemoteOverride(config, profile)
   if (override) {
     const token = override.authMode === 'oauth' ? null : decryptDesktopSecret(override.token)
-    return buildRemoteConnection(override.url, override.authMode, token, 'profile')
+    return buildRemoteConnection(override.effectiveUrl, override.authMode, token, 'profile', {
+      publicUrl: override.publicUrl,
+      transportMode: override.transportMode
+    })
   }
 
   // 2. Env override (global, token-auth only).
@@ -4933,8 +4991,12 @@ async function resolveRemoteBackend(profile) {
     return null
   }
   const authMode = normAuthMode(config.remote?.authMode)
+  const remoteTransport = normalizeRemoteTransport(config.remote)
   const token = authMode === 'oauth' ? null : decryptDesktopSecret(config.remote?.token)
-  return buildRemoteConnection(config.remote?.url, authMode, token, 'settings')
+  return buildRemoteConnection(remoteTransport.effectiveUrl, authMode, token, 'settings', {
+    publicUrl: remoteTransport.publicUrl,
+    transportMode: remoteTransport.transportMode
+  })
 }
 
 // A remote profile's sessions live on its remote host's state.db, not on a local
@@ -4973,7 +5035,19 @@ async function requestJsonForProfile(profile, path, method, body) {
   return conn.authMode === 'oauth' ? fetchJsonViaOauthSession(url, opts) : fetchJson(url, conn.token, opts)
 }
 
-async function probeRemoteAuthMode(rawUrl) {
+function resolveRemoteTransportInput(input) {
+  if (input && typeof input === 'object') {
+    return normalizeRemoteTransport({
+      url: input.remotePublicUrl ?? input.remoteUrl,
+      publicUrl: input.remotePublicUrl ?? input.remoteUrl,
+      effectiveUrl: input.remoteEffectiveUrl ?? input.remoteUrl,
+      transportMode: input.remoteTransportMode
+    })
+  }
+  return normalizeRemoteTransport({ url: input })
+}
+
+async function probeRemoteAuthMode(input) {
   // Determine how a remote gateway expects callers to authenticate, WITHOUT
   // sending any credentials. ``/api/status`` is public on every Hermes
   // gateway (it backs the portal liveness probe) and reports:
@@ -4986,7 +5060,8 @@ async function probeRemoteAuthMode(rawUrl) {
   // OAuth login button vs a session-token entry box. Network/parse failures
   // surface as ``reachable: false`` rather than throwing, so a half-typed or
   // unreachable URL degrades to "can't tell yet" instead of a hard error.
-  const baseUrl = normalizeRemoteBaseUrl(rawUrl)
+  const transport = resolveRemoteTransportInput(input)
+  const baseUrl = transport.effectiveUrl
 
   let status
   try {
@@ -4994,6 +5069,9 @@ async function probeRemoteAuthMode(rawUrl) {
   } catch (error) {
     return {
       baseUrl,
+      effectiveUrl: baseUrl,
+      publicUrl: transport.publicUrl,
+      transportMode: transport.transportMode,
       reachable: false,
       authMode: 'unknown',
       providers: [],
@@ -5030,6 +5108,9 @@ async function probeRemoteAuthMode(rawUrl) {
 
   return {
     baseUrl,
+    effectiveUrl: baseUrl,
+    publicUrl: transport.publicUrl,
+    transportMode: transport.transportMode,
     reachable: true,
     authMode: authRequired ? 'oauth' : 'token',
     providers,
@@ -5051,10 +5132,15 @@ async function testDesktopConnectionConfig(input = {}) {
   // need a base URL. For a remote config we normalize the URL from the input;
   // for local we fall back to the resolved/started backend.
   let baseUrl
+  let publicUrl = null
+  let transportMode = 'direct'
   let token = null
   let authMode = 'token'
   if (wantRemote && block?.url) {
-    baseUrl = normalizeRemoteBaseUrl(block.url)
+    const transport = normalizeRemoteTransport(block)
+    baseUrl = transport.effectiveUrl
+    publicUrl = transport.publicUrl
+    transportMode = transport.transportMode
     authMode = normAuthMode(block.authMode)
     if (authMode !== 'oauth') {
       token = decryptDesktopSecret(block.token)
@@ -5062,6 +5148,8 @@ async function testDesktopConnectionConfig(input = {}) {
   } else {
     const remote = (await resolveRemoteBackend(key)) || (await startHermes())
     baseUrl = remote.baseUrl
+    publicUrl = remote.publicUrl || remote.baseUrl
+    transportMode = remote.transportMode || 'direct'
     token = remote.token
     authMode = normAuthMode(remote.authMode)
   }
@@ -5091,6 +5179,9 @@ async function testDesktopConnectionConfig(input = {}) {
   return {
     ok: true,
     baseUrl,
+    effectiveUrl: baseUrl,
+    publicUrl,
+    transportMode,
     version: status?.version || null
   }
 }
@@ -6254,18 +6345,27 @@ ipcMain.handle('hermes:connection-config:get', async (_event, profile) =>
   sanitizeDesktopConnectionConfig(readDesktopConnectionConfig(), profile)
 )
 ipcMain.handle('hermes:connection-config:test', async (_event, payload) => testDesktopConnectionConfig(payload))
-ipcMain.handle('hermes:connection-config:probe', async (_event, rawUrl) => probeRemoteAuthMode(rawUrl))
-ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) => {
+ipcMain.handle('hermes:connection-config:probe', async (_event, payload) => probeRemoteAuthMode(payload))
+ipcMain.handle('hermes:connection-config:oauth-login', async (_event, payload) => {
   // Open the gateway's OAuth login window and wait for the session cookie to
-  // land in the OAuth partition. The caller (settings UI) typically saves the
-  // remote config with authMode='oauth' first, then calls this. We normalize
-  // the URL defensively so a login can be driven from a raw URL too.
-  const baseUrl = normalizeRemoteBaseUrl(rawUrl)
+  // land in the OAuth partition. Normalize the effective URL defensively: when
+  // using a local mTLS proxy, the public URL remains the user-facing identity
+  // but OAuth transport still goes through the loopback proxy.
+  const transport = resolveRemoteTransportInput(payload)
+  const baseUrl = transport.effectiveUrl
   await openOauthLoginWindow(baseUrl)
-  return { ok: true, baseUrl, connected: await hasOauthSessionCookie(baseUrl) }
+  return {
+    ok: true,
+    baseUrl,
+    effectiveUrl: baseUrl,
+    publicUrl: transport.publicUrl,
+    transportMode: transport.transportMode,
+    connected: await hasOauthSessionCookie(baseUrl)
+  }
 })
-ipcMain.handle('hermes:connection-config:oauth-logout', async (_event, rawUrl) => {
-  const baseUrl = rawUrl ? normalizeRemoteBaseUrl(rawUrl) : ''
+ipcMain.handle('hermes:connection-config:oauth-logout', async (_event, payload) => {
+  const transport = payload ? resolveRemoteTransportInput(payload) : null
+  const baseUrl = transport?.effectiveUrl || ''
   await clearOauthSession(baseUrl || undefined)
   // Report against the SAME liveness notion the Settings indicator uses
   // (AT-or-RT) so a logout that left any session cookie behind is reflected

@@ -37,6 +37,10 @@
 const AT_COOKIE_VARIANTS = ['__Host-hermes_session_at', '__Secure-hermes_session_at', 'hermes_session_at']
 const RT_COOKIE_VARIANTS = ['__Host-hermes_session_rt', '__Secure-hermes_session_rt', 'hermes_session_rt']
 
+const TRANSPORT_DIRECT = 'direct'
+const TRANSPORT_LOCAL_MTLS_PROXY = 'local_mtls_proxy'
+const REMOTE_TRANSPORT_MODES = [TRANSPORT_DIRECT, TRANSPORT_LOCAL_MTLS_PROXY]
+
 function normalizeRemoteBaseUrl(rawUrl) {
   const value = String(rawUrl || '').trim()
 
@@ -60,6 +64,35 @@ function normalizeRemoteBaseUrl(rawUrl) {
   parsed.pathname = parsed.pathname.replace(/\/+$/, '')
 
   return parsed.toString().replace(/\/+$/, '')
+}
+
+function normTransportMode(mode) {
+  return REMOTE_TRANSPORT_MODES.includes(mode) ? mode : TRANSPORT_DIRECT
+}
+
+function normalizeRemoteTransport(raw = {}) {
+  const block = raw && typeof raw === 'object' ? raw : {}
+  const transportMode = normTransportMode(block.transportMode)
+  const legacyUrl = String(block.url || '').trim()
+  const rawPublicUrl = String(block.publicUrl || legacyUrl).trim()
+  const rawEffectiveUrl = String(block.effectiveUrl || legacyUrl || rawPublicUrl).trim()
+  const publicUrl = rawPublicUrl ? normalizeRemoteBaseUrl(rawPublicUrl) : ''
+  const effectiveUrl = rawEffectiveUrl ? normalizeRemoteBaseUrl(rawEffectiveUrl) : publicUrl
+
+  return {
+    url: publicUrl,
+    publicUrl,
+    effectiveUrl,
+    transportMode
+  }
+}
+
+function remotePublicUrl(remote) {
+  return normalizeRemoteTransport(remote).publicUrl
+}
+
+function remoteEffectiveUrl(remote) {
+  return normalizeRemoteTransport(remote).effectiveUrl
 }
 
 function buildGatewayWsUrl(baseUrl, token) {
@@ -147,9 +180,9 @@ function normAuthMode(mode) {
  * when it has none (so the caller falls back to env → global remote → local).
  *
  * The config may carry a `profiles` map keyed by name; an entry counts as an
- * override only with `mode === 'remote'` and a non-empty `url`. Pure: `token`
- * is the raw stored secret; main.cjs decrypts it. Returns
- * `{ url, authMode, token } | null`.
+ * override only with `mode === 'remote'` and a non-empty public/effective URL.
+ * Pure: `token` is the raw stored secret; main.cjs decrypts it. Returns
+ * `{ url, publicUrl, effectiveUrl, transportMode, authMode, token } | null`.
  */
 function profileRemoteOverride(config, profile) {
   const key = connectionScopeKey(profile)
@@ -158,12 +191,16 @@ function profileRemoteOverride(config, profile) {
     return null
   }
 
-  const url = String(entry.url || '').trim()
-  if (!url) {
+  const transport = normalizeRemoteTransport(entry)
+  if (!transport.publicUrl && !transport.effectiveUrl) {
     return null
   }
 
-  return { url, authMode: normAuthMode(entry.authMode), token: entry.token }
+  return {
+    ...transport,
+    authMode: normAuthMode(entry.authMode),
+    token: entry.token
+  }
 }
 
 /**
@@ -266,7 +303,10 @@ function cookiesHaveLiveSession(cookies) {
 
 module.exports = {
   AT_COOKIE_VARIANTS,
+  REMOTE_TRANSPORT_MODES,
   RT_COOKIE_VARIANTS,
+  TRANSPORT_DIRECT,
+  TRANSPORT_LOCAL_MTLS_PROXY,
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
@@ -274,9 +314,13 @@ module.exports = {
   cookiesHaveSession,
   cookiesHaveLiveSession,
   normAuthMode,
+  normTransportMode,
   normalizeRemoteBaseUrl,
+  normalizeRemoteTransport,
   pathWithGlobalRemoteProfile,
   profileRemoteOverride,
+  remoteEffectiveUrl,
+  remotePublicUrl,
   resolveAuthMode,
   resolveTestWsUrl,
   tokenPreview

@@ -52,9 +52,9 @@ declare global {
       saveConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       applyConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       testConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionTestResult>
-      probeConnectionConfig: (remoteUrl: string) => Promise<DesktopConnectionProbeResult>
-      oauthLoginConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLoginResult>
-      oauthLogoutConnectionConfig: (remoteUrl?: string) => Promise<DesktopOauthLogoutResult>
+      probeConnectionConfig: (payload: string | DesktopConnectionConfigInput) => Promise<DesktopConnectionProbeResult>
+      oauthLoginConnectionConfig: (payload: string | DesktopConnectionConfigInput) => Promise<DesktopOauthLoginResult>
+      oauthLogoutConnectionConfig: (payload?: string | DesktopConnectionConfigInput) => Promise<DesktopOauthLogoutResult>
       profile: {
         get: () => Promise<DesktopActiveProfile>
         // Persists the desktop's profile choice and relaunches the local
@@ -384,6 +384,8 @@ export interface DesktopActiveProfile {
   profile: string | null
 }
 
+export type DesktopRemoteTransportMode = 'direct' | 'local_mtls_proxy'
+
 export interface DesktopConnectionConfig {
   envOverride: boolean
   mode: 'local' | 'remote'
@@ -391,25 +393,34 @@ export interface DesktopConnectionConfig {
   // connection. Per-profile entries let a profile point at its own backend.
   profile: null | string
   remoteAuthMode: 'oauth' | 'token'
+  remoteEffectiveUrl?: string
   remoteOauthConnected: boolean
+  remotePublicUrl?: string
   remoteTokenPreview: string | null
   remoteTokenSet: boolean
+  remoteTransportMode?: DesktopRemoteTransportMode
   remoteUrl: string
 }
 
 export interface DesktopConnectionConfigInput {
-  mode: 'local' | 'remote'
+  mode?: 'local' | 'remote'
   // When set, the save/apply/test targets this profile's per-profile remote
   // override instead of the global connection.
   profile?: null | string
   remoteAuthMode?: 'oauth' | 'token'
+  remoteEffectiveUrl?: string
+  remotePublicUrl?: string
   remoteToken?: string
+  remoteTransportMode?: DesktopRemoteTransportMode
   remoteUrl?: string
 }
 
 export interface DesktopConnectionTestResult {
   baseUrl: string
+  effectiveUrl?: string
   ok: boolean
+  publicUrl?: string | null
+  transportMode?: DesktopRemoteTransportMode
   version: string | null
 }
 
@@ -425,9 +436,12 @@ export interface DesktopAuthProvider {
 
 export interface DesktopConnectionProbeResult {
   baseUrl: string
+  effectiveUrl?: string
+  publicUrl?: string
   reachable: boolean
   authMode: 'oauth' | 'token' | 'unknown'
   providers: DesktopAuthProvider[]
+  transportMode?: DesktopRemoteTransportMode
   version: string | null
   error: string | null
 }
@@ -435,6 +449,9 @@ export interface DesktopConnectionProbeResult {
 export interface DesktopOauthLoginResult {
   ok: boolean
   baseUrl: string
+  effectiveUrl?: string
+  publicUrl?: string
+  transportMode?: DesktopRemoteTransportMode
   connected: boolean
 }
 
