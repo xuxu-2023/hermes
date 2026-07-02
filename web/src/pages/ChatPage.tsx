@@ -34,6 +34,7 @@ import { ChatSidebar } from "@/components/ChatSidebar";
 import { ChatSessionList } from "@/components/ChatSessionList";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
+import { en } from "@/i18n/en";
 import { api } from "@/lib/api";
 import { normalizeSessionTitle } from "@/lib/chat-title";
 import { PluginSlot } from "@/plugins";
@@ -115,6 +116,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // collapses the host's box, so ResizeObserver never fires on return).
   const syncMetricsRef = useRef<(() => void) | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
+  const { t } = useI18n();
+  const chatCopy = t.chatPage ?? en.chatPage!;
+  // Latest-value ref so the long-lived terminal effect (and its WebSocket
+  // handlers) can read localized strings without taking them as deps —
+  // adding them would tear down and rebuild the PTY on locale switch.
+  const chatCopyRef = useRef(chatCopy);
+  useEffect(() => {
+    chatCopyRef.current = chatCopy;
+  }, [chatCopy]);
   // Lazy-init: the missing-token check happens at construction so the effect
   // body doesn't have to setState (React 19's set-state-in-effect rule).
   // In gated (OAuth) mode the server intentionally omits the session token —
@@ -124,7 +134,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     typeof window !== "undefined" &&
     !window.__HERMES_SESSION_TOKEN__ &&
     !window.__HERMES_AUTH_REQUIRED__
-      ? "Session token unavailable. Open this page through `hermes dashboard`, not directly."
+      ? chatCopy.tokenUnavailable
       : null,
   );
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
@@ -182,7 +192,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     scope: string;
     title: string | null;
   }>({ scope: "", title: null });
-  const { t } = useI18n();
   const closeMobilePanel = useCallback(() => setMobilePanelOpenRaw(false), []);
   const modelToolsLabel = useMemo(
     () => `${t.app.modelToolsSheetTitle} ${t.app.modelToolsSheetSubtitle}`,
@@ -445,7 +454,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           // Most common reason: the Clipboard API requires a user gesture.
           // This can fail when the OSC 52 response arrives outside the
           // original keydown event's activation. Log to aid debugging.
-          console.warn("[dashboard clipboard] OSC 52 write failed:", err.message);
+          console.warn(
+            "[dashboard clipboard] OSC 52 write failed:",
+            err.message,
+          );
         });
       } catch {
         console.warn("[dashboard clipboard] malformed OSC 52 payload");
@@ -475,7 +487,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           // gesture — async round-trips through OSC 52 can lose activation
           // and fail with "Document is not focused".
           navigator.clipboard.writeText(sel).catch((err) => {
-            console.warn("[dashboard clipboard] direct copy failed:", err.message);
+            console.warn(
+              "[dashboard clipboard] direct copy failed:",
+              err.message,
+            );
           });
           // Clear xterm.js's highlight after copy (matches gnome-terminal).
           term.clearSelection();
@@ -580,7 +595,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // display:none hosts have clientWidth/Height = 0, which fit() turns
       // into a 1x1 terminal.  Skip entirely while hidden; the visibility
       // effect below runs another fit as soon as the tab is shown again.
-      if (!host.isConnected || host.clientWidth <= 0 || host.clientHeight <= 0) {
+      if (
+        !host.isConnected ||
+        host.clientWidth <= 0 ||
+        host.clientHeight <= 0
+      ) {
         return;
       }
       const w = terminalTierWidthPx(host);
@@ -627,7 +646,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     ro.observe(host);
 
     window.addEventListener("resize", scheduleSyncTerminalMetrics);
-    window.visualViewport?.addEventListener("resize", scheduleSyncTerminalMetrics);
+    window.visualViewport?.addEventListener(
+      "resize",
+      scheduleSyncTerminalMetrics,
+    );
     scheduleHostSync();
     requestAnimationFrame(() => scheduleHostSync());
 
@@ -688,121 +710,120 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
 
-    ws.onopen = () => {
-      clearReconnectTimer();
-      reconnectAttemptRef.current = 0;
-      setBanner(null);
-      setSessionEnded(false);
-      // Send the initial RESIZE immediately so Ink has *a* size to lay
-      // out against on its first paint.  The double-rAF block above will
-      // follow up with the authoritative measurement — at worst Ink
-      // reflows once after the PTY boots, which is imperceptible.
-      ws.send(`\x1b[RESIZE:${term.cols};${term.rows}]`);
-      // One-shot: a ?learn=<text> param (set by the Skills page "Learn a
-      // skill" panel) is typed into the composer as a /learn command once the
-      // PTY is up. /learn resolves via command.dispatch → a normal agent turn,
-      // so this reuses the existing composer path — no special PTY protocol.
-      const learnSeed = searchParams.get("learn");
-      if (learnSeed) {
-        const next = new URLSearchParams(searchParams);
-        next.delete("learn");
-        setSearchParams(next, { replace: true });
-        const cmd = `/learn ${learnSeed}`.trim();
-        // Delay so Ink's composer has mounted and grabbed focus before input.
-        setTimeout(() => {
-          try {
-            wsRef.current?.send(cmd + "\r");
-          } catch {
-            /* PTY not ready / closed — user can retype */
-          }
-        }, 800);
-      }
-    };
+      ws.onopen = () => {
+        clearReconnectTimer();
+        reconnectAttemptRef.current = 0;
+        setBanner(null);
+        setSessionEnded(false);
+        // Send the initial RESIZE immediately so Ink has *a* size to lay
+        // out against on its first paint.  The double-rAF block above will
+        // follow up with the authoritative measurement — at worst Ink
+        // reflows once after the PTY boots, which is imperceptible.
+        ws.send(`\x1b[RESIZE:${term.cols};${term.rows}]`);
+        // One-shot: a ?learn=<text> param (set by the Skills page "Learn a
+        // skill" panel) is typed into the composer as a /learn command once the
+        // PTY is up. /learn resolves via command.dispatch → a normal agent turn,
+        // so this reuses the existing composer path — no special PTY protocol.
+        const learnSeed = searchParams.get("learn");
+        if (learnSeed) {
+          const next = new URLSearchParams(searchParams);
+          next.delete("learn");
+          setSearchParams(next, { replace: true });
+          const cmd = `/learn ${learnSeed}`.trim();
+          // Delay so Ink's composer has mounted and grabbed focus before input.
+          setTimeout(() => {
+            try {
+              wsRef.current?.send(cmd + "\r");
+            } catch {
+              /* PTY not ready / closed — user can retype */
+            }
+          }, 800);
+        }
+      };
 
-    ws.onmessage = (ev) => {
-      if (typeof ev.data === "string") {
-        term.write(ev.data);
-      } else {
-        term.write(new Uint8Array(ev.data as ArrayBuffer));
-      }
-    };
+      ws.onmessage = (ev) => {
+        if (typeof ev.data === "string") {
+          term.write(ev.data);
+        } else {
+          term.write(new Uint8Array(ev.data as ArrayBuffer));
+        }
+      };
 
-    ws.onclose = (ev) => {
-      wsRef.current = null;
-      if (unmounting) {
-        return;
-      }
-      // Surface the real cause to the browser console on every close so a
-      // "chat won't connect" report can be diagnosed without server access.
-      // The server sends a machine-parseable reason on every rejection (see
-      // pty_ws in web_server.py); echo it verbatim alongside the close code.
-      const why = ev.reason ? ` reason=${ev.reason}` : "";
-      console.warn(`[chat] PTY WebSocket closed code=${ev.code}${why}`);
-      if (ev.code === 4401) {
-        setBanner(
-          ev.reason
-            ? `Auth failed (${ev.reason}). Reload to refresh the session.`
-            : "Auth failed. Reload the page to refresh the session token.",
+      ws.onclose = (ev) => {
+        wsRef.current = null;
+        if (unmounting) {
+          return;
+        }
+        // Surface the real cause to the browser console on every close so a
+        // "chat won't connect" report can be diagnosed without server access.
+        // The server sends a machine-parseable reason on every rejection (see
+        // pty_ws in web_server.py); echo it verbatim alongside the close code.
+        const why = ev.reason ? ` reason=${ev.reason}` : "";
+        console.warn(`[chat] PTY WebSocket closed code=${ev.code}${why}`);
+        const copy = chatCopyRef.current;
+        if (ev.code === 4401) {
+          setBanner(
+            ev.reason
+              ? copy.authFailedReason.replace("{reason}", ev.reason)
+              : copy.authFailed,
+          );
+          return;
+        }
+        if (ev.code === 4403) {
+          // Host/Origin mismatch (DNS-rebinding guard).
+          setBanner(
+            ev.reason
+              ? copy.refusedReason.replace("{reason}", ev.reason)
+              : copy.originRefused,
+          );
+          return;
+        }
+        if (ev.code === 4404) {
+          setBanner(copy.chatDisabled);
+          return;
+        }
+        if (ev.code === 4408) {
+          setBanner(
+            ev.reason
+              ? copy.refusedReason.replace("{reason}", ev.reason)
+              : copy.clientRefused,
+          );
+          return;
+        }
+        if (ev.code === 1011) {
+          // Server already wrote an ANSI error frame.
+          return;
+        }
+        // Abnormal/unclean close → auto-reconnect with backoff instead of
+        // surfacing a dead terminal.
+        if (!ev.wasClean || ev.code === 1001 || ev.code === 1006) {
+          scheduleReconnect(ev.code);
+          return;
+        }
+        // Normal/clean exit: the agent process ended (e.g. the user typed
+        // `/exit`, or started a new session). NS-504: surface an explicit
+        // restart affordance instead of leaving a dead terminal that only a
+        // full page refresh could recover.
+        term.write(
+          `\r\n\x1b[90m${copy.sessionEnded.replace("{code}", String(ev.code))}\x1b[0m\r\n`,
         );
-        return;
-      }
-      if (ev.code === 4403) {
-        // Host/Origin mismatch (DNS-rebinding guard).
-        setBanner(
-          ev.reason
-            ? `Refused: ${ev.reason}.`
-            : "Refused: request host/origin doesn't match the dashboard.",
-        );
-        return;
-      }
-      if (ev.code === 4404) {
-        setBanner(
-          ev.reason
-            ? `Chat websocket unavailable: ${ev.reason}.`
-            : "Chat websocket unavailable on this server.",
-        );
-        return;
-      }
-      if (ev.code === 4408) {
-        setBanner(
-          ev.reason
-            ? `Refused: ${ev.reason}.`
-            : "Refused: your client isn't permitted (server bound to localhost only).",
-        );
-        return;
-      }
-      if (ev.code === 1011) {
-        // Server already wrote an ANSI error frame.
-        return;
-      }
-      if (!ev.wasClean || ev.code === 1001 || ev.code === 1006) {
-        scheduleReconnect(ev.code);
-        return;
-      }
-      // Normal/clean exit: the agent process ended (e.g. the user typed
-      // `/exit`, or started a new session). NS-504: surface an explicit
-      // restart affordance instead of leaving a dead terminal that only a
-      // full page refresh could recover.
-      term.write(
-        `\r\n\x1b[90m[session ended (code ${ev.code})]\x1b[0m\r\n`,
-      );
-      setSessionEnded(true);
-    };
+        setSessionEnded(true);
+      };
 
-    // Keystrokes → PTY.
-    //
-    // IMPORTANT:
-    // The embedded web chat has occasionally surfaced stray letters/digits
-    // in the input line after a turn completes. The most likely culprit is
-    // browser-side terminal control traffic being forwarded back into the
-    // PTY as if it were user text. SGR mouse tracking is the highest-risk
-    // path here: xterm.js emits raw CSI reports (`\x1b[<...`) that look like
-    // ordinary bytes to the backend.
-    //
-    // For the browser embed we prefer input stability over terminal-style
-    // mouse reporting, so we drop SGR mouse reports entirely instead of
-    // forwarding them into Hermes. Keyboard input, paste, and resize still
-    // behave normally.
+      // Keystrokes → PTY.
+      //
+      // IMPORTANT:
+      // The embedded web chat has occasionally surfaced stray letters/digits
+      // in the input line after a turn completes. The most likely culprit is
+      // browser-side terminal control traffic being forwarded back into the
+      // PTY as if it were user text. SGR mouse tracking is the highest-risk
+      // path here: xterm.js emits raw CSI reports (`\x1b[<...`) that look like
+      // ordinary bytes to the backend.
+      //
+      // For the browser embed we prefer input stability over terminal-style
+      // mouse reporting, so we drop SGR mouse reports entirely instead of
+      // forwarding them into Hermes. Keyboard input, paste, and resize still
+      // behave normally.
       // eslint-disable-next-line no-control-regex -- intentional ESC byte in xterm SGR mouse report parser
       const SGR_MOUSE_RE = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/;
       onDataDisposable = term.onData((data) => {
@@ -883,9 +904,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         raf2 = 0;
         syncMetricsRef.current?.();
         const host = hostRef.current;
-        const active = typeof document !== "undefined"
-          ? document.activeElement
-          : null;
+        const active =
+          typeof document !== "undefined" ? document.activeElement : null;
         const focusIsElsewhereInChatPage =
           active !== null &&
           active !== document.body &&
@@ -1044,14 +1064,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           {sessionEnded && (
             <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-black/60">
               <div className="text-sm tracking-wide text-white/80">
-                Session ended.
+                {chatCopy.sessionEndedLabel}
               </div>
               <Button
                 onClick={reconnect}
                 prefix={<RotateCcw className="h-4 w-4" />}
-                aria-label="Start a new chat session"
+                aria-label={chatCopy.startNewSessionAria}
               >
-                Start new session
+                {chatCopy.startNewSession}
               </Button>
             </div>
           )}
@@ -1059,8 +1079,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           <Button
             ghost
             onClick={handleCopyLast}
-            title="Copy last assistant response as raw markdown"
-            aria-label="Copy last assistant response"
+            title={chatCopy.copyLastTitle}
+            aria-label={chatCopy.copyLastLabel}
             className={cn(
               "absolute z-10",
               "normal-case tracking-normal font-normal",
@@ -1068,15 +1088,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               "bg-black/20",
               "opacity-70 hover:opacity-100 hover:border-current/60",
               "transition-opacity duration-150",
-              "bottom-2 right-2 px-2 py-1 text-xs sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5",
-              "lg:bottom-4 lg:right-4",
+              "bottom-2 end-2 px-2 py-1 text-xs sm:bottom-3 sm:end-3 sm:px-2.5 sm:py-1.5",
+              "lg:bottom-4 lg:end-4",
             )}
             style={{ color: terminalFg }}
           >
             <span className="inline-flex items-center gap-1.5">
               <Copy className="h-3 w-3 shrink-0" />
               <span className="hidden min-[400px]:inline tracking-wide">
-                {copyState === "copied" ? "copied" : "copy last response"}
+                {copyState === "copied" ? chatCopy.copied : chatCopy.copyLast}
               </span>
             </span>
           </Button>
