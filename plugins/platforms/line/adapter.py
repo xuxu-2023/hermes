@@ -93,6 +93,7 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
     cache_image_from_bytes,
+    cache_media_from_bytes,
 )
 from gateway.config import Platform
 
@@ -1067,7 +1068,7 @@ class LineAdapter(BasePlatformAdapter):
             "file": ".bin",
         }.get(msg_type, ".bin")
         try:
-            return cache_image_from_bytes(data, ext=ext)
+            return cache_media_from_bytes(data, ext=ext, is_image=(msg_type == "image"))
         except Exception as exc:
             logger.warning("LINE: failed to cache %s payload: %s", msg_type, exc)
             return None

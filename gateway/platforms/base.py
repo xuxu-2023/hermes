@@ -722,9 +722,29 @@ def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
     return str(filepath)
 
 
-async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) -> str:
+def cache_media_from_bytes(data: bytes, ext: str = ".bin", *, is_image: bool = False) -> str:
+    """Save raw media bytes to the cache and return the absolute file path."""
+    if is_image:
+        return cache_image_from_bytes(data, ext=ext)
+
+    validate_inbound_media_size(len(data), media_type="document")
+    cache_dir = get_hermes_dir("cache/media", "media_cache")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    filepath = cache_dir / f"media_{uuid.uuid4().hex[:12]}{ext}"
+    filepath.write_bytes(data)
+    return str(filepath.absolute())
+
+
+async def cache_media_from_url(
+    url: str,
+    ext: str = ".bin",
+    retries: int = 2,
+    *,
+    is_image: bool = False,
+) -> str:
     """
-    Download an image from a URL and save it to the local cache.
+    Download media from a URL and save it to the local cache.
 
     Retries on transient failures (timeouts, 429, 5xx) with exponential
     backoff so a single slow CDN response doesn't lose the media.
@@ -733,9 +753,10 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
         url: The HTTP/HTTPS URL to download from.
         ext: File extension including the dot (e.g. ".jpg", ".png").
         retries: Number of retry attempts on transient failures.
+        is_image: Whether to preserve image validation and cache routing.
 
     Returns:
-        Absolute path to the cached image file as a string.
+        Absolute path to the cached media file as a string.
 
     Raises:
         ValueError: If the URL targets a private/internal network (SSRF protection).
@@ -746,6 +767,8 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
 
     import httpx
     _log = logging.getLogger(__name__)
+    accept = "image/*,*/*;q=0.8" if is_image else "*/*"
+    media_type = "image" if is_image else "document"
 
     async with httpx.AsyncClient(
         timeout=30.0,
@@ -759,14 +782,15 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
                     url,
                     headers={
                         "User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)",
-                        "Accept": "image/*,*/*;q=0.8",
+                        "Accept": accept,
                     },
                 ) as response:
                     response.raise_for_status()
                     content = await _read_httpx_body_with_limit(
-                        response, media_type="image",
+                        response,
+                        media_type=media_type,
                     )
-                return cache_image_from_bytes(content, ext)
+                return cache_media_from_bytes(content, ext, is_image=is_image)
             except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
                 if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
                     raise
@@ -783,6 +807,12 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
                     await asyncio.sleep(wait)
                     continue
                 raise
+    raise ValueError("Max retries exceeded")
+
+
+async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) -> str:
+    """Download an image from a URL and save it to the local image cache."""
+    return await cache_media_from_url(url, ext=ext, retries=retries, is_image=True)
 
 
 def cleanup_image_cache(max_age_hours: int = 24) -> int:
@@ -1809,6 +1839,14 @@ class MessageEvent:
 
 
 @dataclass
+class ReplyDeliveryPolicy:
+    """Adapter-provided delivery policy for a completed assistant reply."""
+
+    send_voice_reply: bool = False
+    suppress_text_if_voice_reply_sent: bool = False
+
+
+@dataclass
 class TextDebounceState:
     event: MessageEvent
     task: asyncio.Task | None
@@ -2526,6 +2564,42 @@ class BasePlatformAdapter(ABC):
         Return ``None`` (default) to use ``MAX_MESSAGE_LENGTH``.
         """
         return None
+
+    def observe_inbound_message(self, event: MessageEvent) -> None:
+        """Observe inbound messages before gateway dispatch.
+
+        Platform adapters can override this to maintain lightweight
+        conversation state used by later delivery decisions.  The default is a
+        no-op so existing adapters keep their behavior unchanged.
+        """
+        return None
+
+    def reply_delivery_policy(
+        self,
+        event: MessageEvent,
+        response: str,
+        *,
+        voice_mode: str,
+        already_sent: bool,
+    ) -> ReplyDeliveryPolicy:
+        """Return how the gateway should deliver the final assistant reply.
+
+        The default preserves the legacy auto-voice behavior: only explicit
+        ``/voice all`` or ``/voice voice_only`` opt-ins request runner-side TTS,
+        and voice-input turns are skipped when the adapter's own post-processing
+        can still auto-TTS the text response.
+        """
+        if not response or response.startswith("Error:"):
+            return ReplyDeliveryPolicy()
+
+        is_voice_input = event.message_type == MessageType.VOICE
+        send_voice = (
+            voice_mode == "all"
+            or (voice_mode == "voice_only" and is_voice_input)
+        )
+        if is_voice_input and not already_sent:
+            send_voice = False
+        return ReplyDeliveryPolicy(send_voice_reply=send_voice)
 
     async def send_draft(
         self,
