@@ -57,7 +57,7 @@ from agent.model_metadata import (
     save_context_length,
 )
 from agent.process_bootstrap import _install_safe_stdio
-from agent.prompt_caching import apply_anthropic_cache_control
+from agent.prompt_caching import apply_anthropic_cache_control, apply_tool_cache_control
 from agent.retry_utils import adaptive_rate_limit_backoff, jittered_backoff
 from agent.trajectory import has_incomplete_scratchpad
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
