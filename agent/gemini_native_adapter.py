@@ -51,6 +51,24 @@ def bare_gemini_model_id(model: str) -> str:
     return name
 
 
+def is_gemini_3x_model(model: str) -> bool:
+    """Return True for versioned Gemini 3.x models (gemini-3.1-*, gemini-3.5-*, …).
+
+    Google strongly recommends *not* sending sampling parameters (temperature,
+    top_p, top_k) to Gemini 3.x models — their reasoning is tuned for the
+    defaults and overriding them "can cause unexpected behavior, such as looping
+    or degraded performance." See
+    https://ai.google.dev/gemini-api/docs/whats-new-gemini-3.5 (Parameter
+    updates) and https://ai.google.dev/gemini-api/docs/gemini-3.
+
+    Matches the versioned prefix ``gemini-3.`` (with the dot) so the unversioned
+    ``gemini-3-flash-preview`` — which behaves differently and is handled
+    elsewhere — is intentionally excluded.
+    """
+    bare = bare_gemini_model_id(model).lower()
+    return bare.startswith("gemini-3.")
+
+
 def is_native_gemini_base_url(base_url: str) -> bool:
     """Return True when the endpoint speaks Gemini's native REST API."""
     normalized = str(base_url or "").strip().rstrip("/").lower()
@@ -421,6 +439,7 @@ def _normalize_thinking_config(config: Any) -> Optional[Dict[str, Any]]:
 def build_gemini_request(
     *,
     messages: List[Dict[str, Any]],
+    model: str = "",
     tools: Any = None,
     tool_choice: Any = None,
     temperature: Optional[float] = None,
@@ -442,8 +461,14 @@ def build_gemini_request(
     if tool_config:
         request["toolConfig"] = tool_config
 
+    # Gemini 3.x reasoning is tuned for default sampling; Google explicitly
+    # recommends omitting temperature / top_p / top_k for these models. Hermes
+    # often supplies a global default temperature, so silently dropping it for
+    # 3.x avoids "looping or degraded performance" on reasoning/math tasks.
+    drop_sampling = is_gemini_3x_model(model)
+
     generation_config: Dict[str, Any] = {}
-    if temperature is not None:
+    if temperature is not None and not drop_sampling:
         generation_config["temperature"] = temperature
     if max_tokens is not None:
         generation_config["maxOutputTokens"] = max_tokens
@@ -459,7 +484,7 @@ def build_gemini_request(
         # the field genuinely means full budget — that assumption does not
         # hold on the native API.
         generation_config["maxOutputTokens"] = GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
-    if top_p is not None:
+    if top_p is not None and not drop_sampling:
         generation_config["topP"] = top_p
     if stop:
         generation_config["stopSequences"] = stop if isinstance(stop, list) else [str(stop)]
@@ -931,6 +956,7 @@ class GeminiNativeClient:
 
         request = build_gemini_request(
             messages=messages or [],
+            model=model,
             tools=tools,
             tool_choice=tool_choice,
             temperature=temperature,

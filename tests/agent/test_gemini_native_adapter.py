@@ -461,3 +461,48 @@ def test_explicit_max_tokens_is_respected():
 
     req = build_gemini_request(messages=[{"role": "user", "content": "hi"}], max_tokens=4096)
     assert req["generationConfig"]["maxOutputTokens"] == 4096
+
+
+@pytest.mark.parametrize("model, expected", [
+    ("gemini-3.5-flash", True),
+    ("gemini-3.1-pro-preview", True),
+    ("google/gemini-3.5-flash", True),
+    ("gemini-3-flash-preview", False),  # unversioned preview is intentionally excluded
+    ("gemini-2.5-flash", False),
+    ("gemini-2.0-flash", False),
+    ("", False),
+])
+def test_is_gemini_3x_model(model, expected):
+    from agent.gemini_native_adapter import is_gemini_3x_model
+
+    assert is_gemini_3x_model(model) is expected
+
+
+def test_gemini_3x_drops_temperature_and_top_p():
+    """Gemini 3.x is tuned for default sampling — temperature/top_p must be omitted."""
+    from agent.gemini_native_adapter import build_gemini_request
+
+    req = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        model="gemini-3.5-flash",
+        temperature=0.7,
+        top_p=0.9,
+    )
+    gen = req["generationConfig"]
+    assert "temperature" not in gen
+    assert "topP" not in gen
+
+
+def test_non_gemini_3x_keeps_temperature_and_top_p():
+    """Gemini 2.x (and unversioned preview) still honor explicit sampling params."""
+    from agent.gemini_native_adapter import build_gemini_request
+
+    req = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        model="gemini-2.5-flash",
+        temperature=0.7,
+        top_p=0.9,
+    )
+    gen = req["generationConfig"]
+    assert gen["temperature"] == 0.7
+    assert gen["topP"] == 0.9
