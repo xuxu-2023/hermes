@@ -711,15 +711,23 @@ def recover_with_credential_pool(
         # triggers the guard.
         _custom_match = False
         if current_provider == "custom" and pool_provider.startswith("custom:"):
-            try:
-                from agent.credential_pool import get_custom_provider_pool_key
-                _agent_base = (getattr(agent, "base_url", "") or "").strip()
-                _custom_match = bool(_agent_base) and (
-                    (get_custom_provider_pool_key(_agent_base) or "").strip().lower()
-                    == pool_provider
-                )
-            except Exception:
-                _custom_match = False
+            # The agent carries the named form (e.g. "custom:deepseek") when the
+            # resolver knew it; an exact match means this pool IS the requested
+            # provider even when the base_url is a relayer/proxy that doesn't
+            # resolve to a configured custom_providers entry (#45715).
+            _agent_requested = (getattr(agent, "requested_provider", "") or "").strip().lower()
+            if _agent_requested and _agent_requested == pool_provider:
+                _custom_match = True
+            else:
+                try:
+                    from agent.credential_pool import get_custom_provider_pool_key
+                    _agent_base = (getattr(agent, "base_url", "") or "").strip()
+                    _custom_match = bool(_agent_base) and (
+                        (get_custom_provider_pool_key(_agent_base) or "").strip().lower()
+                        == pool_provider
+                    )
+                except Exception:
+                    _custom_match = False
         if not _custom_match:
             _ra().logger.warning(
                 "Credential pool provider mismatch: pool=%s, agent=%s — "

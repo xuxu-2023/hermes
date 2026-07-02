@@ -58,6 +58,54 @@ class TestCustomPoolMismatchGuard:
             "custom base_url"
         )
 
+    def test_relayer_base_url_matches_via_named_provider(self):
+        """#45715: when the agent routes through a relayer/proxy whose base_url
+        does NOT resolve to a configured custom_providers entry, the named form
+        (agent.requested_provider == pool.provider) must still let recovery
+        reach the pool."""
+        agent, pool = _agent("custom", "https://relayer.example/v1", "custom:fireworks")
+        agent.requested_provider = "custom:fireworks"
+        pool.current.return_value = None
+        with patch(
+            "agent.credential_pool.get_custom_provider_pool_key",
+            return_value=None,  # relayer base_url resolves to nothing
+        ):
+            recover_with_credential_pool(
+                agent,
+                status_code=429,
+                has_retried_429=False,
+                classified_reason=FailoverReason.rate_limit,
+            )
+        assert pool.current.called, (
+            "named-provider match should reach recovery even when the relayer "
+            "base_url does not resolve to a custom pool key"
+        )
+
+    def test_named_provider_mismatch_still_guarded(self):
+        """A DIFFERENT requested provider must not false-match the pool."""
+        agent, pool = _agent("custom", "https://relayer.example/v1", "custom:fireworks")
+        agent.requested_provider = "custom:minimax"
+        with patch(
+            "agent.credential_pool.get_custom_provider_pool_key",
+            return_value=None,
+        ):
+            recovered, _ = recover_with_credential_pool(
+                agent,
+                status_code=401,
+                has_retried_429=False,
+                classified_reason=FailoverReason.auth,
+            )
+        assert recovered is False
+        assert not pool.method_calls
+
+    def test_aiagent_init_accepts_requested_provider(self):
+        """The AIAgent constructor must forward requested_provider to
+        init_agent; without the param every real chat turn that passes it
+        raises TypeError (guards the forwarder wiring)."""
+        import inspect
+        from run_agent import AIAgent
+        assert "requested_provider" in inspect.signature(AIAgent.__init__).parameters
+
     def test_unrelated_custom_pool_still_guarded(self):
         """agent=custom pointed at a DIFFERENT endpoint than the pool's
         custom provider must still skip pool mutation."""

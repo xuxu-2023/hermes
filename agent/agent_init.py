@@ -168,6 +168,7 @@ def init_agent(
     base_url: str = None,
     api_key: str = None,
     provider: str = None,
+    requested_provider: str = None,
     api_mode: str = None,
     acp_command: str = None,
     acp_args: list[str] | None = None,
@@ -324,6 +325,11 @@ def init_agent(
     agent.base_url = base_url or ""
     provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
     agent.provider = provider_name or ""
+    # Named provider form (e.g. "custom:deepseek") when the resolver knows it,
+    # so the credential-pool guard can match a custom pool even when the agent's
+    # base_url is a relayer/proxy that doesn't resolve to a configured
+    # custom_providers entry (#45715).
+    agent.requested_provider = (requested_provider or "").strip().lower()
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
     if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}:
