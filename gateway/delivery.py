@@ -54,6 +54,32 @@ def _is_silence_narration(content: Optional[str]) -> bool:
         return False
     return bool(_SILENCE_NARRATION.match(stripped))
 
+# Matches strings that are *only* a "silence" narration with optional markdown
+# wrappers. Covers: *(silent)*, _silent_, `silent`, ~silent~, (silent), silent,
+# 🔇, a bare ".", "…", and the whitespace/marker-padded variants seen in the
+# wild. Anchored to start/end so substantive messages that merely *contain* the
+# word "silent" are never matched.
+_SILENCE_NARRATION = re.compile(
+    r'^[\s*_~`]*\(?\s*(silent|silence|no\s+response|no\s+reply)\s*\.?\)?[\s*_~`]*$'
+    r'|^[\s*_~`]*[\U0001F507\.\u2026]+[\s*_~`]*$',
+    re.IGNORECASE,
+)
+
+
+def _is_silence_narration(content: Optional[str]) -> bool:
+    """Return True when ``content`` is *only* a silence-narration token.
+
+    Length-guarded (real messages are longer) and anchored to the whole string
+    so legitimate prose like "The deployment ran silently" or "Silence is
+    golden — here is the plan..." is never flagged.
+    """
+    if not content:
+        return False
+    stripped = content.strip()
+    if not stripped or len(stripped) > 64:  # length guard
+        return False
+    return bool(_SILENCE_NARRATION.match(stripped))
+
 from .config import Platform, GatewayConfig
 from .session import SessionSource
 from .dead_targets import DeadTargetRegistry
