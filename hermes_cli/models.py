@@ -2108,6 +2108,29 @@ def _is_anthropic_fast_model(model_id: Optional[str]) -> bool:
     return "opus-4-6" in base or "opus-4.6" in base
 
 
+def _is_anthropic_opus_tier(model_id: Optional[str]) -> bool:
+    """Return True if ``model_id`` is an Anthropic Opus-tier model.
+
+    Opus is the most expensive Anthropic tier (~$15/$75 per MTok on Opus 4.x)
+    and is therefore an unsafe default for a freshly-authenticated provider
+    picker — paid users landing on Opus from a one-click onboarding have
+    no opportunity to opt out before the choice pins their main model and
+    inherits into every cron job that doesn't override ``model.provider``.
+
+    Anchored on the ``claude-opus-`` prefix (after vendor-strip and lowercase
+    normalization) so the predicate survives future Anthropic releases
+    (``claude-opus-5-0``, ``claude-opus-5``, etc. all match without code
+    changes) and rejects community / distill models whose slug merely
+    *contains* the substring ``opus`` (e.g. ``qwopus3.6-27b-coder``). Sonnet
+    and Haiku are deliberately NOT classified as Opus here — Sonnet is the
+    default the rest of the codebase treats as reasonable, and Haiku is
+    cheap enough that it is not a billing hazard.
+    """
+    raw = _strip_vendor_prefix(str(model_id or ""))
+    base = raw.split(":")[0].lower()
+    return base.startswith("claude-opus-")
+
+
 def resolve_fast_mode_overrides(model_id: Optional[str]) -> dict[str, Any] | None:
     """Return request_overrides for fast/priority mode, or None if unsupported.
 

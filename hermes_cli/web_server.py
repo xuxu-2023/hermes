@@ -4257,7 +4257,21 @@ def get_recommended_default_model(provider: str = ""):
                     model_ids, pricing, portal_url
                 )
 
-            model = model_ids[0] if model_ids else ""
+            # The curated Nous list currently puts ``anthropic/claude-opus-*`` at
+            # position 0 because it's the strongest Anthropic offering on Nous
+            # Portal, but Opus-tier is an unsafe one-click default — paid users
+            # have no opt-out before the choice pins their main model + every
+            # cron job that doesn't override ``model.provider`` (which is most
+            # of them). Pick the first non-Opus entry as the recommended default
+            # so onboarding lands on Sonnet / Haiku / a non-Anthropic model
+            # instead; Opus is still in the picker for users who want it. Fall
+            # back to the head of the list if every curated entry happens to be
+            # Opus so the picker is never empty.
+            from hermes_cli.models import _is_anthropic_opus_tier
+
+            non_opus_defaults = [mid for mid in model_ids if not _is_anthropic_opus_tier(mid)]
+            default_candidates = non_opus_defaults or model_ids
+            model = default_candidates[0] if default_candidates else ""
             return {"provider": "nous", "model": model, "free_tier": bool(free_tier)}
         except Exception:
             _log.exception("GET /api/model/recommended-default (nous) failed")

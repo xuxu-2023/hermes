@@ -2921,6 +2921,65 @@ class TestWebServerEndpoints:
         assert data["model"] == "top/model"
         assert data["free_tier"] is False
 
+    def test_recommended_default_nous_paid_skips_opus_tier(self, monkeypatch):
+        """A paid Nous user must not be defaulted onto an Opus-tier model.
+
+        Regression for the one-click onboarding foot-gun where the curated
+        Nous list led with ``anthropic/claude-opus-*`` (Opus = ~$15/$75 per
+        MTok), pinning the most expensive Anthropic offering as the user's
+        main model with no opt-out. Sonnet, Haiku, and non-Anthropic models
+        are all acceptable defaults; only Opus is filtered out.
+        """
+        import hermes_cli.models as models_mod
+
+        monkeypatch.setattr(
+            models_mod, "get_curated_nous_model_ids",
+            lambda: [
+                "anthropic/claude-opus-4.8",
+                "anthropic/claude-sonnet-4.6",
+                "openai/gpt-5.5",
+                "minimax/minimax-m3",
+            ],
+        )
+        monkeypatch.setattr(models_mod, "get_pricing_for_provider", lambda provider: {})
+        monkeypatch.setattr(models_mod, "check_nous_free_tier", lambda *, force_fresh=False: False)
+        monkeypatch.setattr(
+            models_mod, "union_with_portal_paid_recommendations",
+            lambda ids, pricing, url: (ids, pricing),
+        )
+
+        resp = self.client.get("/api/model/recommended-default?provider=nous")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["provider"] == "nous"
+        assert data["model"] == "anthropic/claude-sonnet-4.6", (
+            "Opus-tier must be skipped; Sonnet is the next curated entry and the "
+            "expected non-Opus default for a paid Nous user."
+        )
+        assert data["free_tier"] is False
+
+    def test_recommended_default_nous_paid_falls_back_when_all_opus(self, monkeypatch):
+        """If every curated entry is Opus, fall back to the head of the list
+        so the picker is never empty (defensive — curated list currently
+        always has non-Opus entries, but the contract is non-empty)."""
+        import hermes_cli.models as models_mod
+
+        monkeypatch.setattr(
+            models_mod, "get_curated_nous_model_ids",
+            lambda: ["anthropic/claude-opus-4.8", "anthropic/claude-opus-4.7"],
+        )
+        monkeypatch.setattr(models_mod, "get_pricing_for_provider", lambda provider: {})
+        monkeypatch.setattr(models_mod, "check_nous_free_tier", lambda *, force_fresh=False: False)
+        monkeypatch.setattr(
+            models_mod, "union_with_portal_paid_recommendations",
+            lambda ids, pricing, url: (ids, pricing),
+        )
+
+        resp = self.client.get("/api/model/recommended-default?provider=nous")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["model"] == "anthropic/claude-opus-4.8"
+
     def test_recommended_default_handles_failure_gracefully(self, monkeypatch):
         """Endpoint never 500s — returns empty model on internal error."""
         import hermes_cli.models as models_mod
