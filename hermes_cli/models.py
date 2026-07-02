@@ -337,6 +337,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "minimax-cn": [
         "MiniMax-M3",
         "MiniMax-M2.7",
+        "MiniMax-M2.7-highspeed",
         "MiniMax-M2.5",
         "MiniMax-M2.1",
         "MiniMax-M2",
@@ -2211,6 +2212,7 @@ _MODELS_DEV_PREFERRED: frozenset[str] = frozenset({
     "zai",
     "gemini",
     "google",
+    "minimax-cn",
 })
 
 
