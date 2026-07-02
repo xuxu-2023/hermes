@@ -7012,6 +7012,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             await asyncio.sleep(1.0)
 
         # Notify the chat that initiated /restart that the gateway is back.
+        restart_notification_pending = _restart_notification_pending()
         planned_restart_notification_pending = _planned_restart_notification_pending()
         # Capture, before _send_restart_notification() unlinks the marker,
         # whether this process booted from a chat-originated /restart. Used as
@@ -7023,17 +7024,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         await self._send_restart_notification()
 
         # Broadcast a lightweight "gateway is back" message to configured home
-        # channels only for non-chat planned restarts (terminal/SIGUSR1/service
-        # paths). Chat-originated /restart already has a precise reply target
-        # in .restart_notify.json, so keep that lifecycle in the originating
-        # chat/topic instead of also leaking it to the configured home channel.
-        if planned_restart_notification_pending:
+        # channels for non-chat planned restarts and explicit cold-start opt-in
+        # only. Chat-originated /restart already has a precise reply target in
+        # .restart_notify.json, so keep that lifecycle in the originating
+        # chat/topic rather than also leaking it to the configured home channel.
+        if self._should_send_home_channel_startup_notifications(
+            planned_restart_notification_pending=planned_restart_notification_pending,
+            restart_notification_pending=restart_notification_pending,
+        ):
             try:
                 await self._send_home_channel_startup_notifications(
                     skip_targets=None,
                 )
             finally:
-                _clear_planned_restart_notification()
+                if planned_restart_notification_pending:
+                    _clear_planned_restart_notification()
 
         # Automatically continue fresh sessions that were interrupted by the
         # previous gateway restart/shutdown.  The resume_pending flag is cleared
@@ -14291,6 +14296,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
 
         return delivered
+
+    def _should_send_home_channel_startup_notifications(
+        self,
+        *,
+        planned_restart_notification_pending: bool,
+        restart_notification_pending: bool = False,
+    ) -> bool:
+        """Return whether this startup should emit home-channel online pings.
+
+        #19271 salvaged #18440 and intentionally tied the generic
+        home-channel "gateway online" message to restart lifecycle markers so
+        ordinary cold starts would stay quiet. Operators can now opt in to the
+        same thread-aware online ping for Docker/systemd/reboot starts via
+        ``gateway_startup_notification`` while keeping chat-originated
+        /restart behavior unchanged.
+        """
+        if planned_restart_notification_pending:
+            return True
+
+        if restart_notification_pending:
+            return False
+
+        return bool(getattr(self.config, "gateway_startup_notification", False))
 
     def _set_session_env(self, context: SessionContext) -> list:
         """Set session context variables for the current async task.

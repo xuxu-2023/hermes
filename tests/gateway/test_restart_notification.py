@@ -45,6 +45,44 @@ def test_planned_restart_notification_pending_roundtrip(tmp_path, monkeypatch):
     assert gateway_run._planned_restart_notification_pending() is False
 
 
+def test_home_channel_startup_notification_skipped_on_cold_start_by_default():
+    runner, _adapter = make_restart_runner()
+
+    assert runner._should_send_home_channel_startup_notifications(
+        planned_restart_notification_pending=False,
+        restart_notification_pending=False,
+    ) is False
+
+
+def test_home_channel_startup_notification_runs_on_planned_restart_marker():
+    runner, _adapter = make_restart_runner()
+
+    assert runner._should_send_home_channel_startup_notifications(
+        planned_restart_notification_pending=True,
+        restart_notification_pending=False,
+    ) is True
+
+
+def test_home_channel_startup_notification_keeps_chat_restart_quiet_even_when_opted_in():
+    runner, _adapter = make_restart_runner()
+    runner.config.gateway_startup_notification = True
+
+    assert runner._should_send_home_channel_startup_notifications(
+        planned_restart_notification_pending=False,
+        restart_notification_pending=True,
+    ) is False
+
+
+def test_home_channel_startup_notification_runs_on_opt_in_cold_start():
+    runner, _adapter = make_restart_runner()
+    runner.config.gateway_startup_notification = True
+
+    assert runner._should_send_home_channel_startup_notifications(
+        planned_restart_notification_pending=False,
+        restart_notification_pending=False,
+    ) is True
+
+
 # ── _handle_restart_command writes .restart_notify.json ──────────────────
 
 
@@ -100,9 +138,20 @@ async def test_restart_command_uses_service_restart_under_systemd(tmp_path, monk
 
 @pytest.mark.asyncio
 async def test_restart_command_uses_detached_without_systemd(tmp_path, monkeypatch):
-    """Without systemd, /restart uses the detached subprocess approach."""
+    """Without systemd or a container runtime, /restart uses the detached subprocess approach."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.delenv("INVOCATION_ID", raising=False)
+
+    import gateway.slash_commands as slash_commands
+
+    real_exists = slash_commands.os.path.exists
+
+    def fake_exists(path):
+        if path in {"/.dockerenv", "/run/.containerenv"}:
+            return False
+        return real_exists(path)
+
+    monkeypatch.setattr(slash_commands.os.path, "exists", fake_exists)
 
     runner, _adapter = make_restart_runner()
     runner.request_restart = MagicMock(return_value=True)

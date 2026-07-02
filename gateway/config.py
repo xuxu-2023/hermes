@@ -619,6 +619,12 @@ class GatewayConfig:
     # Unauthorized DM policy
     unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
 
+    # Optional cold-start notification. The existing /restart completion path
+    # is marker-gated to avoid noisy ordinary boots; this opt-in flag covers
+    # operators who also want a home-channel "gateway is online" signal after
+    # process starts caused by Docker/systemd/reboots rather than /restart.
+    gateway_startup_notification: bool = False
+
     # Streaming configuration
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
 
@@ -731,6 +737,7 @@ class GatewayConfig:
             "max_concurrent_sessions": self.max_concurrent_sessions,
             "multiplex_profiles": self.multiplex_profiles,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
+            "gateway_startup_notification": self.gateway_startup_notification,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
         }
@@ -795,6 +802,10 @@ class GatewayConfig:
             data.get("unauthorized_dm_behavior"),
             "pair",
         )
+        gateway_startup_notification = _coerce_bool(
+            data.get("gateway_startup_notification"),
+            False,
+        )
 
         try:
             session_store_max_age_days = int(data.get("session_store_max_age_days", 90))
@@ -820,6 +831,7 @@ class GatewayConfig:
             multiplex_profiles=_coerce_bool(multiplex_profiles, False),
             max_concurrent_sessions=max_concurrent_sessions,
             unauthorized_dm_behavior=unauthorized_dm_behavior,
+            gateway_startup_notification=gateway_startup_notification,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
         )
@@ -937,6 +949,11 @@ def load_gateway_config() -> GatewayConfig:
 
             if "max_concurrent_sessions" in yaml_cfg:
                 gw_data["max_concurrent_sessions"] = yaml_cfg["max_concurrent_sessions"]
+
+            if "gateway_startup_notification" in yaml_cfg:
+                gw_data["gateway_startup_notification"] = yaml_cfg[
+                    "gateway_startup_notification"
+                ]
 
             streaming_cfg = yaml_cfg.get("streaming")
             if not isinstance(streaming_cfg, dict):
@@ -1327,6 +1344,10 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         if not platform_config.enabled and not enabled_was_explicit:
             platform_config.enabled = True
         return platform_config
+
+    startup_notify = os.getenv("GATEWAY_STARTUP_NOTIFICATION")
+    if startup_notify is not None:
+        config.gateway_startup_notification = _coerce_bool(startup_notify, False)
     
     # Telegram
     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
