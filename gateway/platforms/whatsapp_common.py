@@ -41,6 +41,18 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 
+_CODEX_GPT55_AUTORAISE_RE = re.compile(
+    r"Codex\s+gpt-5\.5\s+caps\s+context\s+at\s+272K.*?"
+    r"compression\.codex_gpt55_autoraise\s+false",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def is_whatsapp_runtime_advisory(text: str) -> bool:
+    """Suppress internal runtime advisories that are not useful in WhatsApp."""
+    return bool(_CODEX_GPT55_AUTORAISE_RE.search(text or ""))
+
+
 class WhatsAppBehaviorMixin:
     """Shared behavior for all WhatsApp adapters (Baileys + Cloud API).
 
@@ -123,8 +135,20 @@ class WhatsAppBehaviorMixin:
             return ""
         normalized = str(value).strip()
         if ":" in normalized and "@" in normalized:
-            normalized = normalized.replace(":", "@", 1)
+            normalized = re.sub(r":\d+(?=@)", "", normalized, count=1)
         return normalized
+
+    @classmethod
+    def _whatsapp_id_aliases(cls, value: Optional[str]) -> set[str]:
+        normalized = cls._normalize_whatsapp_id(value)
+        if not normalized:
+            return set()
+        aliases = {normalized}
+        if "@" in normalized:
+            local, domain = normalized.split("@", 1)
+            aliases.add(f"{local.split(':', 1)[0]}@{domain}")
+            aliases.add(local.split(":", 1)[0])
+        return {alias for alias in aliases if alias}
 
     @staticmethod
     def _is_broadcast_chat(chat_id: str) -> bool:
@@ -277,16 +301,19 @@ class WhatsAppBehaviorMixin:
     def _bot_ids_from_message(self, data: Dict[str, Any]) -> set[str]:
         bot_ids = set()
         for candidate in data.get("botIds") or []:
-            normalized = self._normalize_whatsapp_id(candidate)
-            if normalized:
-                bot_ids.add(normalized)
+            bot_ids.update(self._whatsapp_id_aliases(candidate))
         return bot_ids
 
     def _message_is_reply_to_bot(self, data: Dict[str, Any]) -> bool:
-        quoted_participant = self._normalize_whatsapp_id(data.get("quotedParticipant"))
-        if not quoted_participant:
+        if not data.get("hasQuotedMessage") and not data.get("quotedParticipant"):
             return False
-        return quoted_participant in self._bot_ids_from_message(data)
+        quoted_aliases = self._whatsapp_id_aliases(data.get("quotedParticipant"))
+        if quoted_aliases and quoted_aliases & self._bot_ids_from_message(data):
+            return True
+        quoted_text = str(data.get("quotedText") or "").strip()
+        if not quoted_text:
+            return False
+        return False
 
     def _message_mentions_bot(self, data: Dict[str, Any]) -> bool:
         bot_ids = self._bot_ids_from_message(data)
