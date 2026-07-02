@@ -550,11 +550,13 @@ def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[st
     Returns an error message or None if within bounds.
     """
     if len(content) > MAX_SKILL_CONTENT_CHARS:
+        over = len(content) - MAX_SKILL_CONTENT_CHARS
         return (
-            f"{label} content is {len(content):,} characters "
-            f"(limit: {MAX_SKILL_CONTENT_CHARS:,}). "
-            f"Consider splitting into a smaller SKILL.md with supporting files "
-            f"in references/ or templates/."
+            f"{label} content is {len(content):,} characters — {over:,} over the "
+            f"{MAX_SKILL_CONTENT_CHARS:,} limit. Trimming text will NOT bring it "
+            f"under the limit: move whole sections out of {label} into separate "
+            f"files under references/ or templates/ and link to them, then retry. "
+            f"Do not resubmit a slightly shorter version of the same file."
         )
     return None
 

@@ -58,6 +58,19 @@ class TestValidateContentSize:
         err = _validate_content_size("a" * (MAX_SKILL_CONTENT_CHARS + 1), label="references/api.md")
         assert "references/api.md" in err
 
+    def test_over_limit_message_is_directive(self):
+        # Regression for #51470: the rejection must break the shave-and-retry
+        # loop — quantify the overage, say trimming won't help, and tell the
+        # model to move whole sections into supporting files (not just "consider
+        # splitting", which models read as "trim a little and retry").
+        err = _validate_content_size("a" * (MAX_SKILL_CONTENT_CHARS + 250))
+        assert err is not None
+        assert "250 over" in err  # the overage, not just the absolute size
+        low = err.lower()
+        assert "trimming" in low and "not" in low  # trimming will NOT fix it
+        assert "move" in low  # imperative action, not a vague suggestion
+        assert "references/" in err or "templates/" in err  # concrete split target
+
 
 class TestCreateSkillSizeLimit:
     """create action rejects oversized content."""
@@ -72,6 +85,10 @@ class TestCreateSkillSizeLimit:
         result = json.loads(skill_manage(action="create", name="huge-skill", content=content))
         assert result["success"] is False
         assert "100,000" in result["error"]
+        # #51470: the directive language must reach the agent end-to-end (not just
+        # the internal validator), so the model splits instead of shave-retrying.
+        low = result["error"].lower()
+        assert "not" in low and "move" in low
 
     def test_create_at_limit(self, isolate_skills):
         # Content at exactly the limit should succeed
