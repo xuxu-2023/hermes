@@ -36,12 +36,17 @@ logger = logging.getLogger(__name__)
 PROFILE_SCHEMA = {
     "name": "honcho_profile",
     "description": (
-        "Retrieve or update a peer card from Honcho — a curated list of key facts "
-        "about that peer (name, role, preferences, communication style, patterns). "
-        "Pass `card` to update; omit `card` to read.  If the card is empty, the "
-        "result includes a `hint` field explaining why (observation disabled, "
-        "fresh peer, dialectic layer still warming up, etc.) — this is NOT an "
-        "error.  Peer cards accumulate over time from observed conversation."
+        "Read or write a peer's CARD — a short, curated list of standing facts "
+        "about that peer (name, role, preferences, communication style, recurring "
+        "patterns). This is the cheapest, fastest Honcho call: no query, no LLM, "
+        "just the current card. Pass `card` to overwrite it; omit `card` to read. "
+        "An empty read returns a `hint` explaining why (observation disabled, fresh "
+        "peer, representation still warming up) — that is NOT an error; the card "
+        "accumulates over time from observed conversation. "
+        "Related tools: honcho_context for the fuller standing snapshot (card + "
+        "representation + summary + recent messages); honcho_search to find "
+        "specific things that were actually said; honcho_reasoning for a "
+        "synthesized answer to a question."
     ),
     "parameters": {
         "type": "object",
@@ -63,25 +68,30 @@ PROFILE_SCHEMA = {
 SEARCH_SCHEMA = {
     "name": "honcho_search",
     "description": (
-        "Semantic search over Honcho's stored context about a peer. "
-        "Returns raw excerpts ranked by relevance — no LLM synthesis. "
-        "Cheaper and faster than honcho_reasoning. "
-        "Good when you want to find specific past facts and reason over them yourself."
+        "Hybrid (semantic + keyword) search over a peer's actual message "
+        "history across ALL past sessions they took part in — not just the "
+        "current one. Returns RRF-ranked raw message excerpts (what was "
+        "literally said, including the assistant's own messages about the "
+        "peer), no LLM synthesis. Cheaper and faster than honcho_reasoning. "
+        "Use this to recall specific past facts — 'what did I say about X', "
+        "'what was the regimen/decision/config we settled on' — and reason "
+        "over the excerpts yourself. For nuanced questions needing synthesis, "
+        "use honcho_reasoning instead."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "query": {
                 "type": "string",
-                "description": "What to search for in Honcho's memory.",
+                "description": "What to look for — a topic, keyword, name, or natural-language description of the fact you're trying to recall.",
             },
             "max_tokens": {
                 "type": "integer",
-                "description": "Token budget for returned context (default 800, max 2000).",
+                "description": "Approximate budget for returned excerpts (default 800, max 2000). Larger budgets return more/longer ranked snippets.",
             },
             "peer": {
                 "type": "string",
-                "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
+                "description": "Whose history to search. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace. Spans every session that peer took part in.",
             },
         },
         "required": ["query"],
@@ -91,11 +101,18 @@ SEARCH_SCHEMA = {
 REASONING_SCHEMA = {
     "name": "honcho_reasoning",
     "description": (
-        "Ask Honcho a natural language question and get a synthesized answer. "
-        "Uses Honcho's LLM (dialectic reasoning) — higher cost than honcho_profile or honcho_search. "
-        "Can query about any peer via alias or explicit peer ID. "
+        "Ask Honcho's dialectic agent a natural-language question about a peer and "
+        "get back a SYNTHESIZED answer. This is the only Honcho tool that runs an "
+        "LLM: it agentically searches both raw messages and derived conclusions, "
+        "reasons over them, and writes a prose answer — so it is the slowest and "
+        "most expensive call (seconds + tokens). Reach for it for nuanced or "
+        "open-ended questions ('how does this person prefer to receive feedback?', "
+        "'what's their relationship to project X?') where you want Honcho to do the "
+        "synthesis. For a specific fact that was stated, prefer honcho_search "
+        "(cheap, raw excerpts, you synthesize). For standing profile facts, prefer "
+        "honcho_profile / honcho_context (no LLM). "
         "Pass reasoning_level to control depth: minimal (fast/cheap), low (default), "
-        "medium, high, max (deep/expensive). Omit for configured default."
+        "medium, high, max (deep/expensive). Omit for the configured default."
     ),
     "parameters": {
         "type": "object",
@@ -130,18 +147,18 @@ REASONING_SCHEMA = {
 CONTEXT_SCHEMA = {
     "name": "honcho_context",
     "description": (
-        "Retrieve full session context from Honcho — summary, peer representation, "
-        "peer card, and recent messages. No LLM synthesis. "
-        "Cheaper than honcho_reasoning. Use this to see what Honcho knows about "
-        "the current conversation and the specified peer."
+        "Retrieve the standing SNAPSHOT Honcho holds for the current session — "
+        "session summary, the peer's representation, the peer card, and the most "
+        "recent messages — in one call. No query, no LLM synthesis (cheaper than "
+        "honcho_reasoning). Use it to orient yourself on what Honcho currently "
+        "knows about this conversation and peer. This is a fixed snapshot, not a "
+        "search: to look up a specific past fact use honcho_search; to ask a "
+        "question and get a synthesized answer use honcho_reasoning; for just the "
+        "compact card use honcho_profile."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "query": {
-                "type": "string",
-                "description": "Optional focus query to filter context. Omit for full session context snapshot.",
-            },
             "peer": {
                 "type": "string",
                 "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
@@ -154,11 +171,16 @@ CONTEXT_SCHEMA = {
 CONCLUDE_SCHEMA = {
     "name": "honcho_conclude",
     "description": (
-        "Write or delete a conclusion about a peer in Honcho's memory. "
-        "Conclusions are persistent facts that build a peer's profile. "
-        "You MUST pass exactly one of: `conclusion` (to create) or `delete_id` (to delete). "
-        "Passing neither is an error. "
-        "Deletion is only for PII removal — Honcho self-heals incorrect conclusions over time."
+        "Write or delete a CONCLUSION — a persistent, derived fact about a peer that "
+        "feeds their long-term profile (card + representation). Use this to record "
+        "something durable you've learned about the peer (a stable preference, a "
+        "correction, a standing constraint) so future sessions carry it forward. "
+        "You MUST pass exactly one of `conclusion` (to create) or `delete_id` (to "
+        "delete); passing neither, or both, is an error. Deletion exists only for "
+        "PII removal — for merely wrong facts, write a corrected conclusion instead; "
+        "Honcho self-heals contradictions over time. This is a WRITE tool: to read "
+        "the profile use honcho_profile / honcho_context, and to search what was "
+        "said use honcho_search."
     ),
     "parameters": {
         "type": "object",
@@ -173,7 +195,7 @@ CONCLUDE_SCHEMA = {
             },
             "peer": {
                 "type": "string",
-                "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
+                "description": "The peer the conclusion is ABOUT. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
             },
         },
         "required": [],
@@ -322,22 +344,16 @@ class HonchoMemoryProvider(MemoryProvider):
             logger.debug("Honcho recall_mode: %s", self._recall_mode)
 
             # ----- B5: cost-awareness config -----
-            try:
-                raw = cfg.raw or {}
-                self._injection_frequency = raw.get("injectionFrequency", "every-turn")
-                self._context_cadence = int(raw.get("contextCadence", 1))
-                # Backwards-compat: unset dialecticCadence falls back to 1
-                # (every turn) so existing honcho.json configs without the key
-                # behave as they did before. New setups via `hermes honcho setup`
-                # get dialecticCadence=2 written explicitly by the wizard.
-                self._dialectic_cadence = int(raw.get("dialecticCadence", 1))
-                self._dialectic_depth = max(1, min(cfg.dialectic_depth, 3))
-                self._dialectic_depth_levels = cfg.dialectic_depth_levels
-                self._reasoning_heuristic = cfg.reasoning_heuristic
-                if cfg.reasoning_level_cap in self._LEVEL_ORDER:
-                    self._reasoning_level_cap = cfg.reasoning_level_cap
-            except Exception as e:
-                logger.debug("Honcho cost-awareness config parse error: %s", e)
+            # All three cadence fields now have proper typed dataclass fields
+            # with host-block-first resolution (client.py).
+            self._injection_frequency = cfg.injection_frequency
+            self._context_cadence = cfg.context_cadence
+            self._dialectic_cadence = cfg.dialectic_cadence
+            self._dialectic_depth = max(1, min(cfg.dialectic_depth, 3))
+            self._dialectic_depth_levels = cfg.dialectic_depth_levels
+            self._reasoning_heuristic = cfg.reasoning_heuristic
+            if cfg.reasoning_level_cap in self._LEVEL_ORDER:
+                self._reasoning_level_cap = cfg.reasoning_level_cap
 
             # aiPeer comes from honcho.json (host block or root) only.
             # SOUL.md is persona content, not identity config.
@@ -651,46 +667,116 @@ class HonchoMemoryProvider(MemoryProvider):
             return ""
 
         if not self._session_ready():
+            # Session init runs in a background daemon thread (kept off the
+            # startup path so a slow/unreachable Honcho can't block agent
+            # construction). On turn 1 of a fresh process that thread may not
+            # have finished yet. Rather than return empty immediately — which
+            # denied turn-1 context entirely whenever init crossed the ~100ms
+            # spawn window — wait a bounded time for it to complete so the
+            # peer card can still be injected on the first message.
             self._start_session_init_background()
-            return ""
+            _init_thread = self._init_thread
+            if _init_thread is not None:
+                _init_thread.join(timeout=self._FIRST_TURN_BASE_TIMEOUT)
+            if not self._session_ready():
+                return ""
 
-        # B5: injection_frequency — if "first-turn" and past first turn, return empty.
-        # _turn_count is 1-indexed (first user message = 1), so > 1 means "past first".
-        if self._injection_frequency == "first-turn" and self._turn_count > 1:
-            return ""
+        # B5: injection_frequency — if "first-turn" and past first turn, skip
+        # the base context layer (static representation + card). The dialectic
+        # supplement has its own cadence and must still be consumed below.
+        _skip_base = (
+            self._injection_frequency == "first-turn" and self._turn_count > 1
+        )
 
-        # Trivial prompts ("ok", "yes", slash commands) carry no semantic signal.
+        # Trivial prompts ("ok", "yes", slash commands) carry no semantic
+        # signal, so we don't fetch base context or fire new dialectic work for
+        # them. But a dialectic result fired at the END of the previous turn was
+        # primed for THIS turn — blindly returning here used to strand it
+        # (consumption happens further down), after which the stale-discard
+        # guard silently dropped a successfully-generated answer. Instead,
+        # drain any ready non-stale pending result and inject just that:
+        # trivial turns still spend no NEW work, but they no longer throw
+        # away work already paid for.
         if self._is_trivial_prompt(query):
-            return ""
+            ready = self._consume_pending_dialectic()
+            return self._truncate_to_budget(ready) if ready else ""
 
         parts = []
 
         # ----- Layer 1: Base context (representation + card) -----
-        # First fetch is asynchronous: a slow Honcho backend must not block the
-        # first response. Serve empty context now and consume the background
-        # result on a later turn.
-        with self._base_context_lock:
-            if self._base_context_cache is None:
-                self._base_context_cache = ""
-                self._last_context_turn = self._turn_count
-                try:
-                    self._manager.prefetch_context(self._session_key, query or None)
-                except Exception as e:
-                    logger.debug("Honcho base context prefetch failed: %s", e)
-            base_context = self._base_context_cache
+        # Skipped when injectionFrequency is "first-turn" past turn 1 — the
+        # representation + card are static within a session and re-injecting
+        # them every turn is pure token waste.
+        if _skip_base:
+            # Still drain any pending dialectic result below; just don't
+            # fetch or inject the base context layer.
+            pass
+        else:
+            # Base context is pure retrieval (no LLM): representation + peer card +
+            # session summary. On the FIRST fetch (cache is None, i.e. turn 1 of a
+            # session) we fetch it SYNCHRONOUSLY with a short bound so the peer card
+            # is injected immediately. Firing it async and popping in the same call
+            # always lost the race on turn 1 (background thread can't finish inside
+            # one synchronous pass), which is why new sessions saw zero context
+            # until turn 2. Subsequent turns consume the background-refreshed result
+            # primed by queue_prefetch() at the end of the previous turn.
+            with self._base_context_lock:
+                _first_base_fetch = self._base_context_cache is None
+                if _first_base_fetch:
+                    self._base_context_cache = ""
+                    self._last_context_turn = self._turn_count
+                base_context = self._base_context_cache
 
-        # Check if background context prefetch has a fresher result
-        if self._manager:
-            fresh_ctx = self._manager.pop_context_result(self._session_key)
-            if fresh_ctx:
-                formatted = self._format_first_turn_context(fresh_ctx)
-                if formatted:
-                    with self._base_context_lock:
-                        self._base_context_cache = formatted
-                    base_context = formatted
+            if _first_base_fetch and self._manager:
+                # Synchronous, bounded fetch so turn 1 gets the peer card now.
+                _ctx_holder: dict[str, dict] = {}
 
-        if base_context:
-            parts.append(base_context)
+                def _fetch_base() -> None:
+                    try:
+                        _ctx_holder["ctx"] = self._manager.get_prefetch_context(
+                            self._session_key, query or None
+                        ) or {}
+                    except Exception as e:
+                        logger.debug("Honcho first-turn base context failed: %s", e)
+
+                _bt = threading.Thread(
+                    target=_fetch_base, daemon=True, name="honcho-base-first"
+                )
+                _bt.start()
+                # Bound the synchronous wait by the smaller of the base timeout and
+                # any configured request timeout, so a deliberately tight
+                # config.timeout (fail-fast deployments, tests) is still honored.
+                _base_wait = self._FIRST_TURN_BASE_TIMEOUT
+                if self._config and self._config.timeout:
+                    _base_wait = min(_base_wait, self._config.timeout)
+                _bt.join(timeout=_base_wait)
+                _ctx = _ctx_holder.get("ctx")
+                if _ctx:
+                    formatted = self._format_first_turn_context(_ctx)
+                    if formatted:
+                        with self._base_context_lock:
+                            self._base_context_cache = formatted
+                        base_context = formatted
+                elif _bt.is_alive():
+                    logger.debug(
+                        "Honcho first-turn base context still running after %.1fs — "
+                        "will surface on next turn", self._FIRST_TURN_BASE_TIMEOUT,
+                    )
+
+            # Check if a background context prefetch (primed last turn) has a
+            # fresher result. On turn 1 this is normally empty; turn 2+ consumes
+            # the result queued by queue_prefetch().
+            if not _first_base_fetch and self._manager:
+                fresh_ctx = self._manager.pop_context_result(self._session_key)
+                if fresh_ctx:
+                    formatted = self._format_first_turn_context(fresh_ctx)
+                    if formatted:
+                        with self._base_context_lock:
+                            self._base_context_cache = formatted
+                        base_context = formatted
+
+            if base_context:
+                parts.append(base_context)
 
         # ----- Layer 2: Dialectic supplement -----
         # On the very first turn, no queue_prefetch() has run yet so the
@@ -706,46 +792,98 @@ class HonchoMemoryProvider(MemoryProvider):
         if _prewarm_landed and self._last_dialectic_turn == -999:
             self._last_dialectic_turn = self._turn_count
 
+        _did_first_turn_wait = False
         if self._last_dialectic_turn == -999 and query:
-            _first_turn_timeout = (
-                self._config.timeout if self._config and self._config.timeout else 8.0
-            )
-            _fired_at = self._turn_count
+            _did_first_turn_wait = True
+            # A dialectic prewarm thread is fired at session init with an
+            # equivalent query. If it's still running, do NOT fire a second
+            # .chat() here — that was duplicate work that also blocked the
+            # first response. Briefly wait for the in-flight prewarm to land;
+            # if it doesn't, let it surface on a later turn via _prefetch_result.
+            # First-turn dialectic wait. Decoupled from a LARGE config.timeout
+            # (a 60s host timeout must not block the first response for 60s),
+            # but still bounded by a TIGHT config.timeout when one is set
+            # (fail-fast deployments / tests). See _FIRST_TURN_DIALECTIC_CAP.
+            _dia_wait = self._FIRST_TURN_DIALECTIC_CAP
+            if self._config and self._config.timeout:
+                _dia_wait = min(_dia_wait, self._config.timeout)
+            if self._thread_is_live():
+                _live = self._prefetch_thread
+                if _live is not None:
+                    _live.join(timeout=_dia_wait)
+            else:
+                _first_turn_timeout = _dia_wait
+                _fired_at = self._turn_count
 
-            def _run_first_turn() -> None:
-                try:
-                    r = self._run_dialectic_depth(query)
-                except Exception as exc:
-                    logger.debug("Honcho first-turn dialectic failed: %s", exc)
-                    self._dialectic_empty_streak += 1
-                    return
-                if r and r.strip():
-                    with self._prefetch_lock:
-                        self._prefetch_result = r
-                        self._prefetch_result_fired_at = _fired_at
-                    # Advance cadence only on a non-empty result so the next
-                    # turn retries when the call returned nothing.
-                    self._last_dialectic_turn = _fired_at
-                    self._dialectic_empty_streak = 0
-                else:
-                    self._dialectic_empty_streak += 1
+                def _run_first_turn() -> None:
+                    try:
+                        r = self._run_dialectic_depth(query)
+                    except Exception as exc:
+                        logger.debug("Honcho first-turn dialectic failed: %s", exc)
+                        self._dialectic_empty_streak += 1
+                        return
+                    if r and r.strip():
+                        with self._prefetch_lock:
+                            self._prefetch_result = r
+                            self._prefetch_result_fired_at = _fired_at
+                        # Advance cadence only on a non-empty result so the next
+                        # turn retries when the call returned nothing.
+                        self._last_dialectic_turn = _fired_at
+                        self._dialectic_empty_streak = 0
+                    else:
+                        self._dialectic_empty_streak += 1
 
-            self._prefetch_thread_started_at = time.monotonic()
-            first_turn_thread = threading.Thread(
-                target=_run_first_turn, daemon=True, name="honcho-prefetch-first"
-            )
-            first_turn_thread.start()
-            self._prefetch_thread = first_turn_thread
-            self._prefetch_thread.join(timeout=_first_turn_timeout)
-            if self._prefetch_thread.is_alive():
+                self._prefetch_thread_started_at = time.monotonic()
+                first_turn_thread = threading.Thread(
+                    target=_run_first_turn, daemon=True, name="honcho-prefetch-first"
+                )
+                first_turn_thread.start()
+                self._prefetch_thread = first_turn_thread
+                self._prefetch_thread.join(timeout=_first_turn_timeout)
+            if self._prefetch_thread and self._prefetch_thread.is_alive():
                 logger.debug(
                     "Honcho first-turn dialectic still running after %.1fs — "
                     "will surface on next turn",
-                    _first_turn_timeout,
+                    self._FIRST_TURN_DIALECTIC_CAP,
                 )
 
-        if self._prefetch_thread and self._prefetch_thread.is_alive():
+        # Turn 2+ consumes the result primed by queue_prefetch() last turn —
+        # give a near-finished thread a brief moment. On turn 1 we already
+        # waited above (_did_first_turn_wait); waiting again here just
+        # re-blocks on the same slow in-flight dialectic with no chance of it
+        # landing, so skip the redundant join.
+        if (not _did_first_turn_wait and self._prefetch_thread
+                and self._prefetch_thread.is_alive()):
             self._prefetch_thread.join(timeout=3.0)
+
+        # Drain the pending result (applies the stale-discard guard). Shared
+        # with the trivial-prompt path above via _consume_pending_dialectic so
+        # both routes pop + age-check identically.
+        dialectic_result = self._consume_pending_dialectic()
+
+        if dialectic_result and dialectic_result.strip():
+            parts.append(dialectic_result)
+
+        if not parts:
+            return ""
+
+        result = "\n\n".join(parts)
+
+        # ----- Port #3265: token budget enforcement -----
+        result = self._truncate_to_budget(result)
+
+        return result
+
+    def _consume_pending_dialectic(self) -> str:
+        """Pop any pending dialectic result, applying the stale-discard guard.
+
+        Drains _prefetch_result under the lock and returns it unless it is
+        stale (fired more than cadence × multiplier turns ago), in which case
+        it is dropped and "" is returned. Does NOT wait on an in-flight thread
+        — callers that want to give a near-finished thread a moment must join
+        before calling. Idempotent: a second call returns "" until a new
+        result is primed.
+        """
         with self._prefetch_lock:
             dialectic_result = self._prefetch_result
             fired_at = self._prefetch_result_fired_at
@@ -762,20 +900,8 @@ class HonchoMemoryProvider(MemoryProvider):
                 "Honcho pending dialectic discarded as stale: fired_at=%d, "
                 "turn=%d, limit=%d", fired_at, self._turn_count, stale_limit,
             )
-            dialectic_result = ""
-
-        if dialectic_result and dialectic_result.strip():
-            parts.append(dialectic_result)
-
-        if not parts:
             return ""
-
-        result = "\n\n".join(parts)
-
-        # ----- Port #3265: token budget enforcement -----
-        result = self._truncate_to_budget(result)
-
-        return result
+        return dialectic_result if (dialectic_result and dialectic_result.strip()) else ""
 
     def _truncate_to_budget(self, text: str) -> str:
         """Truncate text to fit within context_tokens budget if set."""
@@ -900,6 +1026,22 @@ class HonchoMemoryProvider(MemoryProvider):
     # Cap on the empty-streak backoff so a persistently silent backend
     # eventually settles on a ceiling instead of unbounded widening.
     _BACKOFF_MAX = 8
+    # First-turn base-context fetch bound. Base context (representation +
+    # peer card) is pure retrieval with no LLM call (~400-600ms locally), so
+    # turn 1 can afford to wait for it synchronously and inject the peer card
+    # immediately instead of returning an empty block that only fills from
+    # turn 2. A short bound keeps a slow/unreachable backend from blocking the
+    # first response.
+    _FIRST_TURN_BASE_TIMEOUT = 3.0
+    # First-turn dialectic grace. The dialectic is the slow LLM path
+    # (multi-pass .chat(), often 20s+ at depth 3) and must stay decoupled from
+    # config.timeout: once the host-block timeout is honored (e.g. 60s),
+    # reusing it here would block the first response for the full request
+    # timeout. Turn 1's value is the base context (peer card), fetched
+    # synchronously above; the dialectic only needs an opportunistic grace to
+    # catch a near-finished prewarm. If it doesn't land in this window it
+    # surfaces on turn 2 via _prefetch_result — no benefit to blocking longer.
+    _FIRST_TURN_DIALECTIC_CAP = 2.0
 
     def _thread_is_live(self) -> bool:
         """Thread-alive guard that treats threads older than the stale
@@ -1055,15 +1197,31 @@ class HonchoMemoryProvider(MemoryProvider):
         results: list[str] = []
 
         for i in range(self._dialectic_depth):
+            # Only non-empty prior results are usable context for dependent
+            # passes. A pass can return "" (e.g. a reasoning model that spends
+            # its whole token budget thinking and emits no content). Feeding
+            # that blank forward produced prompts like "Given this initial
+            # assessment:\n\n\n\nWhat gaps remain..." with an empty body — the
+            # empty-spot symptom seen in Honcho request logs.
+            prior_results = [r for r in results if r and r.strip()]
             if i == 0:
-                prompt = self._build_dialectic_prompt(0, results, is_cold)
+                prompt = self._build_dialectic_prompt(0, prior_results, is_cold)
             else:
                 # Skip further passes if prior pass delivered strong signal
-                if results and self._signal_sufficient(results[-1]):
+                if prior_results and self._signal_sufficient(prior_results[-1]):
                     logger.debug("Honcho dialectic depth %d: pass %d skipped, prior signal sufficient",
                                  self._dialectic_depth, i)
                     break
-                prompt = self._build_dialectic_prompt(i, results, is_cold)
+                if not prior_results:
+                    # Every prior pass returned empty — a dependent prompt would
+                    # carry a blank assessment. Re-issue the pass-0 base prompt
+                    # instead so this pass starts fresh rather than referencing
+                    # nothing.
+                    logger.debug("Honcho dialectic depth %d: pass %d has no non-empty prior — "
+                                 "falling back to base prompt", self._dialectic_depth, i)
+                    prompt = self._build_dialectic_prompt(0, prior_results, is_cold)
+                else:
+                    prompt = self._build_dialectic_prompt(i, prior_results, is_cold)
 
             level = self._resolve_pass_level(i, query=query)
             logger.debug("Honcho dialectic depth %d: pass %d, level=%s, cold=%s",

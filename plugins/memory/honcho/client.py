@@ -359,6 +359,12 @@ class HonchoClientConfig:
     # Eager init in tools mode — when true, initializes session during
     # initialize() instead of deferring to first tool call
     init_on_session_start: bool = False
+    # Injection frequency: "every-turn" (default) or "first-turn" (inject only on turn 1)
+    injection_frequency: str = "every-turn"
+    # Minimum turns between peer.context() API calls (base layer refresh cadence)
+    context_cadence: int = 1
+    # Minimum turns between dialectic prefetch fires (supplement layer cadence)
+    dialectic_cadence: int = 1
     # Observation mode: legacy string shorthand ("directional" or "unified").
     # Kept for backward compat; granular per-peer booleans below are preferred.
     observation_mode: str = "directional"
@@ -457,7 +463,13 @@ class HonchoClientConfig:
             or os.environ.get("HONCHO_BASE_URL", "").strip()
             or None
         )
+        # Host block wins, then flat/global, then env — consistent with every
+        # other field above. Previously the host block was skipped, silently
+        # dropping a per-host `timeout`/`requestTimeout` and falling through to
+        # config.yaml honcho.timeout (or the 30s default).
         timeout = _resolve_optional_float(
+            host_block.get("timeout"),
+            host_block.get("requestTimeout"),
             raw.get("timeout"),
             raw.get("requestTimeout"),
             os.environ.get("HONCHO_TIMEOUT"),
@@ -593,6 +605,24 @@ class HonchoClientConfig:
                 host_block.get("initOnSessionStart"),
                 raw.get("initOnSessionStart"),
                 default=False,
+            ),
+            # Cost-awareness cadence: host block wins, then root.
+            # Previously these were read only via `raw.get()` which missed
+            # any setting placed inside `hosts.<name>`, making per-host
+            # tuning of injectionFrequency / contextCadence silently no-op.
+            injection_frequency=(
+                host_block.get("injectionFrequency")
+                or raw.get("injectionFrequency", "every-turn")
+            ),
+            context_cadence=_parse_int_config(
+                host_block.get("contextCadence"),
+                raw.get("contextCadence"),
+                default=1,
+            ),
+            dialectic_cadence=_parse_int_config(
+                host_block.get("dialecticCadence"),
+                raw.get("dialecticCadence"),
+                default=1,
             ),
             # Migration guard: existing configs without an explicit
             # observationMode keep the old "unified" default so users

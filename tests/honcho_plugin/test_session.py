@@ -4,7 +4,7 @@ import time
 
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from plugins.memory.honcho.session import (
     HonchoSession,
@@ -247,55 +247,68 @@ class TestPeerLookupHelpers:
         assert result == ["Role: user"]
         assistant_peer.set_card.assert_called_once_with(["Role: user"], target=session.user_peer_id)
 
-    def test_search_context_uses_assistant_perspective_with_target(self):
+    def test_search_context_uses_peer_perspective_message_search(self):
+        """honcho_search must do cross-session message search scoped to the
+        target peer via the peer_perspective filter — not dump the
+        representation. Regression guard for the representation-dump bug."""
         mgr, session = self._make_cached_manager()
-        assistant_peer = MagicMock()
-        assistant_peer.context.return_value = SimpleNamespace(
-            representation="Robert runs neuralancer",
-            peer_card=["Location: Melbourne"],
-        )
-        mgr._get_or_create_peer = MagicMock(return_value=assistant_peer)
+        honcho_client = MagicMock()
+        honcho_client.search.return_value = [
+            SimpleNamespace(content="Robert runs neuralancer", peer_id="hermes", session_id="s-old", id="m1"),
+            SimpleNamespace(content="I founded neuralancer in 2019", peer_id="robert", session_id="s-old", id="m2"),
+        ]
+        with patch.object(HonchoSessionManager, "honcho", new_callable=lambda: property(lambda s: honcho_client)):
+            result = mgr.search_context(session.key, "neuralancer")
 
-        result = mgr.search_context(session.key, "neuralancer")
-
+        # Returns the actual message content, ranked.
         assert "Robert runs neuralancer" in result
-        assert "- Location: Melbourne" in result
-        assistant_peer.context.assert_called_once_with(
-            target=session.user_peer_id,
-            search_query="neuralancer",
-        )
+        assert "neuralancer in 2019" in result
+        # Scoped to the target (user) peer's sessions, all authors.
+        honcho_client.search.assert_called_once()
+        _args, kwargs = honcho_client.search.call_args
+        assert kwargs["filters"] == {"peer_perspective": session.user_peer_id}
+        # Assistant-authored messages are labeled so the model can tell
+        # user-stated facts from assistant-derived ones.
+        assert "[assistant" in result
 
-    def test_search_context_unified_mode_uses_user_self_context(self):
+    def test_search_context_explicit_ai_peer_searches_ai_perspective(self):
         mgr, session = self._make_cached_manager()
-        mgr._ai_observe_others = False
-        user_peer = MagicMock()
-        user_peer.context.return_value = SimpleNamespace(
-            representation="Unified self context",
-            peer_card=["Name: Robert"],
-        )
-        mgr._get_or_create_peer = MagicMock(return_value=user_peer)
+        honcho_client = MagicMock()
+        honcho_client.search.return_value = [
+            SimpleNamespace(content="Assistant note", peer_id="hermes", session_id="s1", id="m1"),
+        ]
+        with patch.object(HonchoSessionManager, "honcho", new_callable=lambda: property(lambda s: honcho_client)):
+            result = mgr.search_context(session.key, "assistant", peer=session.assistant_peer_id)
 
-        result = mgr.search_context(session.key, "self")
+        assert "Assistant note" in result
+        _args, kwargs = honcho_client.search.call_args
+        assert kwargs["filters"] == {"peer_perspective": session.assistant_peer_id}
 
-        assert "Unified self context" in result
-        user_peer.context.assert_called_once_with(search_query="self")
-
-    def test_search_context_accepts_explicit_ai_peer_id(self):
+    def test_search_context_empty_query_returns_empty(self):
         mgr, session = self._make_cached_manager()
-        ai_peer = MagicMock()
-        ai_peer.context.return_value = SimpleNamespace(
-            representation="Assistant self context",
-            peer_card=["Role: Assistant"],
-        )
-        mgr._get_or_create_peer = MagicMock(return_value=ai_peer)
+        honcho_client = MagicMock()
+        with patch.object(HonchoSessionManager, "honcho", new_callable=lambda: property(lambda s: honcho_client)):
+            assert mgr.search_context(session.key, "   ") == ""
 
-        result = mgr.search_context(session.key, "assistant", peer=session.assistant_peer_id)
+        honcho_client.search.assert_not_called()
 
-        assert "Assistant self context" in result
-        ai_peer.context.assert_called_once_with(
-            target=session.assistant_peer_id,
-            search_query="assistant",
-        )
+    def test_search_context_falls_back_to_peer_search_on_filter_error(self):
+        """If the workspace search with peer_perspective raises (older Honcho),
+        fall back to peer-authored search rather than returning nothing."""
+        mgr, session = self._make_cached_manager()
+        honcho_client = MagicMock()
+        honcho_client.search.side_effect = RuntimeError("peer_perspective unsupported")
+        peer_obj = MagicMock()
+        peer_obj.search.return_value = [
+            SimpleNamespace(content="fallback hit", peer_id="robert", session_id="s1", id="m1"),
+        ]
+        mgr._get_or_create_peer = MagicMock(return_value=peer_obj)
+
+        with patch.object(HonchoSessionManager, "honcho", new_callable=lambda: property(lambda s: honcho_client)):
+            result = mgr.search_context(session.key, "anything")
+
+        assert "fallback hit" in result
+        peer_obj.search.assert_called_once()
 
     def test_get_prefetch_context_fetches_user_and_ai_from_peer_api(self):
         mgr, session = self._make_cached_manager()
@@ -953,8 +966,18 @@ class TestDialecticCadenceDefaults:
 
     def test_config_override(self):
         """dialecticCadence from config overrides the default."""
-        provider = self._make_provider(cfg_extra={"raw": {"dialecticCadence": 5}})
+        provider = self._make_provider(cfg_extra={"dialectic_cadence": 5})
         assert provider._dialectic_cadence == 5
+
+    def test_injection_frequency_from_config(self):
+        """injectionFrequency from config (including host block) is respected."""
+        provider = self._make_provider(cfg_extra={"injection_frequency": "first-turn"})
+        assert provider._injection_frequency == "first-turn"
+
+    def test_context_cadence_from_config(self):
+        """contextCadence from config (including host block) is respected."""
+        provider = self._make_provider(cfg_extra={"context_cadence": 999})
+        assert provider._context_cadence == 999
 
 
 class TestBaseContextSummary:
@@ -1210,6 +1233,49 @@ class TestTrivialPromptHeuristic:
         assert provider._manager.prefetch_context.call_count == 0
         assert provider._manager.dialectic_query.call_count == 0
 
+    def test_trivial_prompt_injects_ready_pending_dialectic(self):
+        """Regression: a dialectic result fired at the end of the prior turn and
+        primed for THIS turn must still be injected when this turn's prompt is
+        trivial — not stranded by the trivial early-return and later silently
+        discarded as stale. Option A: trivial turns consume + inject a ready,
+        non-stale pending result (but spend no new work)."""
+        provider = self._make_provider()
+        provider._session_key = "test"
+        provider._base_context_cache = ""  # isolate the supplement path
+        provider._dialectic_cadence = 4
+        provider._turn_count = 2
+        # Simulate: queue_prefetch fired the dialectic at end of turn 1.
+        provider._last_dialectic_turn = 1
+        with provider._prefetch_lock:
+            provider._prefetch_result = "PENDING_DIALECTIC"
+            provider._prefetch_result_fired_at = 1
+
+        injected = provider.prefetch("ok")
+
+        assert "PENDING_DIALECTIC" in injected
+        # And it was consumed, not left to go stale.
+        with provider._prefetch_lock:
+            assert provider._prefetch_result == ""
+
+    def test_trivial_prompt_discards_stale_pending_dialectic(self):
+        """A pending result older than cadence × multiplier must still be
+        discarded on a trivial turn — the fix must not resurrect stale content."""
+        provider = self._make_provider()
+        provider._session_key = "test"
+        provider._base_context_cache = ""
+        provider._dialectic_cadence = 4  # stale_limit = 4 * 2 = 8
+        provider._last_dialectic_turn = 1
+        provider._turn_count = 1 + 4 * provider._STALE_RESULT_MULTIPLIER + 1  # 10 → stale
+        with provider._prefetch_lock:
+            provider._prefetch_result = "STALE_DIALECTIC"
+            provider._prefetch_result_fired_at = 1
+
+        injected = provider.prefetch("ok")
+
+        assert injected == ""
+        with provider._prefetch_lock:
+            assert provider._prefetch_result == ""
+
 
 class TestDialecticCadenceAdvancesOnSuccess:
     """Cadence tracker advances only when the dialectic call returns a
@@ -1423,7 +1489,7 @@ class TestDialecticLiveness:
     def test_stale_pending_result_is_discarded_on_read(self):
         """A pending dialectic result from many turns ago is discarded
         instead of injected against a fresh conversational pivot."""
-        p = self._make_provider(cfg_extra={"raw": {"dialecticCadence": 2}})
+        p = self._make_provider(cfg_extra={"dialectic_cadence": 2})
         p._session_key = "test"
         p._base_context_cache = "base ctx"
         with p._prefetch_lock:
@@ -1442,7 +1508,7 @@ class TestDialecticLiveness:
 
     def test_fresh_pending_result_is_kept(self):
         """A pending result within the staleness window is injected normally."""
-        p = self._make_provider(cfg_extra={"raw": {"dialecticCadence": 3}})
+        p = self._make_provider(cfg_extra={"dialectic_cadence": 3})
         p._session_key = "test"
         p._base_context_cache = ""
         with p._prefetch_lock:
@@ -1456,14 +1522,14 @@ class TestDialecticLiveness:
 
     def test_empty_streak_widens_effective_cadence(self):
         """After N empty returns, the gate waits cadence + N turns."""
-        p = self._make_provider(cfg_extra={"raw": {"dialecticCadence": 1}})
+        p = self._make_provider(cfg_extra={"dialectic_cadence": 1})
         p._dialectic_empty_streak = 3
         # cadence=1, streak=3 → effective = 4
         assert p._effective_cadence() == 4
 
     def test_backoff_is_capped(self):
         """Effective cadence is capped at cadence × _BACKOFF_MAX."""
-        p = self._make_provider(cfg_extra={"raw": {"dialecticCadence": 2}})
+        p = self._make_provider(cfg_extra={"dialectic_cadence": 2})
         p._dialectic_empty_streak = 100
         # cadence=2, ceiling = 2 × 8 = 16
         assert p._effective_cadence() == 16
@@ -1471,7 +1537,7 @@ class TestDialecticLiveness:
     def test_success_resets_empty_streak(self):
         """A non-empty result zeroes the streak so healthy operation restores
         the base cadence immediately."""
-        p = self._make_provider(cfg_extra={"raw": {"dialecticCadence": 1}})
+        p = self._make_provider(cfg_extra={"dialectic_cadence": 1})
         p._session_key = "test"
         p._dialectic_empty_streak = 5
         p._turn_count = 10
@@ -1485,7 +1551,7 @@ class TestDialecticLiveness:
         assert p._last_dialectic_turn == 10
 
     def test_empty_result_increments_streak(self):
-        p = self._make_provider(cfg_extra={"raw": {"dialecticCadence": 1}})
+        p = self._make_provider(cfg_extra={"dialectic_cadence": 1})
         p._session_key = "test"
         p._turn_count = 5
         p._last_dialectic_turn = 0
@@ -1572,7 +1638,7 @@ class TestDialecticLifecycleSmoke:
         """
         from unittest.mock import patch, MagicMock
         provider, mgr, cfg = self._make_provider(
-            cfg_extra={"raw": {"dialecticCadence": 3}}
+            cfg_extra={"dialectic_cadence": 3}
         )
 
         # Program the dialectic responses in the exact order they'll be requested.
