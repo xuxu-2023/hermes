@@ -155,6 +155,7 @@ VALID_HOOKS: Set[str] = {
     # bounded by agent.max_verify_nudges.
     "pre_verify",
     "pre_api_request",
+    "override_api_request",
     "post_api_request",
     "api_request_error",
     "on_session_start",
