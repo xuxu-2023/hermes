@@ -44,6 +44,14 @@ test('desktop background child processes opt into hidden Windows consoles', () =
   assert.match(source, /args: \['-m', 'hermes_cli\.main', \.\.\.backendArgs\]/)
 })
 
+test('primary backend restart waits for teardown before respawn', () => {
+  const source = readElectronFile('main.cjs')
+
+  assert.match(source, /let primaryBackendTeardownPromise = Promise\.resolve\(\)/)
+  assert.match(source, /primaryBackendTeardownPromise = waitForBackendExit\(dying\)\.catch/)
+  assert.match(source, /await primaryBackendTeardownPromise\n\s+await advanceBootProgress\('backend\.resolve'/)
+})
+
 test('desktop backend launches console python so child consoles are inherited, not pythonw', () => {
   const source = readElectronFile('main.cjs')
 
@@ -86,8 +94,8 @@ test('desktop backend teardown tree-kills Windows backend descendants', () => {
 
   const resetIndex = source.indexOf('function resetHermesConnection()')
   assert.notEqual(resetIndex, -1, 'missing resetHermesConnection')
-  const resetSnippet = source.slice(resetIndex, resetIndex + 300)
-  assert.match(resetSnippet, /stopBackendChild\(hermesProcess\)/)
+  const resetSnippet = source.slice(resetIndex, resetIndex + 600)
+  assert.match(resetSnippet, /stopBackendChild\(dying\)/)
   assert.doesNotMatch(resetSnippet, /hermesProcess\.kill\('SIGTERM'\)/)
 
   const quitIndex = source.indexOf("app.on('before-quit'")

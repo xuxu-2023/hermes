@@ -163,11 +163,18 @@ def build_models_payload(
         refresh=refresh,
     )
 
+    from hermes_cli.models import hidden_model_provider_slugs
+
+    hidden = hidden_model_provider_slugs()
+    if hidden:
+        rows = [r for r in rows if str(r.get("slug") or "").strip().lower() not in hidden]
+
     moa_row = _moa_provider_row(ctx.current_provider)
     if moa_row is not None:
         rows = [moa_row] + [r for r in rows if str(r.get("slug", "")).lower() != "moa"]
 
     # --- Deduplicate: remove models from aggregators that overlap with
+
     # user-defined providers.  When a local proxy (e.g. litellm-proxy)
     # serves a model whose name also appears in an aggregator's curated
     # catalog, the picker would show the model under both providers.
@@ -213,7 +220,11 @@ def build_models_payload(
                     row["total_models"] = len(filtered)
 
     if include_unconfigured:
-        rows = list(rows) + [r for r in _append_unconfigured_rows(rows, ctx) if str(r.get("slug", "")).lower() != "moa"]
+        rows = list(rows) + [
+            r
+            for r in _append_unconfigured_rows(rows, ctx, hidden=hidden)
+            if str(r.get("slug", "")).lower() != "moa"
+        ]
     if picker_hints:
         _apply_picker_hints(rows)
     if canonical_order:
@@ -271,14 +282,17 @@ def _apply_capabilities(rows: list[dict]) -> None:
 # ─── Internal: row post-processing ──────────────────────────────────────
 
 
-def _append_unconfigured_rows(rows: list[dict], ctx: ConfigContext) -> list[dict]:
+def _append_unconfigured_rows(rows: list[dict], ctx: ConfigContext, *, hidden: set[str] | None = None) -> list[dict]:
     """Build skeleton rows for canonical providers missing from ``rows``."""
     from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_LABELS
 
     seen = {r["slug"].lower() for r in rows}
     cur = (ctx.current_provider or "").lower()
     extras: list[dict] = []
+    hidden = hidden or set()
     for entry in CANONICAL_PROVIDERS:
+        if entry.slug.lower() in hidden:
+            continue
         if entry.slug.lower() in seen:
             continue
         extras.append(

@@ -248,6 +248,22 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "copilot-acp": [
         "copilot-acp",
     ],
+    "cursor": [
+        "auto",
+        "composer-2.5-fast",
+        "composer-2.5",
+        "composer-2-fast",
+        "composer-2",
+        "gpt-5.5-medium",
+        "gpt-5.5-high",
+        "claude-opus-4-7-high",
+        "claude-opus-4-7-medium",
+        "claude-4.6-sonnet-medium",
+        "gemini-3.1-pro",
+        "gemini-3-flash",
+        "grok-4.3",
+        "kimi-k2.5",
+    ],
     "copilot": [
         "gpt-5.4",
         "gpt-5.4-mini",
@@ -1036,6 +1052,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("nvidia",         "NVIDIA NIM",               "NVIDIA NIM (Nemotron models via build.nvidia.com or local NIM)"),
     ProviderEntry("copilot",        "GitHub Copilot",           "GitHub Copilot (Uses GITHUB_TOKEN or gh auth token)"),
     ProviderEntry("copilot-acp",    "GitHub Copilot ACP",       "GitHub Copilot ACP (Spawns copilot --acp --stdio)"),
+    ProviderEntry("cursor",         "Cursor",                   "Cursor (100+ models, subscription)"),
     ProviderEntry("huggingface",    "Hugging Face",             "Hugging Face Inference Providers"),
     ProviderEntry("gemini",         "Google AI Studio",         "Google AI Studio (Native Gemini API)"),
     ProviderEntry("vertex",         "Google Vertex AI",         "Google Vertex AI (Gemini via GCP; OAuth2 service account or ADC, GCP billing/quotas)"),
@@ -1197,6 +1214,11 @@ _PROVIDER_ALIASES = {
     "github-model": "copilot",
     "github-copilot-acp": "copilot-acp",
     "copilot-acp-agent": "copilot-acp",
+    "cursor-agent": "cursor",
+    "cursor-cli": "cursor",
+    "cursor-sub": "cursor",
+    "cursor-subscription": "cursor",
+    "anysphere": "cursor",
     "google": "gemini",
     "google-gemini": "gemini",
     "google-ai-studio": "gemini",
@@ -1266,6 +1288,63 @@ _PROVIDER_ALIASES = {
     "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
     "ollama_cloud": "ollama-cloud",
 }
+
+
+def hidden_model_provider_slugs(config: Optional[dict[str, Any]] = None) -> set[str]:
+    """Return provider slugs hidden from model-picker option lists.
+
+    This is a display/discovery filter only. It keeps unwanted providers out
+    of ``hermes model``, the TUI model picker, and gateway ``/model`` options
+    without disabling explicit runtime use for existing configs or scripts.
+
+    Config shape::
+
+        model:
+          hidden_providers: [copilot, copilot-acp]
+
+    ``model_catalog.hidden_providers`` is accepted as a backwards-compatible
+    alias for users who think of this as picker/catalog configuration.
+    """
+    if config is None:
+        try:
+            from hermes_cli.config import load_config
+
+            config = load_config()
+        except Exception:
+            config = {}
+
+    raw_values: list[Any] = []
+    if isinstance(config, dict):
+        for section_name in ("model", "model_catalog"):
+            section = config.get(section_name) or {}
+            if not isinstance(section, dict):
+                continue
+            raw = section.get("hidden_providers") or section.get("disabled_providers")
+            if isinstance(raw, str):
+                raw_values.extend(part.strip() for part in raw.split(","))
+            elif isinstance(raw, (list, tuple, set)):
+                raw_values.extend(raw)
+
+    hidden: set[str] = set()
+    for raw in raw_values:
+        value = str(raw or "").strip().lower()
+        if not value:
+            continue
+        hidden.add(value)
+        hidden.add(_PROVIDER_ALIASES.get(value, value))
+
+        # Human GitHub names all refer to the two GitHub-backed provider rows.
+        if value in {"github", "github-copilot", "github-model", "github-models", "copilot"}:
+            hidden.update({"copilot", "github-copilot"})
+        if value in {"github", "github-copilot-acp", "copilot-acp", "copilot-acp-agent"}:
+            hidden.add("copilot-acp")
+
+        # Custom provider display names are surfaced as custom:<slugified-name>
+        # by list_authenticated_providers(). Accept the friendly name too.
+        if not value.startswith("custom:") and " " in value:
+            hidden.add("custom:" + value.replace(" ", "-"))
+
+    return hidden
 
 
 # Cost-safe overrides for the *silent* auto-default
@@ -1652,8 +1731,10 @@ def list_available_providers() -> list[dict[str, str]]:
     Derives the provider list from :data:`CANONICAL_PROVIDERS` (single
     source of truth shared with ``hermes model``, ``/model``, etc.).
     """
+    hidden = hidden_model_provider_slugs()
+
     # Derive display order from canonical list + custom
-    provider_order = [p.slug for p in CANONICAL_PROVIDERS] + ["custom"]
+    provider_order = [p.slug for p in CANONICAL_PROVIDERS if p.slug not in hidden] + ["custom"]
 
     # Build reverse alias map
     aliases_for: dict[str, list[str]] = {}
@@ -2293,6 +2374,27 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             pass
         if normalized == "copilot-acp":
             return list(_PROVIDER_MODELS.get("copilot", []))
+    if normalized == "cursor":
+        try:
+            import shutil as _shutil
+            import subprocess as _subprocess
+
+            cmd = _shutil.which("cursor-agent")
+            if cmd:
+                out = _subprocess.check_output([cmd, "--list-models"], text=True, timeout=8)
+                ids: list[str] = []
+                for raw_line in out.splitlines():
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    model_id = line.split(" - ", 1)[0].strip() if " - " in line else line.split()[0]
+                    model_id = model_id.split()[0]
+                    if model_id and model_id not in ids:
+                        ids.append(model_id)
+                if ids:
+                    return ids
+        except Exception:
+            pass
     if normalized == "nous":
         # Try live Nous Portal /models endpoint
         try:

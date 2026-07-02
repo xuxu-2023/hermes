@@ -1539,6 +1539,35 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             agent._client_log_context(),
         )
         return client
+    if agent.provider == "cursor" or str(client_kwargs.get("base_url", "")).startswith("cursor://"):
+        from agent.cursor_agent_client import CursorAgentClient
+
+        def _bump_compressor_estimate(tokens: int, reset: bool = False) -> None:
+            try:
+                compressor = getattr(agent, "context_compressor", None)
+                if compressor is None:
+                    return
+                if reset:
+                    compressor.last_prompt_tokens = int(tokens)
+                    return
+                prev = int(getattr(compressor, "last_prompt_tokens", 0) or 0)
+                if tokens > prev:
+                    compressor.last_prompt_tokens = int(tokens)
+            except Exception:
+                pass
+
+        client = CursorAgentClient(
+            tool_progress_callback=getattr(agent, "tool_progress_callback", None),
+            context_estimate_callback=_bump_compressor_estimate,
+            **client_kwargs,
+        )
+        _ra().logger.info(
+            "Cursor Agent client created (%s, shared=%s) %s",
+            reason,
+            shared,
+            agent._client_log_context(),
+        )
+        return client
     if agent.provider == "gemini":
         from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
 
@@ -2050,6 +2079,9 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             pass
         return result
 
+    if function_name in getattr(agent, "_local_tool_handlers", {}):
+        return _invoke_local_tool(agent, function_name, function_args)
+
     if function_name == "todo":
         def _execute(next_args: dict) -> Any:
             from tools.todo_tool import todo_tool as _todo_tool
@@ -2165,6 +2197,24 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         turn_id=getattr(agent, "_current_turn_id", "") or "",
         api_request_id=getattr(agent, "_current_api_request_id", "") or "",
     )
+
+
+def _invoke_local_tool(agent, function_name: str, function_args: dict) -> str:
+    """Dispatch a per-agent local tool without touching the global registry."""
+    handler = getattr(agent, "_local_tool_handlers", {}).get(function_name)
+    if handler is None:
+        return json.dumps({"error": f"Unknown local tool: {function_name}"}, ensure_ascii=False)
+    try:
+        result = handler(function_args or {})
+    except Exception as exc:
+        logger.warning("Local tool %s failed: %s", function_name, exc, exc_info=True)
+        return json.dumps({"error": f"Local tool '{function_name}' failed: {exc}"}, ensure_ascii=False)
+    if isinstance(result, str):
+        return result
+    try:
+        return json.dumps(result, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return str(result)
 
 
 

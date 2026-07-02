@@ -52,6 +52,12 @@ from hermes_cli.colors import Colors, color
 
 logger = logging.getLogger(__name__)
 
+
+def _launchctl_bin() -> str:
+    """Return launchctl, falling back to /bin/launchctl when PATH is sparse."""
+    return "launchctl" if shutil.which("launchctl") else "/bin/launchctl"
+
+
 # =============================================================================
 # Process Management (for manual gateway runs)
 # =============================================================================
@@ -133,7 +139,7 @@ def _get_service_pids() -> set:
         try:
             label = get_launchd_label()
             result = subprocess.run(
-                ["launchctl", "list", label],
+                [_launchctl_bin(), "list", label],
                 capture_output=True,
                 text=True,
                 timeout=5,
@@ -1228,7 +1234,7 @@ def _probe_launchd_service_running() -> bool:
         return False
     try:
         result = subprocess.run(
-            ["launchctl", "list", get_launchd_label()],
+            [_launchctl_bin(), "list", get_launchd_label()],
             capture_output=True,
             text=True,
             timeout=10,
@@ -3444,6 +3450,11 @@ def get_launchd_label() -> str:
 _resolved_launchd_domain: str | None = None
 
 
+def _launchctl_bin() -> str:
+    """Return launchctl, falling back to /bin/launchctl when PATH is sparse."""
+    return "launchctl" if shutil.which("launchctl") else "/bin/launchctl"
+
+
 def _launchd_domain() -> str:
     """Return the launchd domain that actually manages the gateway service.
 
@@ -3468,7 +3479,7 @@ def _launchd_domain() -> str:
     # 1. Probe gui/<uid> first — in Aqua sessions the service is loaded here.
     try:
         subprocess.run(
-            ["launchctl", "print", f"{gui_domain}/{label}"],
+            [_launchctl_bin(), "print", f"{gui_domain}/{label}"],
             check=True,
             timeout=5,
             capture_output=True,
@@ -3481,7 +3492,7 @@ def _launchd_domain() -> str:
     # 2. Probe user/<uid> — in Background/SSH sessions this is the working domain.
     try:
         subprocess.run(
-            ["launchctl", "print", f"{user_domain}/{label}"],
+            [_launchctl_bin(), "print", f"{user_domain}/{label}"],
             check=True,
             timeout=5,
             capture_output=True,
@@ -3495,7 +3506,7 @@ def _launchd_domain() -> str:
     #    Aqua → gui/<uid>, anything else (Background, loginwindow) → user/<uid>.
     try:
         result = subprocess.run(
-            ["launchctl", "managername"],
+            [_launchctl_bin(), "managername"],
             capture_output=True,
             text=True,
             timeout=5,
@@ -4011,7 +4022,7 @@ def refresh_launchd_plist_if_needed() -> bool:
     # registered or the drain window elapses, verify with `launchctl list`,
     # and log exhaustion so the reload watchdog can detect a persistent orphan.
     subprocess.run(
-        ["launchctl", "bootout", target],
+        [_launchctl_bin(), "bootout", f"{_launchd_domain()}/{label}"],
         check=False,
         timeout=90,
     )
@@ -4086,7 +4097,7 @@ def launchd_uninstall():
     plist_path = get_launchd_plist_path()
     label = get_launchd_label()
     subprocess.run(
-        ["launchctl", "bootout", f"{_launchd_domain()}/{label}"],
+        [_launchctl_bin(), "bootout", f"{_launchd_domain()}/{label}"],
         check=False,
         timeout=90,
     )
@@ -4113,7 +4124,7 @@ def launchd_start():
         try:
             _launchctl_bootstrap(_launchd_domain(), plist_path, label, timeout=30)
             subprocess.run(
-                ["launchctl", "kickstart", f"{_launchd_domain()}/{label}"],
+                [_launchctl_bin(), "kickstart", f"{_launchd_domain()}/{label}"],
                 check=True,
                 timeout=30,
             )
@@ -4129,7 +4140,7 @@ def launchd_start():
     refresh_launchd_plist_if_needed()
     try:
         subprocess.run(
-            ["launchctl", "kickstart", f"{_launchd_domain()}/{label}"],
+            [_launchctl_bin(), "kickstart", f"{_launchd_domain()}/{label}"],
             check=True,
             timeout=30,
         )
@@ -4141,12 +4152,12 @@ def launchd_start():
         try:
             _launchctl_bootstrap(_launchd_domain(), plist_path, label, timeout=30)
             subprocess.run(
-                ["launchctl", "kickstart", f"{_launchd_domain()}/{label}"],
+                [_launchctl_bin(), "kickstart", f"{_launchd_domain()}/{label}"],
                 check=True,
                 timeout=30,
             )
         except subprocess.CalledProcessError as e2:
-            # Even a fresh bootstrap can't manage the domain on this host —
+            # Even a fresh bootstrap can't manage the domain —
             # degrade to a detached background process (issue #23387).
             if not _launchctl_domain_unsupported(e2.returncode):
                 raise
@@ -4172,7 +4183,7 @@ def launchd_stop():
     # immediately restarts it because KeepAlive is unconditionally true.
     # `hermes gateway start` re-bootstraps when it detects the job is unloaded.
     try:
-        subprocess.run(["launchctl", "bootout", target], check=True, timeout=90)
+        subprocess.run([_launchctl_bin(), "bootout", target], check=True, timeout=90)
     except subprocess.CalledProcessError as e:
         # Job already unloaded (3/113/125), or the domain can't be managed at
         # all (5/125, macOS 26+ detached-fallback process, issue #23387) — in
@@ -4272,7 +4283,7 @@ def launchd_restart():
                     print(
                         f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart"
                     )
-        subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
+        subprocess.run([_launchctl_bin(), "kickstart", "-k", target], check=True, timeout=90)
         print("✓ Service restarted")
         _clear_launchd_unsupported_marker()
     except subprocess.CalledProcessError as e:
@@ -4299,11 +4310,11 @@ def launchd_restart():
                 timeout=90,
             )
             subprocess.run(
-                ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
+                [_launchctl_bin(), "bootstrap", _launchd_domain(), str(plist_path)],
                 check=True,
                 timeout=30,
             )
-            subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
+            subprocess.run([_launchctl_bin(), "kickstart", target], check=True, timeout=30)
         except subprocess.CalledProcessError as e2:
             if not _launchctl_domain_unsupported(e2.returncode):
                 raise
@@ -4318,7 +4329,7 @@ def launchd_status(deep: bool = False):
     label = get_launchd_label()
     try:
         result = subprocess.run(
-            ["launchctl", "list", label],
+            [_launchctl_bin(), "list", label],
             capture_output=True,
             text=True,
             timeout=10,
@@ -5412,7 +5423,7 @@ def _is_service_running() -> bool:
     elif is_macos() and get_launchd_plist_path().exists():
         try:
             result = subprocess.run(
-                ["launchctl", "list", get_launchd_label()],
+                [_launchctl_bin(), "list", get_launchd_label()],
                 capture_output=True,
                 text=True,
                 timeout=10,

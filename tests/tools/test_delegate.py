@@ -33,6 +33,7 @@ from tools.delegate_tool import (
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
     _inherit_parent_base_url,
+    _task_delegation_config,
 )
 
 
@@ -69,6 +70,11 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("goal", props)
         self.assertIn("tasks", props)
         self.assertIn("context", props)
+        self.assertIn("model", props)
+        self.assertIn("provider", props)
+        task_props = props["tasks"]["items"]["properties"]
+        self.assertIn("model", task_props)
+        self.assertIn("provider", task_props)
         # toolsets is intentionally NOT exposed to the model — subagents always
         # inherit the parent's toolsets. Letting the model name toolsets was a
         # capability-selection surface the model should not control.
@@ -1370,6 +1376,30 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         creds = _resolve_delegation_credentials(cfg, parent)
         self.assertIsNone(creds["provider"])
 
+    def test_per_task_runtime_config_overrides_top_and_global(self):
+        cfg = {"model": "deepseek-v4-flash", "provider": "deepseek", "base_url": ""}
+        task_cfg = _task_delegation_config(
+            cfg,
+            top_model="z-ai/glm-5.2",
+            top_provider="openrouter",
+            task={"goal": "x", "model": "anthropic/claude-sonnet-4", "provider": "anthropic"},
+        )
+        self.assertEqual(task_cfg["model"], "anthropic/claude-sonnet-4")
+        self.assertEqual(task_cfg["provider"], "anthropic")
+        self.assertEqual(task_cfg["base_url"], "")
+
+    def test_per_call_self_bypasses_delegation_config(self):
+        cfg = {"model": "deepseek-v4-flash", "provider": "deepseek", "base_url": "https://api.deepseek.com/v1"}
+        task_cfg = _task_delegation_config(
+            cfg,
+            top_model="self",
+            top_provider=None,
+            task={"goal": "x"},
+        )
+        self.assertEqual(task_cfg["model"], "")
+        self.assertEqual(task_cfg["provider"], "")
+        self.assertEqual(task_cfg["base_url"], "")
+
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_bedrock_provider_with_base_url_uses_runtime_resolver(self, mock_resolve):
         """Regression: provider=bedrock + base_url set must NOT fall through the
@@ -1394,7 +1424,6 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertEqual(creds["api_mode"], "bedrock_converse")
         mock_resolve.assert_called_once()
         self.assertEqual(mock_resolve.call_args.kwargs.get("requested"), "bedrock")
-
 
 
 class TestDelegationProviderIntegration(unittest.TestCase):

@@ -412,14 +412,26 @@ def test_run_agent_dispatch_forces_background():
         assert captured["background"] is True
 
         run_agent.AIAgent._dispatch_delegate_task(
+            agent,
+            {"goal": "x", "model": "z-ai/glm-5.2", "provider": "openrouter"},
+        )
+        assert captured["model"] == "z-ai/glm-5.2"
+        assert captured["provider"] == "openrouter"
+
+        run_agent.AIAgent._dispatch_delegate_task(
             agent, {"tasks": [{"goal": "a"}, {"goal": "b"}]}
         )
         assert captured["background"] is True
 
         sub = _FakeAgent()
         sub._delegate_depth = 1
-        run_agent.AIAgent._dispatch_delegate_task(sub, {"goal": "x"})
+        run_agent.AIAgent._dispatch_delegate_task(
+            sub,
+            {"goal": "x", "model": "cheap/model", "provider": "openrouter"},
+        )
         assert captured["background"] is False
+        assert captured["model"] == "cheap/model"
+        assert captured["provider"] == "openrouter"
 
 
 def test_dispatch_never_forwards_model_toolsets():
@@ -611,5 +623,3 @@ def test_gateway_cli_origin_event_left_unrouted():
     evt = _make_async_evt(session_key="")
     runner._enrich_async_delegation_routing(evt)
     assert "platform" not in evt
-
-
