@@ -9,6 +9,8 @@ import {
 import { useStore } from '@nanostores/react'
 import { type FC, useCallback, useMemo, useState } from 'react'
 
+import { KanbanCreateTaskItem, KanbanSendPlanItem } from '@/components/assistant-ui/thread/kanban-create-button'
+
 import {
   contentHasVisibleText,
   messageContentText,
@@ -176,6 +178,8 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, getMessageText,
               <GitBranchIcon />
               {copy.branchNewChat}
             </DropdownMenuItem>
+            <KanbanCreateTaskItem getMessageText={getMessageText} messageId={messageId} />
+            <KanbanSendPlanItem />
             <ReadAloudItem getText={getMessageText} messageId={messageId} />
           </DropdownMenuContent>
         </DropdownMenu>

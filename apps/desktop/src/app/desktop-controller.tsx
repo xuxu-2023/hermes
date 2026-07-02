@@ -55,7 +55,6 @@ import { $startWorkSessionRequest, followActiveSessionCwd, resolveNewSessionCwd 
 import { $reviewOpen, REVIEW_PANE_ID } from '../store/review'
 import {
   $activeSessionId,
-  $attentionSessionIds,
   $currentCwd,
   $freshDraftReady,
   $gatewayState,
@@ -139,6 +138,7 @@ const MessagingView = lazy(async () => ({ default: (await import('./messaging'))
 const ProfilesView = lazy(async () => ({ default: (await import('./profiles')).ProfilesView }))
 const SettingsView = lazy(async () => ({ default: (await import('./settings')).SettingsView }))
 const SkillsView = lazy(async () => ({ default: (await import('./skills')).SkillsView }))
+const KanbanView = lazy(async () => ({ default: (await import('./kanban')).KanbanView }))
 
 // Latest cron-job sessions surfaced in the collapsed "Cron jobs" section. The
 // Cron sessions are written by a background scheduler tick (the desktop
@@ -800,7 +800,6 @@ export function DesktopController() {
 
     return $attentionSessionIds.listen(sync)
   }, [])
-
   useGatewayBoot({
     handleGatewayEvent: handleDesktopGatewayEvent,
     onConnectionReady: c => {
@@ -1058,7 +1057,7 @@ export function DesktopController() {
   const previewPane = (
     <Pane
       disabled={!chatOpen || (!previewTarget && !filePreviewTarget)}
-      id={PREVIEW_PANE_ID}
+      id="preview"
       key="preview"
       maxWidth={PREVIEW_RAIL_MAX_WIDTH}
       minWidth={PREVIEW_RAIL_MIN_WIDTH}
@@ -1215,6 +1214,14 @@ export function DesktopController() {
           <Route element={null} path="settings" />
           <Route element={null} path="command-center" />
           <Route element={null} path="agents" />
+          <Route
+            element={
+              <Suspense fallback={null}>
+                <KanbanView setStatusbarItemGroup={setStatusbarItemGroup} />
+              </Suspense>
+            }
+            path="kanban"
+          />
           <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="new" />
           <Route element={<LegacySessionRedirect />} path="sessions/:sessionId" />
           <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="*" />

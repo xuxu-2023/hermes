@@ -1,10 +1,17 @@
 import { ActionBarPrimitive, BranchPickerPrimitive, MessagePrimitive, useAuiState } from '@assistant-ui/react'
 import { type FC, type ReactNode, useCallback, useRef, useState } from 'react'
 
+import { KanbanCreateTaskItem, KanbanSendPlanItem } from '@/components/assistant-ui/thread/kanban-create-button'
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
 import { messageAttachmentRefs, messageContentText } from '@/components/assistant-ui/thread/content'
 import { type RestoreMessageTarget } from '@/components/assistant-ui/thread/types'
 import { UserMessageText } from '@/components/assistant-ui/thread/user-message-text'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger
+} from '@/components/ui/dropdown-menu'
 import { Codicon } from '@/components/ui/codicon'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
@@ -332,6 +339,28 @@ export const UserMessage: FC<{
                       <Codicon name="discard" size="0.875rem" />
                     </button>
                   )}
+                </div>
+              )}
+              {hasBody && (
+                <div className="absolute right-2 top-2 z-10 flex items-center justify-center opacity-0 transition-opacity group-hover/user-message:opacity-100 group-focus-within/user-message:opacity-100">
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        className={cn('pointer-events-auto flex size-5 items-center justify-center rounded text-(--ui-text-tertiary) opacity-70 hover:bg-(--chrome-action-hover) hover:opacity-100')}
+                        title="More actions"
+                        type="button"
+                      >
+                        <Codicon name="ellipsis" size="0.75rem" />
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" onCloseAutoFocus={e => e.preventDefault()} sideOffset={4}>
+                      <KanbanCreateTaskItem
+                        getMessageText={() => messageText}
+                        messageId={messageId}
+                      />
+                      <KanbanSendPlanItem />
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </div>
               )}
             </div>

@@ -1880,6 +1880,61 @@ export interface Translations {
       failed: (error: string) => string
       timedOut: string
     }
+    kanban: {
+      columnTodo: string
+      columnReady: string
+      columnRunning: string
+      columnReview: string
+      columnDone: string
+      columnBlocked: string
+      priorityHigh: string
+      priorityMedium: string
+      priorityLow: string
+      defaultBoard: string
+      newBoard: string
+      boardName: string
+      newTask: string
+      editTask: string
+      title: string
+      description: string
+      status: string
+      priority: string
+      assignee: string
+      taskTitlePlaceholder: string
+      descriptionPlaceholder: string
+      unassigned: string
+      createTask: string
+      saveChanges: string
+      taskDetails: string
+      moveTo: string
+      archiveTask: string
+      comments: (count: number) => string
+      noComments: string
+      addCommentPlaceholder: string
+      send: string
+      dropTasksHere: string
+      deleteTask: string
+      deleteConfirm: (title: string) => string
+      delete: string
+      editTaskTooltip: string
+      deleteTaskTooltip: string
+      taskCreated: string
+      taskUpdated: string
+      taskDeleted: string
+      taskArchived: string
+      loadFailed: string
+      reorderFailed: string
+      createFailed: string
+      updateFailed: string
+      deleteFailed: string
+      archiveFailed: string
+      statusUpdateFailed: string
+      addCommentFailed: string
+      deleteCommentFailed: string
+      createBoardFailed: string
+      taskCount: (count: number) => string
+      cancel: string
+    }
   }
 
   errors: {

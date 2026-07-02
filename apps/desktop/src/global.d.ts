@@ -1,10 +1,3 @@
-import type {
-  PetOverlayBounds,
-  PetOverlayControl,
-  PetOverlayOpenRequest,
-  PetOverlayStatePayload
-} from './store/pet-overlay'
-
 export {}
 
 declare global {
@@ -33,20 +26,6 @@ declare global {
       openSessionWindow: (sessionId: string, opts?: { watch?: boolean }) => Promise<{ ok: boolean; error?: string }>
       // Open (or focus) a compact secondary window on the new-session draft.
       openNewSessionWindow: () => Promise<{ ok: boolean; error?: string }>
-      // The pop-out pet overlay: a transparent always-on-top window hosting only
-      // the mascot. The main renderer drives it (open/close/drag + state push);
-      // the overlay sends control messages back (pop-in, composer submit).
-      petOverlay: {
-        open: (request: PetOverlayOpenRequest) => Promise<{ ok: boolean; bounds?: PetOverlayBounds }>
-        close: () => Promise<{ ok: boolean }>
-        setBounds: (bounds: PetOverlayBounds) => void
-        setIgnoreMouse: (ignore: boolean) => void
-        setFocusable: (focusable: boolean) => void
-        pushState: (payload: PetOverlayStatePayload) => void
-        control: (payload: PetOverlayControl) => void
-        onState: (callback: (payload: PetOverlayStatePayload) => void) => () => void
-        onControl: (callback: (payload: PetOverlayControl) => void) => () => void
-      }
       getBootProgress: () => Promise<DesktopBootProgress>
       getConnectionConfig: (profile?: null | string) => Promise<DesktopConnectionConfig>
       saveConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
@@ -81,7 +60,6 @@ declare global {
       setTranslucency?: (payload: { intensity: number }) => void
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>
-      openPreviewInBrowser?: (url: string) => Promise<void>
       fetchLinkTitle: (url: string) => Promise<string>
       sanitizeWorkspaceCwd: (cwd?: null | string) => Promise<{ cwd: string; sanitized: boolean }>
       settings: {
@@ -194,6 +172,61 @@ declare global {
         // Search the Marketplace for color-theme extensions. An empty query
         // returns the most-installed themes.
         searchMarketplace: (query: string) => Promise<DesktopMarketplaceSearchItem[]>
+      }
+      kanban: {
+        boards: () => Promise<KanbanBoard[]>
+        createBoard: (data: { title: string; description?: string }) => Promise<KanbanBoard>
+        deleteBoard: (id: string) => Promise<{ ok: boolean }>
+        tasks: (boardId: string) => Promise<KanbanTask[]>
+        allTasks: () => Promise<KanbanTask[]>
+        createTask: (data: {
+          boardId: string
+          title: string
+          description?: string
+          status?: KanbanStatus
+          priority?: KanbanPriority
+          assignee?: string
+          labels?: string[]
+          sessionId?: string
+          source?: KanbanTaskSource
+          profileId?: string
+          profileLabel?: string
+          messageId?: string
+          assigneeType?: KanbanAssigneeType
+          assigneeId?: string
+          assigneeLabel?: string
+          agentId?: string
+          agentLabel?: string
+          externalTaskId?: string
+          externalTaskKind?: string
+          syncMode?: string
+        }) => Promise<KanbanTask>
+        updateTask: (id: string, data: Partial<{
+          title: string
+          description: string
+          status: KanbanStatus
+          priority: KanbanPriority
+          assignee: string
+          archived: boolean
+          labels: string[]
+          order: number
+          syncMode: string
+          lastSyncedAt: number
+          externalTaskId: string
+          externalTaskKind: string
+          assigneeType: KanbanAssigneeType
+          assigneeLabel: string
+          agentId: string
+          agentLabel: string
+        }>) => Promise<KanbanTask>
+        deleteTask: (id: string) => Promise<{ ok: boolean }>
+        comments: (taskId: string) => Promise<KanbanComment[]>
+        addComment: (data: { taskId: string; author: string; body: string }) => Promise<KanbanComment>
+        deleteComment: (id: string) => Promise<{ ok: boolean }>
+        reorderTasks: (
+          boardId: string,
+          updates: Array<{ id: string; status: KanbanStatus; order: number }>
+        ) => Promise<KanbanTask[]>
       }
     }
   }
@@ -682,3 +715,57 @@ export interface BackendExit {
   code: number | null
   signal: string | null
 }
+
+export interface KanbanBoard {
+  id: string
+  title: string
+  description: string
+  createdAt: number
+}
+
+export interface KanbanTask {
+  id: string
+  boardId: string
+  title: string
+  description: string
+  status: KanbanStatus
+  priority: KanbanPriority
+  assignee: string
+  createdBy: string
+  createdAt: number
+  updatedAt: number
+  archived: boolean
+  order: number
+  labels?: string[]
+  sessionId?: string
+  source?: KanbanTaskSource
+  profileId?: string
+  profileLabel?: string
+  messageId?: string
+  messageCreatedAt?: number
+  assigneeType: KanbanAssigneeType
+  assigneeId?: string
+  assigneeLabel?: string
+  agentId?: string
+  agentLabel?: string
+  externalTaskId?: string
+  externalTaskKind?: string
+  syncMode?: string
+  lastSyncedAt?: number
+}
+
+export interface KanbanComment {
+  id: string
+  taskId: string
+  author: string
+  body: string
+  createdAt: number
+}
+
+export type KanbanStatus = 'todo' | 'ready' | 'running' | 'review' | 'done' | 'blocked'
+
+export type KanbanPriority = 'low' | 'medium' | 'high'
+
+export type KanbanAssigneeType = 'user' | 'agent' | 'unassigned'
+
+export type KanbanTaskSource = 'manual' | 'chat' | 'agent' | 'cron'
