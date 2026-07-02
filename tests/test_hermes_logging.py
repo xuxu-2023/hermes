@@ -1,4 +1,5 @@
 """Tests for hermes_logging — centralized logging setup."""
+import errno
 import io
 import logging
 import os
@@ -870,6 +871,25 @@ class TestWindowsConcurrentLogLockTimeout:
 
             captured = capsys.readouterr()
             assert "Cannot acquire lock after 20 attempts" not in captured.err
+            assert "--- Logging error ---" not in captured.err
+        finally:
+            logger.removeHandler(handler)
+            handler.close()
+
+    def test_enospc_routed_to_handle_error_is_suppressed(self, tmp_path, capsys):
+        """Disk-full logging failures must not spam command output."""
+        logger, handler = self._make_logger_and_handler(tmp_path / "agent.log")
+        record = logger.makeRecord(
+            logger.name, logging.INFO, __file__, 0, "debug share upload", (), None,
+        )
+        try:
+            try:
+                raise OSError(errno.ENOSPC, "No space left on device")
+            except OSError:
+                handler.handleError(record)
+
+            captured = capsys.readouterr()
+            assert "No space left on device" not in captured.err
             assert "--- Logging error ---" not in captured.err
         finally:
             logger.removeHandler(handler)
