@@ -502,6 +502,7 @@ async def _standalone_send(
     thread_id: Optional[str] = None,
     media_files: Optional[list] = None,
     force_document: bool = False,
+    attachments: Optional[list] = None,
 ) -> Dict[str, Any]:
     """Acquire a Bot Framework bearer token and POST a single message activity.
 
@@ -520,10 +521,11 @@ async def _standalone_send(
     env var.  ``chat_id`` is validated to match the documented Bot
     Framework ID character set so it cannot escape the URL path.
 
-    ``media_files`` and ``force_document`` are accepted for signature
-    parity but not implemented for the standalone path; messages with
-    attachments will send as text-only.  The live adapter handles
-    attachments via the SDK.
+    ``media_files`` are uploaded to SharePoint (OneDrive) and attached as native
+    Teams file cards when ``sharePointSiteId`` + the bot's Graph
+    ``Sites.ReadWrite.All`` permission are configured; otherwise (or on upload
+    failure) the message sends as text-only.  ``force_document`` is accepted for
+    signature parity.  The live adapter handles attachments via the SDK.
     """
     extra = getattr(pconfig, "extra", {}) or {}
     client_id = os.getenv("TEAMS_CLIENT_ID") or extra.get("client_id", "")
@@ -587,11 +589,31 @@ async def _standalone_send(
             if not access_token:
                 return {"error": "Teams standalone send: token response missing access_token"}
 
+            # Upload any media_files to SharePoint and attach them as file cards
+            # (best-effort; needs sharePointSiteId + Graph Sites.ReadWrite.All).
+            all_attachments = list(attachments or [])
+            if media_files:
+                from . import graph_files
+
+                creds = graph_files.resolve_sharepoint(extra)
+                if creds:
+                    for f in media_files:
+                        try:
+                            with open(f, "rb") as fh:
+                                data = fh.read()
+                        except OSError:
+                            continue
+                        up = await graph_files.upload_and_build_card(creds, os.path.basename(str(f)), data)
+                        if up:
+                            all_attachments.append(up["card"])
+
             activity = {
                 "type": "message",
                 "text": message,
                 "textFormat": "markdown",
             }
+            if all_attachments:
+                activity["attachments"] = all_attachments
             async with session.post(
                 activities_url,
                 json=activity,
@@ -614,6 +636,35 @@ async def _standalone_send(
     except Exception as e:
         logger.debug("Teams standalone send raised", exc_info=True)
         return {"error": f"Teams standalone send failed: {e}"}
+
+
+async def _standalone_send_file(
+    pconfig,
+    chat_id: str,
+    content: bytes,
+    filename: str,
+    *,
+    content_type: str = "application/octet-stream",
+    caption: str = "",
+) -> Dict[str, Any]:
+    """Upload ``content`` to SharePoint and post it to a Teams chat as a file card.
+
+    Requires ``sharePointSiteId`` (+ the Bot Framework app creds, which must hold the
+    Graph ``Sites.ReadWrite.All`` application permission). Falls back to a text-only
+    message with a markdown link when the native card can't be built; returns an
+    error dict when SharePoint isn't configured so callers can degrade to text."""
+    from . import graph_files
+
+    extra = getattr(pconfig, "extra", {}) or {}
+    creds = graph_files.resolve_sharepoint(extra)
+    if creds is None:
+        return {"error": "Teams file send: sharePointSiteId / app credentials not configured"}
+    uploaded = await graph_files.upload_and_build_card(creds, filename, content, content_type)
+    if uploaded is None:
+        return {"error": "Teams file send: SharePoint upload failed"}
+    link = f"📎 [{uploaded['name']}]({uploaded['share_url']})" if uploaded.get("share_url") else ""
+    text = f"{caption}\n\n{link}".strip() if caption else (link or uploaded["name"])
+    return await _standalone_send(pconfig, chat_id=chat_id, message=text, attachments=[uploaded["card"]])
 
 
 # Keep the old name as an alias so existing test imports don't break.
@@ -708,6 +759,23 @@ class TeamsAdapter(BasePlatformAdapter):
         # Maps chat_id → ConversationReference captured from incoming messages.
         # Used to send cards with the correct conversation type (personal/group/channel).
         self._conv_refs: Dict[str, Any] = {}
+        # Governance: DLP outbound redaction + audit-log channel mirror (opt-in).
+        from .dlp import DlpConfig
+
+        dlp_raw = extra.get("dlp")
+        if dlp_raw is None and os.getenv("TEAMS_DLP_ENABLED", "").strip().lower() in (
+            "1", "true", "yes", "on",
+        ):
+            dlp_raw = {"enabled": True}
+        self._dlp_cfg = DlpConfig.from_dict(dlp_raw if isinstance(dlp_raw, dict) else None)
+        self._audit_channel = (
+            str(extra.get("audit_channel") or "").strip()
+            or os.getenv("TEAMS_AUDIT_CHANNEL", "").strip()
+        )
+        self._transcribe_voice = str(
+            extra.get("transcribe_voice_messages", "")
+            or os.getenv("TEAMS_TRANSCRIBE_VOICE_MESSAGES", "")
+        ).strip().lower() in ("1", "true", "yes", "on")
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         # Lazy-install the Teams SDK on demand (parity with Slack/Discord/etc.),
@@ -760,6 +828,13 @@ class TeamsAdapter(BasePlatformAdapter):
                 ctx: ActivityContext[AdaptiveCardInvokeActivity],
             ) -> InvokeResponse[AdaptiveCardActionMessageResponse]:
                 return await self._on_card_action(ctx)
+
+            # "Ask Hermes about this" message command (composeExtension submit on a
+            # selected message). Requires the Teams app manifest to declare a
+            # composeExtensions command id "askHermes" with context ["message"].
+            @self._app.on_message_ext_submit
+            async def _handle_msg_ext(ctx):
+                return await self._on_message_action(ctx)
 
             # initialize() calls register_route() on the bridge, which adds
             # POST /api/messages to aiohttp_app automatically
@@ -963,7 +1038,9 @@ class TeamsAdapter(BasePlatformAdapter):
         elif "video" in media_kinds:
             msg_type = MessageType.VIDEO
         elif "audio" in media_kinds:
-            msg_type = MessageType.AUDIO
+            # Opt-in: treat audio clips as VOICE so the gateway's STT transcribes
+            # them and folds the transcript into the agent's turn.
+            msg_type = MessageType.VOICE if self._transcribe_voice else MessageType.AUDIO
         else:
             msg_type = MessageType.TEXT
 
@@ -976,6 +1053,65 @@ class TeamsAdapter(BasePlatformAdapter):
             message_id=msg_id,
         )
         await self.handle_message(event)
+
+    @staticmethod
+    def _extract_message_action(value: "Any") -> tuple[str, str]:
+        """Pull ``(command_id, quoted_text)`` from a message-ext submit value.
+
+        Defensive across dict / object payload shapes; strips HTML from the
+        selected message body.
+        """
+        import re
+
+        data = value if isinstance(value, dict) else (getattr(value, "__dict__", None) or {})
+        command_id = str(data.get("commandId") or data.get("command_id") or "")
+        payload = data.get("messagePayload") or data.get("message_payload") or {}
+        if not isinstance(payload, dict):
+            payload = getattr(payload, "__dict__", None) or {}
+        quoted = ""
+        body = payload.get("body")
+        if isinstance(body, dict):
+            quoted = body.get("content") or ""
+        quoted = quoted or payload.get("text") or ""
+        if "<" in quoted:
+            quoted = re.sub(r"<[^>]+>", " ", quoted)
+        return command_id, re.sub(r"\s+", " ", quoted).strip()
+
+    async def _on_message_action(self, ctx: "Any") -> None:
+        """Handle the "Ask Hermes about this" message command — dispatch the
+        quoted message through the normal message path so the answer posts back."""
+        try:
+            activity = getattr(ctx, "activity", None)
+            command_id, quoted = self._extract_message_action(getattr(activity, "value", None))
+            if command_id and command_id != "askHermes":
+                return None
+            if not quoted:
+                return None
+            conv = getattr(activity, "conversation", None)
+            from_account = getattr(activity, "from_", None)
+            conv_type = getattr(conv, "conversation_type", None) or ""
+            chat_type = (
+                "dm" if conv_type == "personal"
+                else "channel" if conv_type == "channel"
+                else "group"
+            )
+            source = self.build_source(
+                chat_id=getattr(conv, "id", "") or "",
+                chat_name=getattr(conv, "name", None) or "",
+                chat_type=chat_type,
+                user_id=str(getattr(from_account, "aad_object_id", None) or getattr(from_account, "id", "")),
+                user_name=getattr(from_account, "name", None) or "",
+                guild_id=getattr(conv, "tenant_id", None) or self._tenant_id,
+            )
+            event = MessageEvent(
+                text=f"Regarding this Teams message:\n\n> {quoted}\n\nPlease help with it.",
+                source=source,
+                message_type=MessageType.TEXT,
+            )
+            await self.handle_message(event)
+        except Exception as e:  # noqa: BLE001 — never crash the invoke path
+            logger.warning("[teams] message action failed: %s", e)
+        return None
 
     async def _send_card(self, chat_id: str, card: "AdaptiveCard") -> "Any":
         """Send an AdaptiveCard, using a stored ConversationReference when available."""
@@ -1097,10 +1233,14 @@ class TeamsAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Teams app not initialized")
 
         cmd_preview = command[:2000] + "..." if len(command) > 2000 else command
+        # DLP: redact secrets in the command/reason shown on the approval card.
+        cmd_preview = self._dlp_text(cmd_preview)
+        description = self._dlp_text(description)
         # Truncated for button data payload — just enough to reconstruct the card body.
+        btn_cmd = command[:200] + "..." if len(command) > 200 else command
         btn_data_base = {
             "session_key": session_key,
-            "cmd": command[:200] + "..." if len(command) > 200 else command,
+            "cmd": self._dlp_text(btn_cmd),
             "desc": description,
         }
 
@@ -1157,6 +1297,12 @@ class TeamsAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Teams app not initialized")
 
         formatted = self.format_message(content)
+        # DLP: redact secrets/PII on every outbound reply before it hits Teams.
+        # (Redact before truncation so a secret can't be sliced into a fragment.)
+        if self._dlp_cfg.enabled:
+            from .dlp import redact
+
+            formatted, _n = redact(formatted, self._dlp_cfg)
         chunks = self.truncate_message(formatted)
         last_message_id = None
 
@@ -1180,7 +1326,38 @@ class TeamsAdapter(BasePlatformAdapter):
             except Exception as e:
                 return SendResult(success=False, error=str(e), retryable=True)
 
+        # Audit: mirror the (already redacted) reply to the audit channel. Fires
+        # at the delivery choke point, so streamed/threaded replies are covered.
+        await self._mirror_to_audit(chat_id, formatted)
         return SendResult(success=True, message_id=last_message_id)
+
+    async def _mirror_to_audit(self, chat_id: str, redacted_text: str) -> None:
+        """Mirror an outbound reply to the audit-log channel (best-effort).
+
+        The text is already DLP-redacted by ``send()``. A loop guard skips the
+        audit channel's own traffic so it doesn't mirror itself.
+        """
+        if not self._audit_channel or not self._app:
+            return
+        if chat_id == self._audit_channel:  # loop guard
+            return
+        excerpt = redacted_text if len(redacted_text) <= 1500 else redacted_text[:1500] + "…"
+        line = f"🧾 Reply in {chat_id}:\n{excerpt}"
+        try:
+            await self._app.send(self._audit_channel, line)
+        except Exception as e:  # noqa: BLE001 — auditing must never break delivery
+            logger.debug("[teams] audit mirror failed: %s", e)
+
+    def _dlp_text(self, text: str) -> str:
+        """Redact a string with the configured DLP policy (no-op when disabled).
+
+        Used for card / caption text that doesn't pass through ``send()``."""
+        if not text or not self._dlp_cfg.enabled:
+            return text
+        from .dlp import redact
+
+        out, _ = redact(text, self._dlp_cfg)
+        return out
 
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         if not self._app:
@@ -1227,7 +1404,7 @@ class TeamsAdapter(BasePlatformAdapter):
             attachment = Attachment(content_type=mime_type, content_url=content_url)
             activity = MessageActivityInput().add_attachments(attachment)
             if caption:
-                activity = activity.add_text(caption)
+                activity = activity.add_text(self._dlp_text(caption))
 
             conv_ref = self._conv_refs.get(chat_id)
             if conv_ref:

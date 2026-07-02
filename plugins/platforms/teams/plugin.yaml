@@ -30,6 +30,10 @@ optional_env:
     description: "Webhook listen port (Bot Framework default: 3978)"
     prompt: "Webhook port"
     password: false
+  - name: TEAMS_SHAREPOINT_SITE_ID
+    description: "SharePoint (OneDrive) site id (host,siteGuid,webGuid) for sending files into chats; needs the bot app's Graph Sites.ReadWrite.All permission"
+    prompt: "SharePoint site id"
+    password: false
   - name: TEAMS_ALLOWED_USERS
     description: "Comma-separated Teams user IDs / UPNs allowed to talk to the bot"
     prompt: "Allowed users (comma-separated)"
@@ -45,4 +49,16 @@ optional_env:
   - name: TEAMS_HOME_CHANNEL_NAME
     description: "Display name for the Teams home channel"
     prompt: "Home channel display name"
+    password: false
+  - name: TEAMS_DLP_ENABLED
+    description: "Redact secrets/PII (emails, API keys, tokens) from every outbound reply"
+    prompt: "Enable DLP redaction? (true/false)"
+    password: false
+  - name: TEAMS_AUDIT_CHANNEL
+    description: "Conversation ID to mirror (DLP-redacted) agent replies to for compliance"
+    prompt: "Audit-log channel conversation ID (or empty)"
+    password: false
+  - name: TEAMS_TRANSCRIBE_VOICE_MESSAGES
+    description: "Transcribe inbound Teams voice clips and fold the text into the agent's turn"
+    prompt: "Transcribe voice messages? (true/false)"
     password: false
