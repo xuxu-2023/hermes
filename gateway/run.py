@@ -9119,13 +9119,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # /fast and /reasoning are config-only and take effect next
             # message, so they fall through to the catch-all busy response
             # below — users should wait and set them between turns.
-            if _cmd_def_inner and _cmd_def_inner.name in {"yolo", "verbose"}:
+            if _cmd_def_inner and _cmd_def_inner.name in {"yolo", "verbose", "ro"}:
                 if _cmd_def_inner.name == "yolo":
                     return await self._handle_yolo_command(event)
                 if _cmd_def_inner.name == "verbose":
                     return await self._handle_verbose_command(event)
                 if _cmd_def_inner.name == "footer":
                     return await self._handle_footer_command(event)
+                if _cmd_def_inner.name == "ro":
+                    return await self._handle_ro_command(event)
 
             # Gateway-handled info/control commands with dedicated
             # running-agent handlers.
@@ -9464,6 +9466,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "yolo":
             return await self._handle_yolo_command(event)
+
+        if canonical == "ro":
+            return await self._handle_ro_command(event)
 
         if canonical == "model":
             return await self._handle_model_command(event)
@@ -17667,6 +17672,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 set_current_session_key,
                 unregister_gateway_notify,
             )
+            # Read-only mode needs the same session key binding so the
+            # tool dispatch gate in model_tools.py can check is_tool_allowed().
+            try:
+                from tools.read_only import (
+                    reset_current_session_key as _ro_reset_session_key,
+                    set_current_session_key as _ro_set_session_key,
+                )
+            except Exception:
+                _ro_reset_session_key = None  # type: ignore[assignment]
+                _ro_set_session_key = None
 
             def _approval_notify_sync(approval_data: dict) -> None:
                 """Send the approval request to the user from the agent thread.
@@ -17925,6 +17940,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)
+            # Bind the read-only contextvar so the tool-dispatch gate
+            # can find the session key.
+            _ro_session_token = (
+                _ro_set_session_key(_approval_session_key)
+                if _ro_set_session_key is not None
+                else None
+            )
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
             try:
                 # If _prepare_inbound_message_text buffered image paths for native
@@ -17986,6 +18008,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception:
                     pass
                 reset_current_session_key(_approval_session_token)
+            # Release the read-only contextvar too.
+            if _ro_session_token is not None and _ro_reset_session_key is not None:
+                try:
+                    _ro_reset_session_key(_ro_session_token)
+                except Exception:
+                    pass
             result_holder[0] = result
 
             # Signal the stream consumer that the agent is done

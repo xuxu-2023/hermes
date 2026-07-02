@@ -1105,6 +1105,39 @@ def handle_function_call(
             if function_name in {"write_file", "patch"}:
                 return json.dumps({"error": "Edit approval denied: approval guard failed"}, ensure_ascii=False)
 
+        # ── Read-only mode gate ─────────────────────────────────────
+        # Blocks any tool not on the read-only whitelist.  The error
+        # message tells the LLM to ask the user for /ro toggling, which
+        # mirrors Cline's plan/act-mode convention.
+        try:
+            from tools.read_only import is_tool_allowed as _ro_is_tool_allowed
+
+            if not _ro_is_tool_allowed(function_name):
+                return json.dumps(
+                    {
+                        "result": "read_only_blocked",
+                        "message": (
+                            f"Cannot run '{function_name}' — read-only mode is active. "
+                            "Politely tell the user you are in read-only mode and ask them "
+                            "to run /ro off to disable it before you can make changes."
+                        )
+                    },
+                    ensure_ascii=False,
+                )
+        except Exception as _ro_err:
+            logger.warning("read-only gate error (blocking tool): %s", _ro_err)
+            return json.dumps(
+                {
+                    "result": "read_only_blocked",
+                    "message": (
+                        f"Cannot run '{function_name}' — read-only mode enforcement error. "
+                        "Politely tell the user there's a problem with read-only mode "
+                        "and ask them to run /ro off to disable it."
+                    )
+                },
+                ensure_ascii=False,
+            )
+
         # Notify the read-loop tracker when a non-read/search tool runs,
         # so the *consecutive* counter resets (reads after other work are fine).
         if function_name not in _READ_SEARCH_TOOLS:

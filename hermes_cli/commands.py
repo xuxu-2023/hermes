@@ -152,6 +152,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                subcommands=("on", "off", "status")),
     CommandDef("yolo", "Toggle YOLO mode (skip all dangerous command approvals)",
                "Configuration"),
+    CommandDef("ro", "Toggle read-only mode (blocks all non-whitelisted tools)",
+               "Configuration", subcommands=("on", "off")),
     CommandDef("reasoning", "Manage reasoning effort and display", "Configuration",
                args_hint="[level|show|hide|full|clamp]",
                subcommands=("none", "minimal", "low", "medium", "high", "xhigh", "show", "hide", "on", "off", "full", "clamp")),
