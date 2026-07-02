@@ -314,6 +314,38 @@ def _is_arcee_trinity_thinking(model: Optional[str]) -> bool:
     return bare == "trinity-large-thinking"
 
 
+def _is_gpt55_family(model: Optional[str]) -> bool:
+    """True for any gpt-5.5 family model (provider-agnostic).
+
+    The gpt-5.5 family only accepts the provider's default ``temperature=1``;
+    any other value is rejected with HTTP 400 "Unsupported value: 'temperature'
+    does not support X with this model. Only the default (1) value is
+    supported." — verified live on the openai-api direct route in #51083 and
+    mirrored by openrouter / openai-codex / custom proxies serving the same
+    model.
+
+    Matches the bare slug (stripping aggregator prefixes like ``openai/``),
+    case-insensitive and whitespace-tolerant, and accepts dated snapshots and
+    named variants (``gpt-5.5-pro``, ``gpt-5.5-2026-04-23``,
+    ``gpt-5.5-codex-mini``). Sibling gpt-5.4 / gpt-5 / gpt-5-mini do NOT match
+    — they accept custom temperature freely.
+
+    NOTE: prefix matching must end at ``-`` or ``.`` so ``gpt-5.55`` /
+    ``gpt-5.50`` / ``gpt-55`` do not false-positive.
+    """
+    bare = (model or "").strip().lower().rsplit("/", 1)[-1]
+    if bare == "gpt-5.5":
+        return True
+    # ``gpt-5.5-<suffix>`` (dash-separated variants) or ``gpt-5.5.<suffix>``
+    # (dotted snapshots). Reject bare prefixes like ``gpt-5.55`` which would
+    # otherwise be matched by ``startswith("gpt-5.5")``.
+    if bare.startswith("gpt-5.5-"):
+        return True
+    if bare.startswith("gpt-5.5."):
+        return True
+    return False
+
+
 # Context window enforced by ChatGPT's Codex OAuth backend for gpt-5.5.
 # The raw OpenAI API and OpenRouter expose 1.05M for the same slug, but the
 # Codex backend hard-caps at 272K (verified live: a ~330K-token request to
@@ -362,6 +394,14 @@ def _fixed_temperature_for_model(
         return OMIT_TEMPERATURE
     if _is_arcee_trinity_thinking(model):
         return 0.5
+    if _is_gpt55_family(model):
+        # gpt-5.5 family only accepts the provider's default temperature (1).
+        # Caller-provided values (e.g. auxiliary.vision.temperature=0.1 default)
+        # are rejected with HTTP 400 — strip the key so the server picks its
+        # own default. Provider-agnostic on purpose: the contract is on the
+        # model, not the route. See #51083.
+        logger.debug("Omitting temperature for gpt-5.5 family model %r (default-only)", model)
+        return OMIT_TEMPERATURE
     return None
 
 
