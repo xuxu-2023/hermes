@@ -13261,11 +13261,13 @@ def main():
         # Hide third-party tool sessions by default, but honour explicit --source
         _source = getattr(args, "source", None)
         _exclude = None if _source else ["tool"]
+        from hermes_cli.session_listing import is_empty_session_placeholder
 
         if action == "list":
             sessions = db.list_sessions_rich(
                 source=args.source, exclude_sources=_exclude, limit=args.limit
             )
+            sessions = [s for s in sessions if not is_empty_session_placeholder(s)]
             if not sessions:
                 print("No sessions found.")
                 return
@@ -13374,6 +13376,7 @@ def main():
             sessions = db.list_sessions_rich(
                 source=source, exclude_sources=_browse_exclude, limit=limit
             )
+            sessions = [s for s in sessions if not is_empty_session_placeholder(s)]
             db.close()
             if not sessions:
                 print("No sessions found.")
