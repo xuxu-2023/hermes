@@ -14854,6 +14854,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # (#10156) — a status check must not suppress this delivery turn.
                 from tools.process_registry import format_process_notification, process_registry as _pr_check
                 if agent_notify and not _pr_check.is_completion_consumed(session_id):
+                    if session.exit_code != 0:
+                        logger.info(
+                            "Dropping agent completion notification for process %s "
+                            "with non-zero exit code %s",
+                            session_id,
+                            session.exit_code,
+                        )
+                        break
+
                     from tools.ansi_strip import strip_ansi
                     _raw = strip_ansi(session.output_buffer) if session.output_buffer else ""
                     # Truncate at line boundaries so notifications never start
