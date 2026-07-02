@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 logger = logging.getLogger("hermes.mcp_serve")
+_APPROVAL_ID_RE = re.compile(r"[0-9a-f]{12}\Z")
 
 # ---------------------------------------------------------------------------
 # Lazy MCP SDK import
@@ -95,6 +96,22 @@ def _approvals_responses_dir() -> Path:
         return approvals_responses_dir()
     except ImportError:
         return _fallback_hermes_home() / "approvals" / "responses"
+
+
+def _approval_file_path(base_dir: Path, approval_id: str) -> Optional[Path]:
+    """Return the direct child JSON path for a generated approval id."""
+    if not _APPROVAL_ID_RE.fullmatch(approval_id):
+        return None
+    candidate = base_dir / f"{approval_id}.json"
+    try:
+        base_resolved = base_dir.resolve(strict=False)
+        candidate_resolved = candidate.resolve(strict=False)
+        candidate_resolved.relative_to(base_resolved)
+    except (OSError, ValueError):
+        return None
+    if candidate_resolved.parent != base_resolved:
+        return None
+    return candidate
 
 
 def _fallback_hermes_home() -> Path:
@@ -389,13 +406,22 @@ class EventBridge:
             for path in paths:
                 if path.suffix != ".json":
                     continue
+                file_id = path.stem
+                if not _APPROVAL_ID_RE.fullmatch(file_id):
+                    continue
                 try:
                     record = json.loads(path.read_text(encoding="utf-8"))
                 except (OSError, ValueError):
                     continue
                 if not isinstance(record, dict):
                     continue
-                approval_id = str(record.get("id") or path.stem)
+                approval_id = str(record.get("id") or file_id)
+                if approval_id != file_id \
+                        or not _APPROVAL_ID_RE.fullmatch(approval_id):
+                    continue
+                if record.get("id") is None:
+                    record = dict(record)
+                    record["id"] = approval_id
                 expires_at = record.get("expires_at")
                 if isinstance(expires_at, (int, float)) and expires_at <= now:
                     continue  # stale leftover from a dead gateway — ignore
@@ -454,16 +480,21 @@ class EventBridge:
         """
         if decision not in {"once", "session", "always", "deny"}:
             return {"error": f"Invalid decision: {decision}"}
+        pending_path = _approval_file_path(_approvals_pending_dir(),
+                                           approval_id)
+        response_path = _approval_file_path(_approvals_responses_dir(),
+                                            approval_id)
+        if pending_path is None or response_path is None:
+            return {"error": f"Invalid approval id: {approval_id}"}
 
         self._poll_approvals()
-        pending_path = _approvals_pending_dir() / f"{approval_id}.json"
         if not pending_path.exists():
             return {"error": "Approval not found (unknown, expired, or "
                              f"already resolved): {approval_id}"}
 
         try:
             _write_approval_response(
-                _approvals_responses_dir() / f"{approval_id}.json",
+                response_path,
                 {"id": approval_id, "decision": decision,
                  "created_at": time.time(), "source": "mcp-bridge"},
             )
