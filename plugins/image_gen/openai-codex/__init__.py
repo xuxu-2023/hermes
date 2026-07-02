@@ -14,8 +14,9 @@ Selection precedence for the tier (first hit wins):
 3. ``image_gen.model`` in ``config.yaml`` (when it's one of our tier IDs)
 4. :data:`DEFAULT_MODEL` — ``gpt-image-2-medium``
 
-Output is saved as PNG under ``$HERMES_HOME/cache/images/``. Source images for
-image-to-image/editing are sent as Responses ``input_image`` content parts.
+Output is saved under ``$HERMES_HOME/cache/images/`` using the requested
+``output_format`` (PNG by default). Source images for image-to-image/editing
+are sent as Responses ``input_image`` content parts.
 """
 
 from __future__ import annotations
@@ -75,16 +76,9 @@ _SIZES = {
     "portrait": "1024x1536",
 }
 
-# Codex Responses surface used for the request. The chat model itself is only
-# the host that calls the ``image_generation`` tool; the actual image work is
-# done by ``API_MODEL``.
-_CODEX_CHAT_MODEL = "gpt-5.5"
-_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
-_CODEX_INSTRUCTIONS = (
-    "You are an assistant that must fulfill image generation and image editing "
-    "requests by using the image_generation tool when provided."
-)
-
+_VALID_QUALITIES = {"low", "medium", "high", "auto"}
+_VALID_SIZES = {"auto", *_SIZES.values()}
+_VALID_OUTPUT_FORMATS = {"png", "jpeg", "webp"}
 _MAX_REFERENCE_IMAGES = 16
 _MAX_INPUT_IMAGE_BYTES = 25 * 1024 * 1024
 # gpt-image-2's Responses ``input_image`` accepts raster formats only. The
@@ -93,6 +87,16 @@ _MAX_INPUT_IMAGE_BYTES = 25 * 1024 * 1024
 # locally with a clear error instead of an opaque HTTP 400.
 _ACCEPTED_INPUT_MIME = frozenset(
     {"image/png", "image/jpeg", "image/gif", "image/webp"}
+)
+
+# Codex Responses surface used for the request. The chat model itself is only
+# the host that calls the ``image_generation`` tool; the actual image work is
+# done by ``API_MODEL``.
+_CODEX_CHAT_MODEL = "gpt-5.5"
+_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
+_CODEX_INSTRUCTIONS = (
+    "You are an assistant that must fulfill image generation and image editing "
+    "requests by using the image_generation tool when provided."
 )
 
 
@@ -156,6 +160,16 @@ def _read_codex_access_token() -> Optional[str]:
     except Exception as exc:
         logger.debug("Could not resolve Codex access token: %s", exc)
         return None
+
+
+def _build_codex_client():
+    """Return the Codex token used by the raw Responses client, or None.
+
+    Kept as a narrow test seam for callers that monkeypatch the old SDK client
+    path; production now streams raw SSE via httpx because the ChatGPT/Codex
+    backend can emit image-generation events newer than the pinned OpenAI SDK.
+    """
+    return _read_codex_access_token()
 
 
 def _sniff_image_mime(raw: bytes) -> Optional[str]:
@@ -252,17 +266,76 @@ def _normalize_input_images(
     return [_to_input_image_part(value) for value in values]
 
 
+def _normalize_size(value: Any, aspect: str) -> str:
+    if isinstance(value, str) and value.strip():
+        candidate = value.strip().lower()
+        if candidate in _VALID_SIZES:
+            return candidate
+        raise ValueError(
+            "Unsupported image size. Use one of: auto, 1024x1024, 1536x1024, 1024x1536"
+        )
+    return _SIZES.get(aspect, _SIZES["square"])
+
+
+def _normalize_quality(value: Any, default: str) -> str:
+    if isinstance(value, str):
+        candidate = value.strip().lower()
+        if candidate in _VALID_QUALITIES:
+            return candidate
+    return default
+
+
+def _normalize_output_format(value: Any) -> str:
+    if isinstance(value, str):
+        candidate = value.strip().lower()
+        if candidate in _VALID_OUTPUT_FORMATS:
+            return candidate
+    return "png"
+
+
+def _normalize_n(value: Any) -> int:
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return 1
+    return max(1, min(4, n))
+
+
+def _mask_image_to_tool_config(mask_image: str) -> Dict[str, str]:
+    """Build the mask config for the Responses image_generation tool."""
+    item = _to_input_image_part(mask_image)
+    return {"image_url": item["image_url"]}
+
+
 def _build_responses_payload(
     *,
     prompt: str,
     size: str,
     quality: str,
     input_images: Optional[List[Dict[str, str]]] = None,
+    n: int = 1,
+    output_format: str = "png",
+    mask_image: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build the Codex Responses request body for an image_generation call."""
     content: List[Dict[str, Any]] = [{"type": "input_text", "text": prompt}]
     if input_images:
         content.extend(input_images)
+
+    tool: Dict[str, Any] = {
+        "type": "image_generation",
+        "model": API_MODEL,
+        "size": size,
+        "quality": quality,
+        "output_format": output_format,
+        "background": "opaque",
+        "partial_images": 1,
+    }
+    if n != 1:
+        tool["n"] = n
+    if mask_image:
+        tool["input_image_mask"] = _mask_image_to_tool_config(mask_image)
+
     return {
         "model": _CODEX_CHAT_MODEL,
         "store": False,
@@ -272,15 +345,7 @@ def _build_responses_payload(
             "role": "user",
             "content": content,
         }],
-        "tools": [{
-            "type": "image_generation",
-            "model": API_MODEL,
-            "size": size,
-            "quality": quality,
-            "output_format": "png",
-            "background": "opaque",
-            "partial_images": 1,
-        }],
+        "tools": [tool],
         "tool_choice": {
             "type": "allowed_tools",
             "mode": "required",
@@ -311,6 +376,33 @@ def _extract_image_b64(value: Any) -> Optional[str]:
             if nested:
                 found = nested
     return found
+
+
+def _extract_image_results(value: Any) -> List[str]:
+    """Return completed image_generation_call results from a nested payload."""
+    results: List[str] = []
+    if isinstance(value, dict):
+        if value.get("type") == "image_generation_call":
+            result = value.get("result")
+            if isinstance(result, str) and result:
+                results.append(result)
+        for child in value.values():
+            results.extend(_extract_image_results(child))
+    elif isinstance(value, list):
+        for child in value:
+            results.extend(_extract_image_results(child))
+    return results
+
+
+def _merge_image_results(images_b64: List[str], new_images: List[str]) -> List[str]:
+    """Merge stream and final-response images without dropping duplicate outputs."""
+    if not new_images:
+        return images_b64
+    if not images_b64:
+        return list(new_images)
+    if new_images[: len(images_b64)] == images_b64:
+        return images_b64 + new_images[len(images_b64):]
+    return images_b64 + new_images
 
 
 def _iter_sse_json(response: Any):
@@ -361,17 +453,67 @@ def _iter_sse_json(response: Any):
 
 
 def _collect_image_b64(
-    token: str,
+    client: Any,
     *,
     prompt: str,
     size: str,
     quality: str,
     input_images: Optional[List[Dict[str, str]]] = None,
-) -> Optional[str]:
-    """Stream a Codex Responses image_generation call and return the b64 image."""
+    n: int = 1,
+    output_format: str = "png",
+    mask_image: Optional[str] = None,
+) -> List[str]:
+    """Stream a Codex Responses image_generation call and return b64 images."""
+    if not isinstance(client, str) and hasattr(client, "responses"):
+        # Backward-compatible test seam for the old SDK stream shape.
+        images_b64: List[str] = []
+        partial_b64: Optional[str] = None
+        payload = _build_responses_payload(
+            prompt=prompt,
+            size=size,
+            quality=quality,
+            input_images=input_images,
+            n=n,
+            output_format=output_format,
+            mask_image=mask_image,
+        )
+        with client.responses.stream(
+            model=payload["model"],
+            store=payload["store"],
+            instructions=payload["instructions"],
+            input=payload["input"],
+            tools=payload["tools"],
+            tool_choice=payload["tool_choice"],
+        ) as stream:
+            for event in stream:
+                event_type = getattr(event, "type", "")
+                if event_type == "response.output_item.done":
+                    item = getattr(event, "item", None)
+                    if getattr(item, "type", None) == "image_generation_call":
+                        result = getattr(item, "result", None)
+                        if isinstance(result, str) and result:
+                            images_b64.append(result)
+                elif event_type == "response.image_generation_call.partial_image":
+                    partial = getattr(event, "partial_image_b64", None)
+                    if isinstance(partial, str) and partial:
+                        partial_b64 = partial
+            final = stream.get_final_response()
+
+        final_images: List[str] = []
+        for item in getattr(final, "output", None) or []:
+            if getattr(item, "type", None) == "image_generation_call":
+                result = getattr(item, "result", None)
+                if isinstance(result, str) and result:
+                    final_images.append(result)
+        images_b64 = _merge_image_results(images_b64, final_images)
+        if not images_b64 and partial_b64:
+            images_b64.append(partial_b64)
+        return images_b64
+
     import httpx
     from agent.auxiliary_client import _codex_cloudflare_headers
 
+    token = client
     headers = _codex_cloudflare_headers(token)
     headers.update({
         "Accept": "text/event-stream",
@@ -383,10 +525,14 @@ def _collect_image_b64(
         size=size,
         quality=quality,
         input_images=input_images,
+        n=n,
+        output_format=output_format,
+        mask_image=mask_image,
     )
     timeout = httpx.Timeout(300.0, connect=30.0, read=300.0, write=30.0, pool=30.0)
 
-    image_b64: Optional[str] = None
+    images_b64: List[str] = []
+    partial_b64: Optional[str] = None
     with httpx.Client(timeout=timeout, headers=headers) as http:
         with http.stream("POST", f"{_CODEX_BASE_URL}/responses", json=payload) as response:
             try:
@@ -398,11 +544,17 @@ def _collect_image_b64(
                     f"Codex Responses API returned HTTP {exc.response.status_code}: {body}"
                 ) from exc
             for event in _iter_sse_json(response):
-                found = _extract_image_b64(event)
-                if found:
-                    image_b64 = found
+                results = _extract_image_results(event)
+                if results:
+                    images_b64 = _merge_image_results(images_b64, results)
+                else:
+                    partial = _extract_image_b64(event)
+                    if isinstance(partial, str) and partial:
+                        partial_b64 = partial
 
-    return image_b64
+    if not images_b64 and partial_b64:
+        images_b64.append(partial_b64)
+    return images_b64
 
 
 # ---------------------------------------------------------------------------
@@ -484,7 +636,8 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        if not _read_codex_access_token():
+        token = _build_codex_client()
+        if token is None:
             return error_response(
                 error=(
                     "No Codex/ChatGPT OAuth credentials available. Run "
@@ -506,16 +659,16 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             )
 
         tier_id, meta = _resolve_model()
-        size = _SIZES.get(aspect, _SIZES["square"])
-
-        token = _read_codex_access_token()
-        if not token:
+        try:
+            size = _normalize_size(kwargs.get("size"), aspect)
+            quality = _normalize_quality(kwargs.get("quality"), meta["quality"])
+            n = _normalize_n(kwargs.get("n"))
+            output_format = _normalize_output_format(kwargs.get("output_format"))
+            mask_image = kwargs.get("mask_image") or None
+        except ValueError as exc:
             return error_response(
-                error=(
-                    "No Codex/ChatGPT OAuth credentials available. Run "
-                    "`hermes auth codex` (or `hermes setup` → Codex) to sign in."
-                ),
-                error_type="auth_required",
+                error=str(exc),
+                error_type="invalid_argument",
                 provider="openai-codex",
                 model=tier_id,
                 prompt=prompt,
@@ -524,6 +677,10 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
 
         try:
             input_images = _normalize_input_images(image_url, reference_image_urls)
+            if mask_image:
+                # Validate masks before the network call so local path/data URL
+                # failures report as image-input errors instead of API errors.
+                _mask_image_to_tool_config(mask_image)
         except Exception as exc:
             return error_response(
                 error=f"Invalid image input for Codex image editing: {exc}",
@@ -534,14 +691,23 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
+        collect_kwargs: Dict[str, Any] = {
+            "prompt": prompt,
+            "size": size,
+            "quality": quality,
+        }
+        if input_images:
+            collect_kwargs["input_images"] = input_images
+        if n != 1:
+            collect_kwargs["n"] = n
+        if output_format != "png":
+            collect_kwargs["output_format"] = output_format
+        if mask_image:
+            collect_kwargs["mask_image"] = mask_image
+
         try:
-            b64 = _collect_image_b64(
-                token,
-                prompt=prompt,
-                size=size,
-                quality=meta["quality"],
-                input_images=input_images or None,
-            )
+            b64_result = _collect_image_b64(token, **collect_kwargs)
+            b64_images = [b64_result] if isinstance(b64_result, str) and b64_result else list(b64_result or [])
         except Exception as exc:
             logger.debug("Codex image generation failed", exc_info=True)
             return error_response(
@@ -553,7 +719,7 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        if not b64:
+        if not b64_images:
             return error_response(
                 error="Codex response contained no image_generation_call result",
                 error_type="empty_response",
@@ -564,7 +730,10 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             )
 
         try:
-            saved_path = save_b64_image(b64, prefix=f"openai_codex_{tier_id}")
+            saved_paths = [
+                save_b64_image(b64, prefix=f"openai_codex_{tier_id}", extension=output_format)
+                for b64 in b64_images
+            ]
         except Exception as exc:
             return error_response(
                 error=f"Could not save image to cache: {exc}",
@@ -576,13 +745,20 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             )
 
         return success_response(
-            image=str(saved_path),
+            image=str(saved_paths[0]),
             model=tier_id,
             prompt=prompt,
             aspect_ratio=aspect,
             provider="openai-codex",
             modality="image" if input_images else "text",
-            extra={"size": size, "quality": meta["quality"], "input_image_count": len(input_images)},
+            extra={
+                "size": size,
+                "quality": quality,
+                "n": n,
+                "output_format": output_format,
+                "images": [str(path) for path in saved_paths],
+                "input_image_count": len(input_images),
+            },
         )
 
 

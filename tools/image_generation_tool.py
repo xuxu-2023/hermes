@@ -1226,6 +1226,46 @@ IMAGE_GENERATE_SCHEMA = {
                     "capped per-model; the description above indicates the max."
                 ),
             },
+            "reference_images": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Compatibility alias for GPT-Image reference inputs. Prefer "
+                    "reference_image_urls for normal image-to-image workflows."
+                ),
+            },
+            "size": {
+                "type": "string",
+                "enum": ["auto", "1024x1024", "1536x1024", "1024x1536"],
+                "description": (
+                    "Optional exact GPT-Image output size: '1024x1024', "
+                    "'1536x1024', '1024x1536', or 'auto'. "
+                    "When omitted, aspect_ratio chooses the provider default."
+                ),
+            },
+            "quality": {
+                "type": "string",
+                "enum": ["low", "medium", "high", "auto"],
+                "description": "Optional GPT-Image quality override for this call.",
+            },
+            "n": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 4,
+                "description": "Optional number of images to request in one call. Providers may cap or return only supported outputs.",
+            },
+            "output_format": {
+                "type": "string",
+                "enum": ["png", "jpeg", "webp"],
+                "description": "Optional output image format. Defaults to png.",
+            },
+            "mask_image": {
+                "type": "string",
+                "description": (
+                    "Optional mask image for local edits/inpainting. May be a local file path, "
+                    "HTTP(S) URL, or data URL when the active provider supports masks."
+                ),
+            },
         },
         "required": ["prompt"],
     },
@@ -1276,6 +1316,12 @@ def _dispatch_to_plugin_provider(
     aspect_ratio: str,
     image_url: Optional[str] = None,
     reference_image_urls: Optional[list] = None,
+    reference_images=None,
+    size=None,
+    quality=None,
+    n=None,
+    output_format=None,
+    mask_image=None,
 ):
     """Route the call to a plugin-registered provider when one is selected.
 
@@ -1335,6 +1381,17 @@ def _dispatch_to_plugin_provider(
 
     kwargs: Dict[str, Any] = {"prompt": prompt, "aspect_ratio": aspect_ratio}
     try:
+        if reference_images:
+            kwargs["reference_images"] = reference_images
+        for key, value in {
+            "size": size,
+            "quality": quality,
+            "n": n,
+            "output_format": output_format,
+            "mask_image": mask_image,
+        }.items():
+            if value is not None:
+                kwargs[key] = value
         if configured_model:
             kwargs["model"] = configured_model
         if isinstance(image_url, str) and image_url.strip():
@@ -1518,17 +1575,48 @@ def _handle_image_generate(args, **kw):
     image_url = args.get("image_url")
     reference_image_urls = args.get("reference_image_urls")
     task_id = kw.get("task_id")
+    reference_images = args.get("reference_images") or []
+    size = args.get("size")
+    quality = args.get("quality")
+    n = args.get("n")
+    output_format = args.get("output_format")
+    mask_image = args.get("mask_image")
 
     # Route to a plugin-registered provider if one is active (and it's
-    # not the in-tree FAL path). When ``image_gen.provider == "krea"`` this
-    # already reaches the Krea plugin's managed gateway path.
-    dispatched = _dispatch_to_plugin_provider(
-        prompt, aspect_ratio,
-        image_url=image_url,
-        reference_image_urls=reference_image_urls,
-    )
+    # not the in-tree FAL path). Pass optional controls only when present so
+    # simple test/provider shims that accept the legacy two-arg call still work.
+    # When ``image_gen.provider == "krea"`` this reaches the Krea plugin's
+    # managed gateway path through normal plugin dispatch.
+    dispatch_kwargs = {
+        "image_url": image_url,
+        "reference_image_urls": reference_image_urls,
+    }
+    if reference_images:
+        dispatch_kwargs["reference_images"] = reference_images
+    for key, value in {
+        "size": size,
+        "quality": quality,
+        "n": n,
+        "output_format": output_format,
+        "mask_image": mask_image,
+    }.items():
+        if value is not None:
+            dispatch_kwargs[key] = value
+    dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio, **dispatch_kwargs)
     if dispatched is not None:
         return _postprocess_image_generate_result(dispatched, task_id=task_id)
+
+    if reference_images or any(v is not None for v in (size, quality, n, output_format, mask_image)):
+        return json.dumps({
+            "success": False,
+            "image": None,
+            "error": (
+                "GPT-Image-2 controls such as reference_images, size, quality, n, "
+                "output_format, and mask_image require an image generation plugin "
+                "provider that supports them, such as image_gen.provider='openai-codex'."
+            ),
+            "error_type": "advanced_image_controls_unsupported",
+        })
 
     # Managed-mode Krea routing: when no explicit plugin provider is configured
     # but the selected model is a native ``krea-2-*`` id, a portal user routes to

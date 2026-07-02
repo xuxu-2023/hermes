@@ -161,6 +161,33 @@ class TestGenerate:
         assert tool["background"] == "opaque"
         assert tool["partial_images"] == 1
 
+    def test_generate_passes_control_kwargs(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        captured = {}
+
+        def _collect(token, **kwargs):
+            captured.update(kwargs)
+            return [_b64_png(), _b64_png()]
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
+
+        result = provider.generate(
+            "make variants",
+            aspect_ratio="square",
+            n=2,
+            output_format="webp",
+            quality="high",
+        )
+
+        assert result["success"] is True
+        assert captured["size"] == "1024x1024"
+        assert captured["quality"] == "high"
+        assert captured["n"] == 2
+        assert captured["output_format"] == "webp"
+        assert result["output_format"] == "webp"
+        assert result["n"] == 2
+        assert len(result["images"]) == 2
+
     def test_capabilities_advertise_image_inputs(self, provider):
         caps = provider.capabilities()
         assert caps["modalities"] == ["text", "image"]

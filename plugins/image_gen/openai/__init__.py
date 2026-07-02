@@ -80,6 +80,45 @@ _SIZES = {
     "portrait": "1024x1536",
 }
 
+_VALID_QUALITIES = {"low", "medium", "high", "auto"}
+_VALID_SIZES = {"auto", *_SIZES.values()}
+_VALID_OUTPUT_FORMATS = {"png", "jpeg", "webp"}
+
+
+def _normalize_size(value: Any, aspect: str) -> str:
+    if isinstance(value, str) and value.strip():
+        candidate = value.strip().lower()
+        if candidate in _VALID_SIZES:
+            return candidate
+        raise ValueError(
+            "Unsupported image size. Use one of: auto, 1024x1024, 1536x1024, 1024x1536"
+        )
+    return _SIZES.get(aspect, _SIZES["square"])
+
+
+def _normalize_quality(value: Any, default: str) -> str:
+    if isinstance(value, str):
+        candidate = value.strip().lower()
+        if candidate in _VALID_QUALITIES:
+            return candidate
+    return default
+
+
+def _normalize_output_format(value: Any) -> str:
+    if isinstance(value, str):
+        candidate = value.strip().lower()
+        if candidate in _VALID_OUTPUT_FORMATS:
+            return candidate
+    return "png"
+
+
+def _normalize_n(value: Any) -> int:
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return 1
+    return max(1, min(4, n))
+
 
 def _load_openai_config() -> Dict[str, Any]:
     """Read ``image_gen`` from config.yaml (returns {} on any failure)."""
@@ -255,13 +294,45 @@ class OpenAIImageGenProvider(ImageGenProvider):
             )
 
         tier_id, meta = _resolve_model()
-        size = _SIZES.get(aspect, _SIZES["square"])
+        try:
+            size = _normalize_size(kwargs.get("size"), aspect)
+            quality = _normalize_quality(kwargs.get("quality"), meta["quality"])
+            n = _normalize_n(kwargs.get("n"))
+            output_format = _normalize_output_format(kwargs.get("output_format"))
+        except ValueError as exc:
+            return error_response(
+                error=str(exc),
+                error_type="invalid_argument",
+                provider="openai",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+
+        if kwargs.get("mask_image"):
+            return error_response(
+                error=(
+                    "The OpenAI API-key image provider does not yet support "
+                    "mask_image through Hermes. Use image_gen.provider='openai-codex' "
+                    "for GPT-Image mask/inpainting controls."
+                ),
+                error_type="unsupported_parameter",
+                provider="openai",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
 
         # Collect source images (primary + references) for image-to-image.
+        # ``reference_images`` is kept as a compatibility alias for the
+        # GPT-Image controls added before the public schema standardized on
+        # ``reference_image_urls``.
         sources: List[str] = []
         if isinstance(image_url, str) and image_url.strip():
             sources.append(image_url.strip())
         for ref in (normalize_reference_images(reference_image_urls) or []):
+            sources.append(ref)
+        for ref in (normalize_reference_images(kwargs.get("reference_images")) or []):
             sources.append(ref)
         sources = sources[:16]  # gpt-image-2 edit caps at 16 images
         is_edit = bool(sources)
@@ -297,8 +368,9 @@ class OpenAIImageGenProvider(ImageGenProvider):
                     image=files if len(files) > 1 else files[0],
                     prompt=prompt,
                     size=size,  # type: ignore[arg-type]  # _SIZES values are valid gpt-image sizes
-                    quality=meta["quality"],
-                    n=1,
+                    quality=quality,
+                    n=n,
+                    output_format=output_format,
                 )
             except Exception as exc:
                 logger.debug("OpenAI image edit failed", exc_info=True)
@@ -317,8 +389,9 @@ class OpenAIImageGenProvider(ImageGenProvider):
                 "model": API_MODEL,
                 "prompt": prompt,
                 "size": size,
-                "n": 1,
-                "quality": meta["quality"],
+                "n": n,
+                "quality": quality,
+                "output_format": output_format,
             }
 
             try:
@@ -345,41 +418,49 @@ class OpenAIImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        first = data[0]
-        b64 = getattr(first, "b64_json", None)
-        url = getattr(first, "url", None)
-        revised_prompt = getattr(first, "revised_prompt", None)
+        image_refs: List[str] = []
+        revised_prompt = None
+        for item in data:
+            b64 = getattr(item, "b64_json", None)
+            url = getattr(item, "url", None)
+            if revised_prompt is None:
+                revised_prompt = getattr(item, "revised_prompt", None)
 
-        if b64:
-            try:
-                saved_path = save_b64_image(b64, prefix=f"openai_{tier_id}")
-            except Exception as exc:
-                return error_response(
-                    error=f"Could not save image to cache: {exc}",
-                    error_type="io_error",
-                    provider="openai",
-                    model=tier_id,
-                    prompt=prompt,
-                    aspect_ratio=aspect,
-                )
-            image_ref = str(saved_path)
-        elif url:
-            # Defensive — gpt-image-2 returns b64 today, but OpenAI's API
-            # has previously returned URLs.  Cache the bytes locally so the
-            # gateway never tries to fetch an ephemeral / signed URL after
-            # it expires — same rationale as the xAI provider (#26942).
-            try:
-                saved_path = save_url_image(url, prefix=f"openai_{tier_id}")
-            except Exception as exc:
-                logger.warning(
-                    "OpenAI image URL %s could not be cached (%s); falling back to bare URL.",
-                    url,
-                    exc,
-                )
-                image_ref = url
-            else:
-                image_ref = str(saved_path)
-        else:
+            if b64:
+                try:
+                    saved_path = save_b64_image(
+                        b64,
+                        prefix=f"openai_{tier_id}",
+                        extension=output_format,
+                    )
+                except Exception as exc:
+                    return error_response(
+                        error=f"Could not save image to cache: {exc}",
+                        error_type="io_error",
+                        provider="openai",
+                        model=tier_id,
+                        prompt=prompt,
+                        aspect_ratio=aspect,
+                    )
+                image_refs.append(str(saved_path))
+            elif url:
+                # Defensive — gpt-image-2 returns b64 today, but OpenAI's API
+                # has previously returned URLs. Cache the bytes locally so the
+                # gateway never tries to fetch an ephemeral / signed URL after
+                # it expires — same rationale as the xAI provider (#26942).
+                try:
+                    saved_path = save_url_image(url, prefix=f"openai_{tier_id}")
+                except Exception as exc:
+                    logger.warning(
+                        "OpenAI image URL %s could not be cached (%s); falling back to bare URL.",
+                        url,
+                        exc,
+                    )
+                    image_refs.append(url)
+                else:
+                    image_refs.append(str(saved_path))
+
+        if not image_refs:
             return error_response(
                 error="OpenAI response contained neither b64_json nor URL",
                 error_type="empty_response",
@@ -389,12 +470,18 @@ class OpenAIImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        extra: Dict[str, Any] = {"size": size, "quality": meta["quality"]}
+        extra: Dict[str, Any] = {
+            "size": size,
+            "quality": quality,
+            "n": n,
+            "output_format": output_format,
+            "images": image_refs,
+        }
         if revised_prompt:
             extra["revised_prompt"] = revised_prompt
 
         return success_response(
-            image=image_ref,
+            image=image_refs[0],
             model=tier_id,
             prompt=prompt,
             aspect_ratio=aspect,

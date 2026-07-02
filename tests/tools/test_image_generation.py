@@ -364,19 +364,37 @@ class TestAspectRatioNormalization:
 class TestRegistryIntegration:
 
     def test_schema_exposes_expected_agent_params(self, image_tool):
-        """The agent-facing schema exposes the unified text+image surface:
-        prompt (required), aspect_ratio, and the image-to-image inputs
-        image_url + reference_image_urls. Model selection stays a user-level
-        config choice, never an agent-level arg."""
+        """The agent-facing schema exposes the unified text+image surface plus
+        GPT-Image controls. Model selection stays a user-level config choice,
+        never an agent-level arg."""
         props = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]
         assert set(props.keys()) == {
             "prompt", "aspect_ratio", "image_url", "reference_image_urls",
+            "reference_images", "size", "quality", "n", "output_format",
+            "mask_image",
         }
         assert image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["required"] == ["prompt"]
+
+    def test_reference_image_schemas_are_string_arrays(self, image_tool):
+        props = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]
+        for key in ("reference_image_urls", "reference_images"):
+            ref_schema = props[key]
+            assert ref_schema["type"] == "array"
+            assert ref_schema["items"]["type"] == "string"
 
     def test_aspect_ratio_enum_is_three_values(self, image_tool):
         enum = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]["aspect_ratio"]["enum"]
         assert set(enum) == {"landscape", "square", "portrait"}
+
+    def test_new_gpt_image_2_controls_have_tight_enums(self, image_tool):
+        props = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]
+        assert set(props["quality"]["enum"]) == {"low", "medium", "high", "auto"}
+        assert set(props["output_format"]["enum"]) == {"png", "jpeg", "webp"}
+        assert props["n"]["minimum"] == 1
+        assert props["n"]["maximum"] == 4
+        assert props["size"]["type"] == "string"
+        assert set(props["size"]["enum"]) == {"auto", "1024x1024", "1536x1024", "1024x1536"}
+        assert props["mask_image"]["type"] == "string"
 
 
 # ---------------------------------------------------------------------------
