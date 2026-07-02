@@ -1437,6 +1437,26 @@ def run_doctor(args):
         check_info(f"Install for faster search: {_system_package_install_cmd('ripgrep')}")
     
     # Docker (optional)
+    # Bridge config.yaml's terminal.backend into TERMINAL_ENV so the backend
+    # reachability checks below reflect what the runtime actually resolves.
+    # A user who sets `terminal: {backend: docker}` in config.yaml with no env
+    # var would otherwise be diagnosed as the default "local" backend, so the
+    # docker/ssh/daytona checks would be silently skipped. This mirrors the
+    # canonical bridge already wired into the TUI launch and web_server paths.
+    try:
+        from hermes_cli.config import apply_terminal_config_to_env
+        apply_terminal_config_to_env()
+    except Exception as exc:
+        # Never let a config read failure break the diagnostic; fall back to the
+        # env-only view, which is what the doctor did before this bridge. Unlike
+        # the sibling TUI/dashboard bridges (which debug-log this), doctor has no
+        # logger and its whole job is surfacing diagnostics, so emit a lightweight
+        # warning so a regression (e.g. import/signature change) is visible rather
+        # than silently downgrading to the env-only backend view.
+        check_warn(
+            "Could not read terminal.backend from config.yaml",
+            f"({type(exc).__name__}: {exc}; using env-only TERMINAL_ENV)",
+        )
     terminal_env = os.getenv("TERMINAL_ENV", "local")
     try:
         from hermes_constants import is_container as _is_container
