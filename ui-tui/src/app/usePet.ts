@@ -80,6 +80,16 @@ type CacheEntry =
 
 const FRAME_MS = 160
 const POLL_MS = 2500
+/** Stop polling after this many consecutive RPC failures (e.g. backend missing the pet module). */
+const MAX_CONSECUTIVE_FAILURES = 3
+
+// Module-scoped so the counter survives Pet component unmount/remount cycles.
+// A `useRef` would reset to 0 every time the parent re-mounts the hook on a
+// state change, defeating the backoff cap above — we'd poll forever, just
+// slower than before. Module scope = persistent across mounts of THIS module.
+// (If multiple Pet components ever coexist in one process, demote this to a
+// per-instance ref once we know that case actually matters.)
+let globalPetFailCount = 0
 
 // Only the standalone TUI owns a real terminal it can splat image escapes into;
 // when piped (or running under the dashboard PTY the gateway resolves to
@@ -193,12 +203,29 @@ export function usePet(): PetRender {
   // config, so its `slug`/`enabled` are the source of truth.
   const sync = useCallback(
     async (state: PetState) => {
+      // Back off after consecutive failures — the backend may not have the
+      // pet module loaded (crash recovery, missing dependency) and retrying
+      // every POLL_MS just floods the activity feed with RPC errors.
+      if (globalPetFailCount >= MAX_CONSECUTIVE_FAILURES) {
+        return
+      }
+
       try {
         const res = (await rpc('pet.cells', { graphics: IS_TTY, state })) as PetCellsResult | null
 
-        if (!res) {
+        // Count BOTH a null response AND a fail-open {enabled:false} as a
+        // failure. Otherwise the server's defensive swallow
+        // (tui_gateway/server.py:6530) makes us poll forever — the original
+        // MAX_CONSECUTIVE_FAILURES cap only fired on `!res`, which the
+        // fail-open path never produces.
+        const failed = !res || (res.enabled === false && !res.slug)
+        if (failed) {
+          globalPetFailCount += 1
           return
         }
+
+        // Success — reset the failure counter.
+        globalPetFailCount = 0
 
         if (!res.enabled) {
           releaseKitty()
@@ -244,7 +271,7 @@ export function usePet(): PetRender {
 
         setEnabled(true)
       } catch {
-        // cosmetic — ignore RPC failures
+        globalPetFailCount += 1
       }
     },
     [rpc, releaseKitty]
