@@ -1827,16 +1827,10 @@ class AIAgent:
                     continue
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
-                _row_timestamp = msg.get("timestamp")
-                # Apply the persist override to THIS row's written values only
-                # (never to the live dict). Match the original guard: text-only
-                # content is replaced; multimodal (list) content is left intact
-                # so image/audio blocks aren't clobbered by the text override.
-                if _ov_idx == _msg_idx and msg.get("role") == "user":
-                    if _ov_content is not None and not isinstance(content, list):
-                        content = _ov_content
-                    if _ov_timestamp is not None:
-                        _row_timestamp = _ov_timestamp
+                # Skip user messages — already persisted by bridge/Node.js
+                if role == "user" and getattr(self, "_last_flushed_db_idx", 0) > len(conversation_history or []):
+                    flushed_ids.add(msg_id)
+                    continue
                 # Persist multimodal tool results as their text summary only —
                 # base64 images would bloat the session DB and aren't useful
                 # for cross-session replay.
