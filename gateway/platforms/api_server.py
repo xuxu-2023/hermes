@@ -2604,9 +2604,10 @@ class APIServerAdapter(BasePlatformAdapter):
         - ``response.output_item.added`` with
           ``item.type == "function_call_output"`` — tool result with
           ``{call_id, output, status}``
-        - ``response.completed`` — terminal event carrying the full
-          response object with all output items + usage (same payload
-          shape as the non-streaming path for parity)
+        - ``response.completed`` — terminal event carrying the response object
+          and usage.  Streamed tool outputs are compacted in this terminal
+          event because they were already sent via ``response.output_item``
+          events and repeating them can exceed client SSE line limits.
         - ``response.failed`` — terminal event on agent error
 
         If the client disconnects mid-stream, ``agent.interrupt()`` is
@@ -2700,6 +2701,30 @@ class APIServerAdapter(BasePlatformAdapter):
             })
             if conversation:
                 self._response_store.set_conversation(conversation, response_id)
+
+        def _compact_terminal_response(response_env: Dict[str, Any]) -> Dict[str, Any]:
+            """Return an SSE-safe terminal Responses payload.
+
+            Streaming Responses clients have already received full tool outputs
+            via ``response.output_item.added``/``done`` events. Repeating every
+            large tool result again in the terminal ``response.completed`` line
+            can exceed client HTTP line limits, so compact only the streamed
+            terminal event while keeping the stored GET snapshot intact.
+            """
+            compact = dict(response_env)
+            compact_output: List[Dict[str, Any]] = []
+            for item in response_env.get("output") or []:
+                if item.get("type") != "function_call_output":
+                    compact_output.append(item)
+                    continue
+                compact_item = dict(item)
+                compact_item["output"] = [{
+                    "type": "input_text",
+                    "text": "[omitted from terminal SSE event; tool output was already streamed]",
+                }]
+                compact_output.append(compact_item)
+            compact["output"] = compact_output
+            return compact
 
         def _persist_incomplete_if_needed() -> None:
             """Persist an ``incomplete`` snapshot if no terminal one was written.
@@ -3028,29 +3053,33 @@ class APIServerAdapter(BasePlatformAdapter):
             # shape produced by _extract_output_items in the batch path.
             final_items: List[Dict[str, Any]] = list(emitted_items)
 
-            # Trim large content from tool call arguments to keep the
-            # response.completed event under ~100KB.  Clients already
-            # received full details via incremental events.
-            for _item in final_items:
-                if _item.get("type") == "function_call":
-                    try:
-                        _args = json.loads(_item.get("arguments", "{}")) if isinstance(_item.get("arguments"), str) else _item.get("arguments", {})
-                        if isinstance(_args, dict):
-                            for _k in ("content", "query", "pattern", "old_string", "new_string"):
-                                if isinstance(_args.get(_k), str) and len(_args[_k]) > 500:
-                                    _args[_k] = "[" + str(len(_args[_k])) + " chars — truncated for response.completed]"
-                            _item["arguments"] = json.dumps(_args)
-                    except Exception:
-                        pass
-                elif _item.get("type") == "function_call_output":
-                    _output = _item.get("output", [])
-                    if isinstance(_output, list) and _output:
-                        _first = _output[0]
-                        if isinstance(_first, dict) and _first.get("type") == "input_text":
-                            _text = _first.get("text", "")
-                            if len(_text) > 1000:
-                                _first["text"] = _text[:500] + "...[" + str(len(_text) - 500) + " more chars]"
-                                _item["output"] = [_first]
+            def _trim_terminal_output_items(items: List[Dict[str, Any]]) -> None:
+                """Trim large tool outputs in-place for SSE terminal events.
+
+                Called AFTER _persist_response_snapshot so the stored GET
+                /v1/responses/{id} snapshot retains full tool outputs.
+                Only the SSE terminal event is trimmed.
+                """
+                for _item in items:
+                    if _item.get("type") == "function_call":
+                        try:
+                            _args = json.loads(_item.get("arguments", "{}")) if isinstance(_item.get("arguments"), str) else _item.get("arguments", {})
+                            if isinstance(_args, dict):
+                                for _k in ("content", "query", "pattern", "old_string", "new_string"):
+                                    if isinstance(_args.get(_k), str) and len(_args[_k]) > 500:
+                                        _args[_k] = "[" + str(len(_args[_k])) + " chars — truncated for response.completed]"
+                                _item["arguments"] = json.dumps(_args)
+                        except Exception:
+                            pass
+                    elif _item.get("type") == "function_call_output":
+                        _output = _item.get("output", [])
+                        if isinstance(_output, list) and _output:
+                            _first = _output[0]
+                            if isinstance(_first, dict) and _first.get("type") == "input_text":
+                                _text = _first.get("text", "")
+                                if len(_text) > 1000:
+                                    _first["text"] = _text[:500] + "...[" + str(len(_text) - 500) + " more chars]"
+                                    _item["output"] = [_first]
 
             final_items.append({
                 "type": "message",
@@ -3081,9 +3110,10 @@ class APIServerAdapter(BasePlatformAdapter):
                     conversation_history_snapshot=_failed_history,
                 )
                 terminal_snapshot_persisted = True
+                _trim_terminal_output_items(final_items)
                 await _write_event("response.failed", {
                     "type": "response.failed",
-                    "response": failed_env,
+                    "response": _compact_terminal_response(failed_env),
                 })
             else:
                 completed_env = _envelope("completed")
@@ -3104,9 +3134,10 @@ class APIServerAdapter(BasePlatformAdapter):
                     conversation_history_snapshot=full_history,
                 )
                 terminal_snapshot_persisted = True
+                _trim_terminal_output_items(final_items)
                 await _write_event("response.completed", {
                     "type": "response.completed",
-                    "response": completed_env,
+                    "response": _compact_terminal_response(completed_env),
                 })
 
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
