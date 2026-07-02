@@ -1044,11 +1044,36 @@ class TestMatrixRenderingPayloads:
         assert result.success is True
         contents = self._sent_contents()
         assert len(contents) > 1
-        for content in contents:
+        for index, content in enumerate(contents):
             assert content["m.relates_to"]["rel_type"] == "m.thread"
             assert content["m.relates_to"]["event_id"] == "$root"
-            assert content["m.relates_to"]["m.in_reply_to"] == {"event_id": "$root"}
+            if index == 0:
+                assert content["m.relates_to"]["m.in_reply_to"] == {"event_id": "$root"}
+            else:
+                assert "m.in_reply_to" not in content["m.relates_to"]
             assert content["body"].count("```") % 2 == 0
+
+    @pytest.mark.asyncio
+    async def test_long_response_split_replies_only_on_first_chunk(self):
+        long_text = "line\n" * 1200
+
+        result = await self.adapter.send(
+            "!room:example.org",
+            long_text,
+            reply_to="$user-message",
+            metadata={"thread_id": "$root"},
+        )
+
+        assert result.success is True
+        contents = self._sent_contents()
+        assert len(contents) > 1
+        assert contents[0]["m.relates_to"]["m.in_reply_to"] == {
+            "event_id": "$user-message"
+        }
+        for content in contents[1:]:
+            assert content["m.relates_to"]["rel_type"] == "m.thread"
+            assert content["m.relates_to"]["event_id"] == "$root"
+            assert "m.in_reply_to" not in content["m.relates_to"]
 
 
 # ---------------------------------------------------------------------------
@@ -1138,6 +1163,17 @@ class TestMatrixMarkdownToHtml:
         assert "<tbody>" in result
         assert "<th>Item</th>" in result
         assert "<td>Apples</td>" in result
+
+    def test_matrix_markdown_preserves_details_summary(self):
+        from plugins.platforms.matrix.adapter import _sanitize_matrix_html
+
+        result = _sanitize_matrix_html(
+            "<details><summary>Tool activity</summary><pre><code>terminal</code></pre></details>"
+        )
+        assert "<details>" in result
+        assert "<summary>" in result
+        assert "Tool activity" in result
+        assert "terminal" in result
 
 
 # ---------------------------------------------------------------------------

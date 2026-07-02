@@ -188,11 +188,25 @@ class TestPlatformDefaults:
         assert resolve_display_setting({}, "discord", "tool_progress") == "all"
 
     def test_medium_tier_platforms(self):
-        """Mattermost, Matrix, Feishu, WhatsApp default to 'new' tool progress."""
+        """Mattermost, Feishu, WhatsApp default to 'new' tool progress."""
         from gateway.display_config import resolve_display_setting
 
-        for plat in ("mattermost", "matrix", "feishu", "whatsapp"):
+        for plat in ("mattermost", "feishu", "whatsapp"):
             assert resolve_display_setting({}, plat, "tool_progress") == "new", plat
+
+    def test_matrix_defaults_to_tool_progress_without_streaming(self):
+        """Matrix defaults to tool activity, but not response/thinking streaming."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "matrix", "tool_progress") == "new"
+        assert resolve_display_setting({}, "matrix", "streaming") is False
+        assert resolve_display_setting({}, "matrix", "interim_assistant_messages") is False
+
+    def test_matrix_default_tool_preview_length_is_room_friendly(self):
+        """Matrix opt-in progress uses longer previews when enabled."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "matrix", "tool_preview_length") == 320
 
     def test_slack_defaults_tool_progress_off(self):
         """Slack defaults to quiet tool progress (permanent chat noise otherwise)."""
@@ -555,3 +569,24 @@ class TestReasoningStyle:
 
         config = {"display": {"reasoning_style": "SUBTEXT"}}
         assert resolve_display_setting(config, "telegram", "reasoning_style") == "subtext"
+
+
+class TestThinkingProgress:
+    """resolve_display_setting() for the live-thinking progress knob."""
+
+    def test_default_is_false(self):
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "matrix", "thinking_progress") is False
+
+    def test_platform_override_wins(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "thinking_progress": False,
+                "platforms": {"matrix": {"thinking_progress": True}},
+            }
+        }
+        assert resolve_display_setting(config, "matrix", "thinking_progress") is True
+        assert resolve_display_setting(config, "telegram", "thinking_progress") is False

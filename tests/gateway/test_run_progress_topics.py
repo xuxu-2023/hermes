@@ -39,12 +39,13 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
         )
         return SendResult(success=True, message_id="progress-1")
 
-    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+    async def edit_message(self, chat_id, message_id, content, **kwargs) -> SendResult:
         self.edits.append(
             {
                 "chat_id": chat_id,
                 "message_id": message_id,
                 "content": content,
+                "metadata": kwargs.get("metadata"),
             }
         )
         return SendResult(success=True, message_id=message_id)
@@ -118,7 +119,7 @@ class MetadataEditProgressCaptureAdapter(ProgressCaptureAdapter):
 class NonEditingProgressCaptureAdapter(ProgressCaptureAdapter):
     SUPPORTS_MESSAGE_EDITING = False
 
-    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+    async def edit_message(self, chat_id, message_id, content, **kwargs) -> SendResult:
         raise AssertionError("non-editable adapters should not receive edit_message calls")
 
 
@@ -1000,7 +1001,11 @@ async def test_run_agent_matrix_streaming_omits_cursor(monkeypatch, tmp_path):
         StreamingRefineAgent,
         session_id="sess-matrix-streaming",
         config_data={
-            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "display": {
+                "tool_progress": "off",
+                "interim_assistant_messages": False,
+                "platforms": {"matrix": {"streaming": True}},
+            },
             "streaming": {"enabled": True, "edit_interval": 0.01, "buffer_threshold": 1},
         },
         platform=Platform.MATRIX,
@@ -1052,7 +1057,11 @@ async def test_transformed_response_edits_streamed_message_in_place(monkeypatch,
         TransformedStreamAgent,
         session_id="sess-transformed-stream",
         config_data={
-            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "display": {
+                "tool_progress": "off",
+                "interim_assistant_messages": False,
+                "platforms": {"matrix": {"streaming": True}},
+            },
             "streaming": {"enabled": True, "edit_interval": 0.01, "buffer_threshold": 1},
         },
         platform=Platform.MATRIX,
@@ -1069,6 +1078,190 @@ async def test_transformed_response_edits_streamed_message_in_place(monkeypatch,
     edited_texts = [e["content"] for e in adapter.edits]
     assert any("[plugin appended this]" in text for text in edited_texts), (
         f"expected transformed text in adapter.edits, got: {edited_texts!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_agent_matrix_defaults_to_tool_activity_without_response_streaming(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        FakeAgent,
+        session_id="sess-matrix-final-only",
+        config_data={
+            "display": {"tool_progress": "all", "interim_assistant_messages": True},
+            "streaming": {"enabled": True, "edit_interval": 0.01, "buffer_threshold": 1},
+        },
+        platform=Platform.MATRIX,
+        chat_id="!room:matrix.example.org",
+        chat_type="group",
+        thread_id="$thread",
+    )
+
+    assert result["final_response"] == "done"
+    assert not result.get("already_sent")
+    assert adapter.sent
+    assert adapter.edits
+    all_contents = [call["content"] for call in adapter.sent + adapter.edits]
+    assert any("Running pwd" in text for text in all_contents)
+    assert any("Browsing https://example.com" in text for text in all_contents)
+    assert all("done" not in text for text in all_contents)
+    matrix_metadata = [
+        call.get("metadata") or {}
+        for call in adapter.sent + adapter.edits
+        if call.get("metadata")
+    ]
+    assert matrix_metadata
+    assert any("<details>" in meta.get("matrix_formatted_body", "") for meta in matrix_metadata)
+    assert any("<summary>" in meta.get("matrix_formatted_body", "") for meta in matrix_metadata)
+    assert any(
+        "Browsing https://example.com" in meta.get("matrix_formatted_body", "")
+        for meta in matrix_metadata
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_agent_matrix_suppresses_thinking_by_default(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ThinkingAgent,
+        session_id="sess-matrix-no-thinking",
+        config_data={"display": {"platforms": {"matrix": {"tool_progress": "all"}}}},
+        platform=Platform.MATRIX,
+        chat_id="!room:matrix.example.org",
+        chat_type="group",
+        thread_id="$thread",
+    )
+
+    assert result["final_response"] == "done"
+    all_contents = [call["content"] for call in adapter.sent + adapter.edits]
+    assert not any("Thinking" in text for text in all_contents)
+    assert not any("weighing the options" in text for text in all_contents)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_matrix_requires_platform_opt_in_for_interim_commentary(
+    monkeypatch, tmp_path
+):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CommentaryAgent,
+        session_id="sess-matrix-global-interim-disabled",
+        config_data={
+            "display": {
+                "interim_assistant_messages": True,
+                "platforms": {"matrix": {"tool_progress": "all"}},
+            }
+        },
+        platform=Platform.MATRIX,
+        chat_id="!room:matrix.example.org",
+        chat_type="group",
+        thread_id="$thread",
+    )
+
+    assert result["final_response"] == "done"
+    assert not any("I'll inspect the repo first." in call["content"] for call in adapter.sent)
+    assert not result.get("already_sent")
+
+
+@pytest.mark.asyncio
+async def test_run_agent_matrix_platform_opt_in_enables_interim_commentary(
+    monkeypatch, tmp_path
+):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CommentaryAgent,
+        session_id="sess-matrix-platform-interim-enabled",
+        config_data={
+            "display": {
+                "interim_assistant_messages": False,
+                "platforms": {
+                    "matrix": {
+                        "tool_progress": "all",
+                        "interim_assistant_messages": True,
+                    }
+                },
+            }
+        },
+        platform=Platform.MATRIX,
+        chat_id="!room:matrix.example.org",
+        chat_type="group",
+        thread_id="$thread",
+    )
+
+    assert result.get("already_sent") is not True
+    assert any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_matrix_requires_platform_opt_in_for_thinking(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ThinkingAgent,
+        session_id="sess-matrix-global-thinking-disabled",
+        config_data={
+            "display": {
+                "thinking_progress": True,
+                "platforms": {"matrix": {"tool_progress": "all"}},
+            }
+        },
+        platform=Platform.MATRIX,
+        chat_id="!room:matrix.example.org",
+        chat_type="group",
+        thread_id="$thread",
+    )
+
+    assert result["final_response"] == "done"
+    all_contents = [call["content"] for call in adapter.sent + adapter.edits]
+    assert not any("Thinking" in text for text in all_contents)
+    assert not any("weighing the options" in text for text in all_contents)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_matrix_thinking_progress_uses_collapsible_pane(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ThinkingAgent,
+        session_id="sess-matrix-thinking-pane",
+        config_data={
+            "display": {
+                "platforms": {
+                    "matrix": {
+                        "tool_progress": "all",
+                        "thinking_progress": True,
+                    }
+                }
+            }
+        },
+        platform=Platform.MATRIX,
+        chat_id="!room:matrix.example.org",
+        chat_type="group",
+        thread_id="$thread",
+        adapter_cls=MetadataEditProgressCaptureAdapter,
+    )
+
+    assert result["final_response"] == "done"
+    all_calls = adapter.sent + adapter.edits
+    matrix_metadata = [
+        call.get("metadata") or {}
+        for call in all_calls
+        if call.get("metadata")
+    ]
+    formatted_bodies = [
+        meta.get("matrix_formatted_body", "")
+        for meta in matrix_metadata
+    ]
+    assert any("<details><summary>💭 Thinking</summary>" in body for body in formatted_bodies)
+    assert any("weighing the options here" in body for body in formatted_bodies)
+    assert any(
+        "💭 Thinking" in (meta.get("matrix_body") or "")
+        and "weighing the options here" in (meta.get("matrix_body") or "")
+        for meta in matrix_metadata
     )
 
 
