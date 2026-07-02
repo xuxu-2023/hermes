@@ -3561,6 +3561,12 @@ def build_preloaded_skills_prompt(*args, **kwargs):
     return _impl(*args, **kwargs)
 
 
+def find_triggered_skill_command(*args, **kwargs):
+    from agent.skill_commands import find_triggered_skill_command as _impl
+
+    return _impl(*args, **kwargs)
+
+
 def get_skill_bundles() -> dict:
     global _skill_bundles
     if _skill_bundles is None:
@@ -12143,6 +12149,28 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     "2-3 sentences max. No code blocks or markdown.] "
                 )
 
+            def _resolve_skill_trigger_message(user_text: str) -> tuple[str, Optional[str]]:
+                matched = find_triggered_skill_command(user_text)
+                if not matched:
+                    return user_text, None
+
+                cmd_key, skill_info, trigger = matched
+                expanded = build_skill_invocation_message(
+                    cmd_key,
+                    user_instruction=user_text,
+                    task_id=self.session_id,
+                    runtime_note=f'Auto-activated from skill trigger "{trigger}".',
+                )
+                if not expanded:
+                    return user_text, None
+
+                _cprint(
+                    f"  {_DIM}⚡ Auto-loading skill: "
+                    f"{skill_info.get('name') or cmd_key.lstrip('/')} "
+                    f"(trigger: {trigger}){_RST}"
+                )
+                return expanded, user_text
+
             def run_agent():
                 nonlocal result
                 # Set callbacks inside the agent thread so thread-local storage
@@ -12173,7 +12201,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 except Exception:
                     reset_current_session_key = None  # type: ignore[assignment]
                     _approval_session_token = None
-                agent_message = _voice_prefix + message if _voice_prefix else message
+                agent_message = message
+                persist_user_message = message if _voice_prefix else None
+                if isinstance(message, str):
+                    agent_message, skill_persist_message = _resolve_skill_trigger_message(message)
+                    if skill_persist_message is not None:
+                        persist_user_message = skill_persist_message
+                agent_message = _voice_prefix + agent_message if _voice_prefix else agent_message
                 # Prepend pending notes via _prepend_note_to_message, which
                 # handles both plain-string and multimodal content-parts list
                 # messages. Naive ``note + "\n\n" + agent_message`` crashed with
@@ -12200,7 +12234,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         conversation_history=self.conversation_history[:-1],  # Exclude the message we just added
                         stream_callback=stream_callback,
                         task_id=self.session_id,
-                        persist_user_message=message if _voice_prefix else None,
+                        persist_user_message=persist_user_message,
                         moa_config=_moa_cfg,
                     )
                     if getattr(self, "_pending_moa_disable_after_turn", False):
