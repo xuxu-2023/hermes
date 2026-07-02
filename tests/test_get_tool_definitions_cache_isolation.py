@@ -16,6 +16,8 @@ These tests pin:
 """
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 import model_tools
@@ -113,3 +115,67 @@ class TestQuietModeCacheIsolation:
         explains why the bug only hit Gateway."""
         model_tools.get_tool_definitions(quiet_mode=False)
         assert len(model_tools._tool_defs_cache) == 0
+
+
+def _patch_minimal_tool_selection(monkeypatch):
+    """Keep diagnostics tests independent of host tool availability."""
+    toolsets = {
+        "web": ["web_search"],
+        "terminal": ["terminal_tool"],
+    }
+
+    monkeypatch.setattr(
+        model_tools,
+        "validate_toolset",
+        lambda name: name in toolsets,
+    )
+    monkeypatch.setattr(model_tools, "resolve_toolset", lambda name: toolsets[name])
+
+    def _fake_get_definitions(tool_names, quiet=False):
+        return [
+            {"type": "function", "function": {"name": name}}
+            for name in sorted(tool_names)
+        ]
+
+    monkeypatch.setattr(model_tools.registry, "get_definitions", _fake_get_definitions)
+
+
+def test_tool_selection_diagnostics_are_logged_and_printed(monkeypatch, caplog, capsys):
+    _patch_minimal_tool_selection(monkeypatch)
+    caplog.set_level(logging.DEBUG, logger="model_tools")
+
+    model_tools.get_tool_definitions(
+        enabled_toolsets=["web", "terminal"],
+        disabled_toolsets=["terminal"],
+        quiet_mode=False,
+        skip_tool_search_assembly=True,
+    )
+
+    stdout = capsys.readouterr().out
+    assert "Enabled toolset 'web': web_search" in stdout
+    assert "Disabled toolset 'terminal': terminal_tool" in stdout
+    assert "Final tool selection (1 tools): web_search" in stdout
+
+    log_text = caplog.text
+    assert "Enabled toolset 'web': web_search" in log_text
+    assert "Disabled toolset 'terminal': terminal_tool" in log_text
+    assert "Final tool selection (1 tools): web_search" in log_text
+
+
+def test_quiet_tool_selection_diagnostics_are_logged_without_stdout(
+    monkeypatch,
+    caplog,
+    capsys,
+):
+    _patch_minimal_tool_selection(monkeypatch)
+    caplog.set_level(logging.DEBUG, logger="model_tools")
+
+    model_tools.get_tool_definitions(
+        enabled_toolsets=["web"],
+        quiet_mode=True,
+        skip_tool_search_assembly=True,
+    )
+
+    assert capsys.readouterr().out == ""
+    assert "Enabled toolset 'web': web_search" in caplog.text
+    assert "Final tool selection (1 tools): web_search" in caplog.text
