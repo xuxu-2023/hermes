@@ -2894,6 +2894,16 @@ DEFAULT_CONFIG = {
         "write_json_snapshots": False,
     },
 
+    "gateway": {
+        # ``hermes gateway run --replace`` normally refuses to SIGTERM an
+        # existing gateway PID that is supervised by launchd / systemd when
+        # the --replace call itself comes from an unsupervised caller (e.g.
+        # hermes-web-ui's startup hook), to avoid a supervisor restart loop
+        # (#27041).  Set this to true to force the takeover anyway.  Leave
+        # false unless you know you need the old unconditional behaviour.
+        "replace_force": False,
+    },
+
     # Contextual first-touch onboarding hints (see agent/onboarding.py).
     # Each hint is shown once per install and then latched here so it
     # never fires again.  Users can wipe the section to re-see all hints.
