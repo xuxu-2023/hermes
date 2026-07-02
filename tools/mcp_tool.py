@@ -338,6 +338,24 @@ _SAFE_ENV_KEYS_CASE_INSENSITIVE = frozenset({
     "WINDIR",
 })
 
+# Canonical (mixed-case) spellings for the Windows location vars whose
+# documented names are not all-uppercase. CPython normalizes every key in
+# ``os.environ`` to UPPERCASE on Windows (``os.name == "nt"``), so iterating it
+# yields e.g. ``"PROGRAMFILES"`` even though the variable is documented and
+# consumed as ``"ProgramFiles"``. Launcher-style tools (and the test contract)
+# expect the canonical spelling, so map the upper-cased key back to it. Keys not
+# in this map keep their original spelling (all-uppercase vars like ``APPDATA``
+# are already canonical; non-Windows platforms preserve the original case).
+_WINDOWS_CANONICAL_ENV_KEYS = {
+    "PROGRAMFILES": "ProgramFiles",
+    "PROGRAMFILES(X86)": "ProgramFiles(x86)",
+    "PROGRAMW6432": "ProgramW6432",
+    "PROGRAMDATA": "ProgramData",
+    "COMMONPROGRAMFILES": "CommonProgramFiles",
+    "COMMONPROGRAMFILES(X86)": "CommonProgramFiles(x86)",
+    "COMMONPROGRAMW6432": "CommonProgramW6432",
+}
+
 # Regex for credential patterns to strip from error messages
 _CREDENTIAL_PATTERN = re.compile(
     r"(?:"
@@ -380,7 +398,10 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
             or key.upper() in _SAFE_ENV_KEYS_CASE_INSENSITIVE
             or key.startswith("XDG_")
         ):
-            env[key] = value
+            # Restore the canonical mixed-case spelling for Windows location
+            # vars that os.environ upper-cased; other keys pass through as-is.
+            canonical_key = _WINDOWS_CANONICAL_ENV_KEYS.get(key.upper(), key)
+            env[canonical_key] = value
     if user_env:
         env.update(user_env)
     return env
