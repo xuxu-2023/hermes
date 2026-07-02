@@ -427,12 +427,13 @@ def decide_image_input_mode(
         return "text"
 
     # auto
-    if _explicit_aux_vision_override(cfg):
-        return "text"
-
+    # Check native vision FIRST so vision-capable primaries (gpt-5.5, claude-sonnet-4, etc.)
+    # aren't short-circuited by a configured auxiliary vision model.
     supports = _lookup_supports_vision(provider, model, cfg)
     if supports is True:
         return "native"
+    if _explicit_aux_vision_override(cfg):
+        return "text"
     return "text"
 
 
