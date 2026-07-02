@@ -1303,7 +1303,12 @@ def init_agent(
                     agent._memory_manager.initialize_all(**_init_kwargs)
                     _ra().logger.info("Memory provider '%s' activated", _mem_provider_name)
                 else:
-                    _ra().logger.debug("Memory provider '%s' not found or not available", _mem_provider_name)
+                    _ra().logger.warning(
+                        "Memory provider '%s' failed to load or is not available — "
+                        "falling back to built-in memory. Check that the provider "
+                        "package is installed and its configuration is correct.",
+                        _mem_provider_name,
+                    )
                     agent._memory_manager = None
         except Exception as _mpe:
             _ra().logger.warning("Memory provider plugin init failed: %s", _mpe)
