@@ -451,7 +451,7 @@ class SlackAdapter(BasePlatformAdapter):
         self._dedup = MessageDeduplicator()
         # Track pending approval message_ts → resolved flag to prevent
         # double-clicks on approval buttons.
-        self._approval_resolved: Dict[str, bool] = {}
+        self._approval_resolved: Dict[str, tuple] = {}  # msg_ts → (resolved: bool, chat_id: str)
         # Track timestamps of messages sent by the bot so we can respond
         # to thread replies even without an explicit @mention.
         self._bot_message_ts: set = set()
@@ -3228,13 +3228,11 @@ class SlackAdapter(BasePlatformAdapter):
     # ----- Approval button support (Block Kit) -----
 
     async def send_exec_approval(
-        self,
-        chat_id: str,
-        command: str,
-        session_key: str,
-        description: str = "dangerous command",
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> SendResult:
+        self, chat_id: str, command: str, session_key: str,
+            description: str = "dangerous command",
+            metadata: Optional[Dict[str, Any]] = None,
+            **kwargs: Any,
+        ) -> SendResult:
         """Send a Block Kit approval prompt with interactive buttons.
 
         The buttons call ``resolve_gateway_approval()`` to unblock the waiting
@@ -3253,8 +3251,23 @@ class SlackAdapter(BasePlatformAdapter):
             # ``command``, so budget the preview against the fixed parts
             # instead of a flat truncation that overflows once the header +
             # reason are added.
-            header = ":warning: *Command Approval Required*\n"
-            reason = f"Reason: {description[:500]}"
+            # i18n: use locale-aware strings, fallback to English
+            try:
+                from agent.i18n import t as _t
+                _header = _t("gateway.approval_delegation.card_header")
+                _reason_label = _t("gateway.approval_delegation.card_reason")
+                _btn_once = _t("gateway.approval_delegation.btn_allow_once")
+                _btn_session = _t("gateway.approval_delegation.btn_session")
+                _btn_always = _t("gateway.approval_delegation.btn_always")
+                _btn_deny = _t("gateway.approval_delegation.btn_deny")
+            except Exception:
+                _header = ":warning: *Command Approval Required*"
+                _reason_label = "Reason"
+                _btn_once, _btn_session = "Allow Once", "Allow Session"
+                _btn_always, _btn_deny = "Always Allow", "Deny"
+
+            header = f"{_header}\n"
+            reason = f"{_reason_label}: {description[:500]}"
             budget = 3000 - len(header) - len(reason) - len("``````\n") - len("...")
             cmd_preview = command[:budget] + "..." if len(command) > budget else command
 
@@ -3271,26 +3284,26 @@ class SlackAdapter(BasePlatformAdapter):
                     "elements": [
                         {
                             "type": "button",
-                            "text": {"type": "plain_text", "text": "Allow Once"},
+                            "text": {"type": "plain_text", "text": _btn_once},
                             "style": "primary",
                             "action_id": "hermes_approve_once",
                             "value": session_key,
                         },
                         {
                             "type": "button",
-                            "text": {"type": "plain_text", "text": "Allow Session"},
+                            "text": {"type": "plain_text", "text": _btn_session},
                             "action_id": "hermes_approve_session",
                             "value": session_key,
                         },
                         {
                             "type": "button",
-                            "text": {"type": "plain_text", "text": "Always Allow"},
+                            "text": {"type": "plain_text", "text": _btn_always},
                             "action_id": "hermes_approve_always",
                             "value": session_key,
                         },
                         {
                             "type": "button",
-                            "text": {"type": "plain_text", "text": "Deny"},
+                            "text": {"type": "plain_text", "text": _btn_deny},
                             "style": "danger",
                             "action_id": "hermes_deny",
                             "value": session_key,
@@ -3310,7 +3323,7 @@ class SlackAdapter(BasePlatformAdapter):
             result = await self._get_client(chat_id).chat_postMessage(**kwargs)
             msg_ts = result.get("ts", "")
             if msg_ts:
-                self._approval_resolved[msg_ts] = False
+                self._approval_resolved[msg_ts] = (False, chat_id)
 
             return SendResult(success=True, message_id=msg_ts, raw_response=result)
         except Exception as e:
@@ -3583,17 +3596,15 @@ class SlackAdapter(BasePlatformAdapter):
             )
             return
 
-        # Only authorized users may click approval buttons.  Button clicks
-        # bypass the normal message auth flow in gateway/run.py, so we must
-        # check here as well.
-        allowed_csv = ""  # Interactive auth already ran above.
-        if allowed_csv:
-            allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
-            if "*" not in allowed_ids and user_id not in allowed_ids:
+        # Validate the click comes from the expected chat — prevents
+        # forwarded cards from being approved in other channels.
+        stored = self._approval_resolved.get(msg_ts)
+        if stored:
+            _, expected_chat_id = stored
+            if expected_chat_id and channel_id and expected_chat_id != channel_id:
                 logger.warning(
-                    "[Slack] Unauthorized approval click by %s (%s) — ignoring",
-                    user_name,
-                    user_id,
+                    "[Slack] Unauthorized approval click: expected chat %s, got %s (user=%s)",
+                    expected_chat_id, channel_id, user_id,
                 )
                 return
 
@@ -3606,8 +3617,9 @@ class SlackAdapter(BasePlatformAdapter):
         }
         choice = choice_map.get(action_id, "deny")
 
-        # Prevent double-clicks — atomic pop; first caller gets False, others get True (default)
-        if self._approval_resolved.pop(msg_ts, True):
+        # Prevent double-clicks — atomic pop; first caller gets (False,…), others get default (True,…)
+        stored = self._approval_resolved.pop(msg_ts, (True, ""))
+        if stored[0]:
             return
 
         # Update the message to show the decision and remove buttons
