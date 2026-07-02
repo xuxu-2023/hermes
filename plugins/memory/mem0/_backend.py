@@ -194,7 +194,11 @@ class OSSBackend(Mem0Backend):
         return _unwrap_results(response)
 
     def get_all(self, *, filters: dict, page: int = 1, page_size: int = 100) -> dict:
-        response = self._memory.get_all(filters=filters)
+        # Use a high top_k so the SDK returns everything — we need the full
+        # result set for accurate counting and client-side pagination.
+        # The SDK's default top_k is 20 (mem0ai/mem0#memory/main.py), which
+        # would truncate results and give a wrong count.
+        response = self._memory.get_all(filters=filters, top_k=10000)
         all_results = _unwrap_results(response)
         total = len(all_results)
         start = (page - 1) * page_size
