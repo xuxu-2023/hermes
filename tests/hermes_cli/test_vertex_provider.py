@@ -98,3 +98,21 @@ def test_vertex_extra_body_empty_without_reasoning():
 
     p = get_provider_profile("vertex")
     assert p.build_extra_body(model="google/gemini-3-flash-preview") == {}
+
+
+@pytest.mark.parametrize(
+    ("input_model", "expected"),
+    [
+        ("gemini-3.5-flash", "google/gemini-3.5-flash"),
+        ("gemini-3.1-flash-lite", "google/gemini-3.1-flash-lite"),
+        ("gemma-4-27b-it", "google/gemma-4-27b-it"),
+        ("google/gemini-3.1-flash-lite", "google/gemini-3.1-flash-lite"),
+        ("custom-publisher/model-id", "custom-publisher/model-id"),
+        ("private-model", "private-model"),
+    ],
+)
+def test_vertex_model_normalization_adds_google_publisher_prefix(input_model, expected):
+    from hermes_cli.model_normalize import normalize_model_for_provider
+
+    assert normalize_model_for_provider(input_model, "vertex") == expected
+    assert normalize_model_for_provider(input_model, "google-vertex") == expected
