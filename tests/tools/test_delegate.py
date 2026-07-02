@@ -3072,5 +3072,99 @@ class TestFallbackModelInheritance(unittest.TestCase):
         self.assertIsNone(kwargs["fallback_model"])
 
 
+class TestLoadConfigMergesDiskUnderRuntimeSnapshot(unittest.TestCase):
+    """Regression tests for the delegation model-inheritance bug (issue #11999).
+
+    ``_load_config`` reads from two sources: the always-fresh on-disk config
+    (``hermes_cli.config.load_config``) and the import-time ``cli.CLI_CONFIG``
+    snapshot, which can go stale/partial in a long-running process. The old
+    code returned the snapshot wholesale whenever it was truthy, so a *partial*
+    snapshot (e.g. provider set, model missing) blanked out the disk-configured
+    model and caused subagents to silently inherit the parent's primary model.
+
+    These tests exercise the real ``_load_config`` against patched copies of
+    both sources, then run the merged result through the real
+    ``_resolve_delegation_credentials`` to prove the effective child model is
+    what the user configured — not the parent's.
+    """
+
+    def _load_with(self, disk, runtime):
+        """Run the real _load_config with patched disk + runtime sources."""
+        import tools.delegate_tool as dt
+
+        fake_cli = MagicMock()
+        fake_cli.CLI_CONFIG = {"delegation": runtime}
+        with patch.dict("sys.modules", {"cli": fake_cli}), patch(
+            "hermes_cli.config.load_config", return_value={"delegation": disk}
+        ):
+            return dt._load_config()
+
+    # --- _load_config merge behaviour (the unit fixed) ----------------------
+
+    def test_partial_snapshot_backfills_model_from_disk(self):
+        """THE BUG: snapshot has provider but no model. Disk has the model.
+
+        Before the fix the partial snapshot was returned wholesale, so the
+        merged config had no ``model`` and credential resolution fell back to
+        the parent's (expensive) model. After the fix the disk model is
+        backfilled so the configured cheaper model survives.
+        """
+        disk = {"model": "claude-haiku-4.5", "provider": "anthropic"}
+        runtime = {"provider": "anthropic"}  # stale/partial: model dropped
+        cfg = self._load_with(disk, runtime)
+        self.assertEqual(cfg["model"], "claude-haiku-4.5")
+        self.assertEqual(cfg["provider"], "anthropic")
+
+    def test_empty_snapshot_falls_back_to_disk(self):
+        """Empty runtime snapshot → disk config is used verbatim."""
+        disk = {"model": "claude-haiku-4.5", "provider": "anthropic"}
+        cfg = self._load_with(disk, {})
+        self.assertEqual(cfg["model"], "claude-haiku-4.5")
+
+    def test_runtime_override_beats_disk(self):
+        """A genuine in-process override (non-empty model in the snapshot)
+        still wins over disk — preserves intentional mid-session model swaps."""
+        disk = {"model": "claude-haiku-4.5", "provider": "anthropic"}
+        runtime = {"model": "claude-sonnet-4.6", "provider": "anthropic"}
+        cfg = self._load_with(disk, runtime)
+        self.assertEqual(cfg["model"], "claude-sonnet-4.6")
+
+    def test_empty_string_in_snapshot_does_not_blank_disk(self):
+        """An empty-string value in the snapshot counts as 'unset' and must not
+        overwrite a real disk value (YAML round-trips often leave '' fields)."""
+        disk = {"model": "claude-haiku-4.5", "provider": "anthropic"}
+        runtime = {"model": "", "provider": "anthropic", "base_url": ""}
+        cfg = self._load_with(disk, runtime)
+        self.assertEqual(cfg["model"], "claude-haiku-4.5")
+
+    def test_both_empty_returns_empty(self):
+        """No disk config and no snapshot → empty dict (inherit parent), the
+        documented behaviour when delegation is entirely unconfigured."""
+        cfg = self._load_with({}, {})
+        self.assertEqual(cfg, {})
+
+    # --- end-to-end: merged config flows into resolved child model ----------
+    # Uses the keyless base_url path so resolution needs no real provider key,
+    # proving the disk-backfilled model reaches _resolve_delegation_credentials.
+
+    def test_partial_snapshot_model_reaches_resolved_credentials(self):
+        """End-to-end proof via the direct-endpoint (base_url) path: a partial
+        snapshot that drops ``model`` no longer yields a None child model —
+        the disk model is backfilled and shows up in resolved credentials.
+        """
+        parent = _make_mock_parent(depth=0)
+        parent.model = "claude-opus-4-8"  # primary we must NOT silently inherit
+        disk = {
+            "model": "claude-haiku-4.5",
+            "base_url": "https://api.anthropic.com",
+        }
+        runtime = {"base_url": "https://api.anthropic.com"}  # model dropped
+        cfg = self._load_with(disk, runtime)
+        creds = _resolve_delegation_credentials(cfg, parent)
+        effective_model = creds["model"] or parent.model
+        self.assertEqual(effective_model, "claude-haiku-4.5")
+        self.assertNotEqual(effective_model, "claude-opus-4-8")
+
+
 if __name__ == "__main__":
     unittest.main()

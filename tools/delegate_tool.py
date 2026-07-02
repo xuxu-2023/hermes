@@ -3091,28 +3091,63 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
 
 def _load_config() -> dict:
-    """Load delegation config from CLI_CONFIG or persistent config.
+    """Load delegation config, merging on-disk config under the runtime snapshot.
 
-    Checks the runtime config (cli.py CLI_CONFIG) first, then falls back
-    to the persistent config (hermes_cli/config.py load_config()) so that
-    ``delegation.model`` / ``delegation.provider`` are picked up regardless
-    of the entry point (CLI, gateway, cron).
+    Two config sources exist and they can disagree:
+
+    * ``hermes_cli.config.load_config()`` reads ``~/.hermes/config.yaml`` and is
+      kept fresh — it re-reads disk whenever the file's (mtime, size) changes.
+    * ``cli.CLI_CONFIG`` is a snapshot taken **once** at module import
+      (``cli.py``: ``CLI_CONFIG = load_cli_config()``). In a long-running
+      process (CLI session, gateway, HermesPilot) it never refreshes, so it can
+      hold a stale or partial ``delegation`` block — e.g. one captured before
+      the user configured ``delegation.model`` / ``delegation.provider``.
+
+    The previous implementation returned the runtime snapshot wholesale the
+    moment it was truthy (``if cfg: return cfg``). When that snapshot was a
+    *partial* dict (say ``{"provider": "anthropic"}`` with no ``model``), the
+    missing keys were never backfilled from disk: ``_resolve_delegation_credentials``
+    then resolved ``model`` to ``None`` and the subagent silently inherited the
+    parent's (expensive primary) model instead of the configured cheaper one.
+    See GitHub issue #11999.
+
+    Fix: load disk config as the base layer and overlay only the runtime keys
+    that are actually set (non-empty). This way:
+
+    * Fresh on-disk values are always the fallback for any key the snapshot
+      lacks — no more silent inheritance from a partial snapshot.
+    * A genuine runtime override (a non-empty value in ``CLI_CONFIG``) still
+      wins, preserving in-process model/provider swaps.
     """
-    try:
-        from cli import CLI_CONFIG
-
-        cfg = CLI_CONFIG.get("delegation") or {}
-        if cfg:
-            return cfg
-    except Exception:
-        pass
+    disk: dict = {}
     try:
         from hermes_cli.config import load_config
 
-        full = load_config()
-        return full.get("delegation") or {}
+        disk = load_config().get("delegation") or {}
     except Exception:
-        return {}
+        disk = {}
+
+    runtime: dict = {}
+    try:
+        from cli import CLI_CONFIG
+
+        runtime = CLI_CONFIG.get("delegation") or {}
+    except Exception:
+        runtime = {}
+
+    if not runtime:
+        return disk
+    if not disk:
+        return runtime
+
+    # Disk is the base; overlay only runtime keys that are actually set so a
+    # partial/stale snapshot can never blank out a value the user configured
+    # on disk. Empty string / None in the snapshot means "unset" → keep disk.
+    merged = dict(disk)
+    for key, value in runtime.items():
+        if value not in (None, ""):
+            merged[key] = value
+    return merged
 
 
 # ---------------------------------------------------------------------------
