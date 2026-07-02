@@ -714,6 +714,15 @@ _ASSISTANT_REPLAY_FIELDS: tuple[str, ...] = (
     "finish_reason",
 )
 
+_VOICE_REPLAY_METADATA_FIELDS: frozenset[str] = frozenset(
+    {
+        "voice_turn_id",
+        "voice_interrupted",
+        "voice_planned_content",
+        "voice_spoken_content",
+    }
+)
+
 
 def _build_replay_entry(role: str, content: Any, msg: Dict[str, Any]) -> Dict[str, Any]:
     """Build a replay entry for a non-tool-calling message, preserving the
@@ -844,7 +853,11 @@ def _build_gateway_agent_history(
         is_tool_message = role == "tool"
 
         if has_tool_calls or has_tool_call_id or is_tool_message:
-            clean_msg = {k: v for k, v in msg.items() if k not in {"timestamp", "observed"}}
+            clean_msg = {
+                k: v
+                for k, v in msg.items()
+                if k not in {"timestamp", "observed"} and k not in _VOICE_REPLAY_METADATA_FIELDS
+            }
             agent_history.append(clean_msg)
         elif content:
             # Strip gateway-injected auto-continue notes that were persisted
@@ -1262,6 +1275,15 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # Resolve Hermes home directory (respects HERMES_HOME override)
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, is_truthy_value
+from gateway.voice_stream import (
+    partial_llm_streaming_enabled as _voice_server_partial_llm_streaming_enabled,
+    turn_ids_from_result as _voice_turn_ids_from_result,
+    visible_text as _voice_visible_text,
+    assistant_message_matches_voice_final as _assistant_message_matches_voice_final,
+    stamp_voice_turn_id_on_final_assistant as _stamp_voice_turn_id_on_final_assistant,
+    cleanup_assistant_stream as _cleanup_voice_assistant_stream,
+    scrub_voice_turn_id_from_result as _scrub_voice_turn_id_from_result,
+)
 _hermes_home = get_hermes_home()
 
 # Load environment variables from ~/.hermes/.env first.
@@ -1676,6 +1698,7 @@ from gateway.session import (
     build_session_context_prompt,
     build_session_key,
     is_shared_multi_user_session,
+    session_grouping_for_source,
 )
 from gateway.delivery import DeliveryRouter, looks_like_telegram_private_chat_id
 from gateway.authz_mixin import GatewayAuthorizationMixin
@@ -2591,11 +2614,21 @@ def _preserve_queued_followup_history_offset(
     followup_offset = followup_result.get("history_offset")
     if not isinstance(current_offset, int):
         return followup_result
+    voice_turn_ids = _voice_turn_ids_from_result(current_result)
+    for turn_id in _voice_turn_ids_from_result(followup_result):
+        if turn_id not in voice_turn_ids:
+            voice_turn_ids.append(turn_id)
     if isinstance(followup_offset, int) and followup_offset <= current_offset:
+        if voice_turn_ids:
+            merged = dict(followup_result)
+            merged["voice_turn_ids"] = voice_turn_ids
+            return merged
         return followup_result
 
     merged = dict(followup_result)
     merged["history_offset"] = current_offset
+    if voice_turn_ids:
+        merged["voice_turn_ids"] = voice_turn_ids
     return merged
 
 
@@ -3367,6 +3400,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 pass
         config = getattr(self, "config", None)
+        group_sessions_per_user, thread_sessions_per_user = session_grouping_for_source(
+            config,
+            source,
+        )
         # Mirror SessionStore._resolve_profile_for_key so this fallback path
         # produces the same namespace as the primary path: None (legacy
         # agent:main) unless multiplexing is on, then the active profile.
@@ -3382,8 +3419,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _profile = None
         return build_session_key(
             source,
-            group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
+            group_sessions_per_user=group_sessions_per_user,
+            thread_sessions_per_user=thread_sessions_per_user,
             profile=_profile,
         )
 
@@ -5267,6 +5304,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 pass  # don't let interrupt failure block the ack
 
+        if event.source.platform == Platform.VOICE_SERVER:
+            logger.debug("Busy ack suppressed for voice_server session %s", session_key)
+            return True
+
         # Check if busy ack is disabled — skip sending but still process the input.
         # Placed before debounce so we don't stamp a "last ack" timestamp that was
         # never actually delivered.
@@ -6560,6 +6601,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "BLUEBUBBLES_ALLOWED_USERS",
             "QQ_ALLOWED_USERS",
             "YUANBAO_ALLOWED_USERS",
+            "VOICE_SERVER_ALLOWED_USERS",
             "GATEWAY_ALLOWED_USERS",
         )
         _builtin_allow_all_vars = (
@@ -6576,6 +6618,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "BLUEBUBBLES_ALLOW_ALL_USERS",
             "QQ_ALLOW_ALL_USERS",
             "YUANBAO_ALLOW_ALL_USERS",
+            "VOICE_SERVER_ALLOW_ALL_USERS",
         )
         # Also pick up plugin-registered platforms — each entry can declare
         # its own allowed_users_env / allow_all_env, so the warning stays
@@ -6786,6 +6829,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter.set_message_handler(self._handle_message)
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
+            adapter.set_authorizer(self._is_user_authorized)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
             adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
             adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
@@ -7278,12 +7322,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # entry. For thread destinations build_session_key keys without
         # user_id (thread_sessions_per_user defaults to False) — so the
         # next real user message in the thread shares this same session.
-        platform_cfg = self.config.platforms.get(platform)
-        extra = platform_cfg.extra if platform_cfg else {}
+        group_sessions_per_user, thread_sessions_per_user = session_grouping_for_source(
+            self.config,
+            dest_source,
+        )
         session_key = build_session_key(
             dest_source,
-            group_sessions_per_user=extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=extra.get("thread_sessions_per_user", False),
+            group_sessions_per_user=group_sessions_per_user,
+            thread_sessions_per_user=thread_sessions_per_user,
         )
 
         # Make sure there's an entry in the session_store for this key. If
@@ -7618,6 +7664,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     adapter.set_message_handler(self._handle_message)
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
+                    adapter.set_authorizer(self._is_user_authorized)
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
                     adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
                     adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
@@ -8352,6 +8399,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Checks the platform_registry first (plugin adapters), then falls
         through to the built-in if/elif chain for core platforms.
         """
+        _explicit_extra_keys = set(config.extra) if hasattr(config, "extra") and isinstance(config.extra, dict) else set()
         if hasattr(config, "extra") and isinstance(config.extra, dict):
             config.extra.setdefault(
                 "group_sessions_per_user",
@@ -8387,7 +8435,54 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("Platform registry lookup for '%s' failed: %s", platform.value, e)
         # Fall through to built-in adapters below
 
-        if platform == Platform.WHATSAPP_CLOUD:
+        if platform == Platform.TELEGRAM:
+            from gateway.platforms.telegram import TelegramAdapter, check_telegram_requirements
+            if not check_telegram_requirements():
+                logger.warning("Telegram: python-telegram-bot not installed")
+                return None
+            adapter = TelegramAdapter(config)
+            # Apply Telegram notification mode from config.  Controls whether
+            # intermediate messages (tool progress, streaming, status) trigger
+            # push notifications.  Supports ENV override for quick testing.
+            _notify_mode = os.getenv("HERMES_TELEGRAM_NOTIFICATIONS", "")
+            if not _notify_mode:
+                try:
+                    _gw_cfg = _load_gateway_config()
+                    _raw = cfg_get(_gw_cfg, "display", "platforms", "telegram", "notifications")
+                    if _raw not in {None, ""}:
+                        _notify_mode = str(_raw).strip().lower()
+                except Exception:
+                    pass
+            _notify_mode = _notify_mode or "important"
+            if _notify_mode not in {"all", "important"}:
+                logger.warning(
+                    "Unknown telegram notifications mode '%s', "
+                    "defaulting to 'important' (valid: all, important)",
+                    _notify_mode,
+                )
+                _notify_mode = "important"
+            adapter._notifications_mode = _notify_mode
+            return adapter
+        
+        elif platform == Platform.VOICE_SERVER:
+            from gateway.platforms.voice_server import VoiceServerAdapter, check_voice_server_requirements
+            if not check_voice_server_requirements():
+                logger.warning("Voice server: aiohttp not installed")
+                return None
+            if "group_sessions_per_user" not in _explicit_extra_keys:
+                config.extra["group_sessions_per_user"] = True
+            if "thread_sessions_per_user" not in _explicit_extra_keys:
+                config.extra["thread_sessions_per_user"] = True
+            return VoiceServerAdapter(config)
+
+        elif platform == Platform.WHATSAPP:
+            from gateway.platforms.whatsapp import WhatsAppAdapter, check_whatsapp_requirements
+            if not check_whatsapp_requirements():
+                logger.warning("WhatsApp: Node.js not installed or bridge not configured")
+                return None
+            return WhatsAppAdapter(config)
+
+        elif platform == Platform.WHATSAPP_CLOUD:
             from gateway.platforms.whatsapp_cloud import (
                 WhatsAppCloudAdapter,
                 check_whatsapp_cloud_requirements,
@@ -8498,6 +8593,256 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
 
 
+        platform_env_map = {
+            Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
+            Platform.DISCORD: "DISCORD_ALLOWED_USERS",
+            Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
+            Platform.SLACK: "SLACK_ALLOWED_USERS",
+            Platform.SIGNAL: "SIGNAL_ALLOWED_USERS",
+            Platform.EMAIL: "EMAIL_ALLOWED_USERS",
+            Platform.SMS: "SMS_ALLOWED_USERS",
+            Platform.MATTERMOST: "MATTERMOST_ALLOWED_USERS",
+            Platform.MATRIX: "MATRIX_ALLOWED_USERS",
+            Platform.DINGTALK: "DINGTALK_ALLOWED_USERS",
+            Platform.FEISHU: "FEISHU_ALLOWED_USERS",
+            Platform.WECOM: "WECOM_ALLOWED_USERS",
+            Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOWED_USERS",
+            Platform.WEIXIN: "WEIXIN_ALLOWED_USERS",
+            Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
+            Platform.QQBOT: "QQ_ALLOWED_USERS",
+            Platform.YUANBAO: "YUANBAO_ALLOWED_USERS",
+            Platform.VOICE_SERVER: "VOICE_SERVER_ALLOWED_USERS",
+        }
+        platform_group_user_env_map = {
+            Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS",
+        }
+        platform_group_chat_env_map = {
+            Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS",
+            Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
+        }
+        platform_allow_all_map = {
+            Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
+            Platform.DISCORD: "DISCORD_ALLOW_ALL_USERS",
+            Platform.WHATSAPP: "WHATSAPP_ALLOW_ALL_USERS",
+            Platform.SLACK: "SLACK_ALLOW_ALL_USERS",
+            Platform.SIGNAL: "SIGNAL_ALLOW_ALL_USERS",
+            Platform.EMAIL: "EMAIL_ALLOW_ALL_USERS",
+            Platform.SMS: "SMS_ALLOW_ALL_USERS",
+            Platform.MATTERMOST: "MATTERMOST_ALLOW_ALL_USERS",
+            Platform.MATRIX: "MATRIX_ALLOW_ALL_USERS",
+            Platform.DINGTALK: "DINGTALK_ALLOW_ALL_USERS",
+            Platform.FEISHU: "FEISHU_ALLOW_ALL_USERS",
+            Platform.WECOM: "WECOM_ALLOW_ALL_USERS",
+            Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOW_ALL_USERS",
+            Platform.WEIXIN: "WEIXIN_ALLOW_ALL_USERS",
+            Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
+            Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
+            Platform.YUANBAO: "YUANBAO_ALLOW_ALL_USERS",
+            Platform.VOICE_SERVER: "VOICE_SERVER_ALLOW_ALL_USERS",
+        }
+        # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466).
+        platform_allow_bots_map = {
+            Platform.DISCORD: "DISCORD_ALLOW_BOTS",
+            Platform.FEISHU: "FEISHU_ALLOW_BOTS",
+        }
+
+        # Plugin platforms: check the registry for auth env var names
+        if source.platform not in platform_env_map:
+            try:
+                from gateway.platform_registry import platform_registry
+                entry = platform_registry.get(source.platform.value)
+                if entry:
+                    if entry.allowed_users_env:
+                        platform_env_map[source.platform] = entry.allowed_users_env
+                    if entry.allow_all_env:
+                        platform_allow_all_map[source.platform] = entry.allow_all_env
+            except Exception:
+                pass
+
+        # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
+        platform_allow_all_var = platform_allow_all_map.get(source.platform, "")
+        if platform_allow_all_var and os.getenv(platform_allow_all_var, "").lower() in {"true", "1", "yes"}:
+            return True
+
+        if getattr(source, "is_bot", False):
+            allow_bots_var = platform_allow_bots_map.get(source.platform)
+            if allow_bots_var and os.getenv(allow_bots_var, "none").lower().strip() in {"mentions", "all"}:
+                return True
+
+        # Discord role-based access (DISCORD_ALLOWED_ROLES): the adapter's
+        # on_message pre-filter already verified role membership — if the
+        # message reached here, the user passed that check. Authorize
+        # directly to avoid the "no allowlists configured" branch below
+        # rejecting role-only setups where DISCORD_ALLOWED_USERS is empty
+        # (issue #7871).
+        if (
+            source.platform == Platform.DISCORD
+            and os.getenv("DISCORD_ALLOWED_ROLES", "").strip()
+        ):
+            return True
+
+        # Check pairing store (always checked, regardless of allowlists)
+        platform_name = source.platform.value if source.platform else ""
+        if self.pairing_store.is_approved(platform_name, user_id):
+            return True
+
+        # Check platform-specific and global allowlists
+        platform_allowlist = os.getenv(platform_env_map.get(source.platform, ""), "").strip()
+        group_user_allowlist = ""
+        group_chat_allowlist = ""
+        if source.chat_type in {"group", "forum"}:
+            group_user_allowlist = os.getenv(platform_group_user_env_map.get(source.platform, ""), "").strip()
+            group_chat_allowlist = os.getenv(platform_group_chat_env_map.get(source.platform, ""), "").strip()
+        global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
+
+        if not platform_allowlist and not group_user_allowlist and not group_chat_allowlist and not global_allowlist:
+            # No allowlists configured -- check global allow-all flag
+            return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+
+        # Telegram can optionally authorize group traffic by chat ID.
+        # Keep this separate from TELEGRAM_GROUP_ALLOWED_USERS, which gates
+        # the sender user ID for group/forum messages.
+        if group_chat_allowlist and source.chat_type in {"group", "forum"} and source.chat_id:
+            allowed_group_ids = {
+                chat_id.strip() for chat_id in group_chat_allowlist.split(",") if chat_id.strip()
+            }
+            if "*" in allowed_group_ids or source.chat_id in allowed_group_ids:
+                return True
+
+        # Backward-compat shim for #15027: prior to PR #17686,
+        # TELEGRAM_GROUP_ALLOWED_USERS was (mis)used as a chat-ID allowlist.
+        # Values starting with "-" are Telegram chat IDs, not user IDs, so if
+        # users still have those in TELEGRAM_GROUP_ALLOWED_USERS we honor them
+        # as chat IDs and warn once. The correct var is now
+        # TELEGRAM_GROUP_ALLOWED_CHATS.
+        if (
+            source.platform == Platform.TELEGRAM
+            and group_user_allowlist
+            and source.chat_type in {"group", "forum"}
+            and source.chat_id
+        ):
+            legacy_chat_ids = {
+                v.strip()
+                for v in group_user_allowlist.split(",")
+                if v.strip().startswith("-")
+            }
+            if legacy_chat_ids:
+                if not getattr(self, "_warned_telegram_group_users_legacy", False):
+                    logger.warning(
+                        "TELEGRAM_GROUP_ALLOWED_USERS contains chat-ID-shaped values "
+                        "(%s). Treating them as chat IDs for backward compatibility. "
+                        "Move chat IDs to TELEGRAM_GROUP_ALLOWED_CHATS — the _USERS var "
+                        "is now for sender user IDs.",
+                        ",".join(sorted(legacy_chat_ids)),
+                    )
+                    self._warned_telegram_group_users_legacy = True
+                if source.chat_id in legacy_chat_ids:
+                    return True
+
+        # Check if user is in any allowlist. In group/forum chats,
+        # TELEGRAM_GROUP_ALLOWED_USERS is the scoped allowlist and should not
+        # imply DM access; TELEGRAM_ALLOWED_USERS remains the platform-wide
+        # allowlist and still works everywhere for backward compatibility.
+        allowed_ids = set()
+        if platform_allowlist:
+            allowed_ids.update(uid.strip() for uid in platform_allowlist.split(",") if uid.strip())
+        if group_user_allowlist:
+            allowed_ids.update(uid.strip() for uid in group_user_allowlist.split(",") if uid.strip())
+        if global_allowlist:
+            allowed_ids.update(uid.strip() for uid in global_allowlist.split(",") if uid.strip())
+
+        # "*" in any allowlist means allow everyone (consistent with
+        # SIGNAL_GROUP_ALLOWED_USERS precedent)
+        if "*" in allowed_ids:
+            return True
+
+        check_ids = {user_id}
+        if "@" in user_id:
+            check_ids.add(user_id.split("@")[0])
+
+        # WhatsApp: resolve phone↔LID aliases from bridge session mapping files
+        if source.platform == Platform.WHATSAPP:
+            normalized_allowed_ids = set()
+            for allowed_id in allowed_ids:
+                normalized_allowed_ids.update(_expand_whatsapp_auth_aliases(allowed_id))
+            if normalized_allowed_ids:
+                allowed_ids = normalized_allowed_ids
+
+            check_ids.update(_expand_whatsapp_auth_aliases(user_id))
+            normalized_user_id = _normalize_whatsapp_identifier(user_id)
+            if normalized_user_id:
+                check_ids.add(normalized_user_id)
+
+        return bool(check_ids & allowed_ids)
+
+    def _get_unauthorized_dm_behavior(self, platform: Optional[Platform]) -> str:
+        """Return how unauthorized DMs should be handled for a platform.
+
+        Resolution order:
+        1. Explicit per-platform ``unauthorized_dm_behavior`` in config — always wins.
+        2. Explicit global ``unauthorized_dm_behavior`` in config — wins when no per-platform.
+        3. When an allowlist (``PLATFORM_ALLOWED_USERS``,
+           ``PLATFORM_GROUP_ALLOWED_USERS`` / ``PLATFORM_GROUP_ALLOWED_CHATS``,
+           or ``GATEWAY_ALLOWED_USERS``) is configured, default to ``"ignore"`` —
+           the allowlist signals that the owner has deliberately restricted
+           access; spamming unknown contacts with pairing codes is both noisy
+           and a potential info-leak. (#9337)
+        4. No allowlist and no explicit config → ``"pair"`` (open-gateway default).
+        """
+        config = getattr(self, "config", None)
+
+        # Check for an explicit per-platform override first.
+        if config and hasattr(config, "get_unauthorized_dm_behavior") and platform:
+            platform_cfg = config.platforms.get(platform) if hasattr(config, "platforms") else None
+            if platform_cfg and "unauthorized_dm_behavior" in getattr(platform_cfg, "extra", {}):
+                # Operator explicitly configured behavior for this platform — respect it.
+                return config.get_unauthorized_dm_behavior(platform)
+
+        # Check for an explicit global config override.
+        if config and hasattr(config, "unauthorized_dm_behavior"):
+            if config.unauthorized_dm_behavior != "pair":  # non-default → explicit override
+                return config.unauthorized_dm_behavior
+
+        # No explicit override.  Fall back to allowlist-aware default:
+        # if any allowlist is configured for this platform, silently drop
+        # unauthorized messages instead of sending pairing codes.
+        if platform:
+            platform_env_map = {
+                Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
+                Platform.DISCORD:  "DISCORD_ALLOWED_USERS",
+                Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
+                Platform.SLACK:    "SLACK_ALLOWED_USERS",
+                Platform.SIGNAL:   "SIGNAL_ALLOWED_USERS",
+                Platform.EMAIL:    "EMAIL_ALLOWED_USERS",
+                Platform.SMS:      "SMS_ALLOWED_USERS",
+                Platform.MATTERMOST: "MATTERMOST_ALLOWED_USERS",
+                Platform.MATRIX:   "MATRIX_ALLOWED_USERS",
+                Platform.DINGTALK: "DINGTALK_ALLOWED_USERS",
+                Platform.FEISHU:   "FEISHU_ALLOWED_USERS",
+                Platform.WECOM:    "WECOM_ALLOWED_USERS",
+                Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOWED_USERS",
+                Platform.WEIXIN:   "WEIXIN_ALLOWED_USERS",
+                Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
+                Platform.QQBOT:    "QQ_ALLOWED_USERS",
+                Platform.VOICE_SERVER: "VOICE_SERVER_ALLOWED_USERS",
+            }
+            platform_group_env_map = {
+                Platform.TELEGRAM: (
+                    "TELEGRAM_GROUP_ALLOWED_USERS",
+                    "TELEGRAM_GROUP_ALLOWED_CHATS",
+                ),
+                Platform.QQBOT: ("QQ_GROUP_ALLOWED_USERS",),
+            }
+            if os.getenv(platform_env_map.get(platform, ""), "").strip():
+                return "ignore"
+            for env_key in platform_group_env_map.get(platform, ()):
+                if os.getenv(env_key, "").strip():
+                    return "ignore"
+
+        if os.getenv("GATEWAY_ALLOWED_USERS", "").strip():
+            return "ignore"
+
+        return "pair"
 
     async def _deliver_platform_notice(self, source, content: str) -> None:
         """Deliver a setup/operational notice using platform-specific privacy rules."""
@@ -8529,6 +8874,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
 
         await adapter.send(source.chat_id, content, metadata=metadata)
+
+    def _should_send_home_channel_notice(self, source, history) -> bool:
+        if history:
+            return False
+        if not source.platform:
+            return False
+        if source.platform in {Platform.LOCAL, Platform.WEBHOOK, Platform.VOICE_SERVER}:
+            return False
+        platform_name = source.platform.value
+        return not bool(os.getenv(_home_target_env_var(platform_name)))
 
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
@@ -9978,8 +10333,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         history = history or []
         message_text = event.text or ""
-        _group_sessions_per_user = getattr(self.config, "group_sessions_per_user", True)
-        _thread_sessions_per_user = getattr(self.config, "thread_sessions_per_user", False)
+        _group_sessions_per_user, _thread_sessions_per_user = session_grouping_for_source(
+            self.config,
+            source,
+        )
         # Use the same helper every other call site uses so the write key here
         # matches the consume key at the run_conversation site — even if the
         # session store overrides build_session_key's default behavior.
@@ -10543,6 +10900,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as e:
                 logger.warning("[Gateway] Failed to auto-load skill(s) %s: %s", _skill_names, e)
 
+        if source.platform == Platform.VOICE_SERVER:
+            voice_adapter = self.adapters.get(source.platform)
+            drain_pending_spoken = getattr(voice_adapter, "drain_pending_spoken", None)
+            if callable(drain_pending_spoken):
+                try:
+                    drain_pending_spoken(
+                        session_key=session_key,
+                        session_id=session_entry.session_id,
+                    )
+                except Exception as exc:
+                    logger.debug("voice pending spoken drain before history load failed: %s", exc)
+
         # Load conversation history from transcript
         history = self.session_store.load_transcript(session_entry.session_id)
         
@@ -10947,26 +11316,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         
         # One-time prompt if no home channel is set for this platform
         # Skip for webhooks - they deliver directly to configured targets (github_comment, etc.)
-        if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
+        if self._should_send_home_channel_notice(source, history):
             platform_name = source.platform.value
-            env_key = _home_target_env_var(platform_name)
-            if not os.getenv(env_key):
-                # Slack dispatches all Hermes commands through a single
-                # parent slash command `/hermes`; bare `/sethome` is not
-                # registered and would fail with "app did not respond".
-                sethome_cmd = (
-                    "/hermes sethome"
-                    if source.platform == Platform.SLACK
-                    else "/sethome"
-                )
-                notice = (
-                    f"📬 No home channel is set for {platform_name.title()}. "
-                    f"A home channel is where Hermes delivers cron job results "
-                    f"and cross-platform messages.\n\n"
-                    f"Type {sethome_cmd} to make this chat your home channel, "
-                    f"or ignore to skip."
-                )
-                await self._deliver_platform_notice(source, notice)
+            # Slack dispatches all Hermes commands through a single parent
+            # slash command `/hermes`; bare `/sethome` is not registered and
+            # would fail with "app did not respond".
+            sethome_cmd = (
+                "/hermes sethome"
+                if source.platform == Platform.SLACK
+                else "/sethome"
+            )
+            notice = (
+                f"📬 No home channel is set for {platform_name.title()}. "
+                f"A home channel is where Hermes delivers cron job results "
+                f"and cross-platform messages.\n\n"
+                f"Type {sethome_cmd} to make this chat your home channel, "
+                f"or ignore to skip."
+            )
+            await self._deliver_platform_notice(source, notice)
         
         # -----------------------------------------------------------------
         # Voice channel awareness — inject current voice channel state
@@ -11192,6 +11559,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _run_start_session_id,
                         session_entry.session_id,
                     )
+            if (
+                source.platform == Platform.VOICE_SERVER
+                and agent_result.get("voice_turn_id")
+                and not agent_result.get("already_sent")
+            ):
+                voice_adapter = self.adapters.get(source.platform)
+                set_next_reply_turn_id = getattr(voice_adapter, "set_next_reply_turn_id", None)
+                if callable(set_next_reply_turn_id):
+                    set_next_reply_turn_id(session_key, str(agent_result["voice_turn_id"]))
 
             # Prepend reasoning/thinking if display is enabled (per-platform).
             # Mattermost requires explicit per-platform opt-in because this is
@@ -11484,6 +11860,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             else:
                 history_len = agent_result.get("history_offset", len(history))
                 new_messages = agent_messages[history_len:] if len(agent_messages) > history_len else []
+                voice_turn_id = str(agent_result.get("voice_turn_id") or "").strip()
+                voice_turn_ids = _voice_turn_ids_from_result(agent_result)
+                if voice_turn_id:
+                    visible_final = _voice_visible_text(response)
+                    _stamp_voice_turn_id_on_final_assistant(
+                        new_messages,
+                        visible_final=visible_final,
+                        voice_turn_id=voice_turn_id,
+                    )
 
                 # If no new messages found (edge case), fall back to simple user/assistant
                 if not new_messages:
@@ -11508,9 +11893,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         skip_db=agent_persisted,
                     )
                     if response:
+                        assistant_entry = {"role": "assistant", "content": response, "timestamp": ts}
+                        if voice_turn_id:
+                            assistant_entry["voice_turn_id"] = voice_turn_id
                         self.session_store.append_to_transcript(
                             session_entry.session_id,
-                            {"role": "assistant", "content": response, "timestamp": ts},
+                            assistant_entry,
                             skip_db=agent_persisted,
                         )
                 else:
@@ -11537,6 +11925,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             session_entry.session_id, entry,
                             skip_db=agent_persisted,
                         )
+                if voice_turn_ids:
+                    voice_adapter = self.adapters.get(source.platform)
+                    drain_pending_spoken = getattr(voice_adapter, "drain_pending_spoken", None)
+                    release_pending_spoken_turn = getattr(voice_adapter, "release_pending_spoken_turn", None)
+                    for pending_voice_turn_id in voice_turn_ids:
+                        try:
+                            if callable(drain_pending_spoken):
+                                drain_pending_spoken(
+                                    turn_id=pending_voice_turn_id,
+                                    session_key=session_key,
+                                    session_id=session_entry.session_id,
+                                )
+                        except Exception as exc:
+                            logger.debug("voice pending spoken drain after persistence failed: %s", exc)
+                        finally:
+                            if callable(release_pending_spoken_turn):
+                                try:
+                                    release_pending_spoken_turn(pending_voice_turn_id)
+                                except Exception as exc:
+                                    logger.debug("voice pending spoken release after persistence failed: %s", exc)
             
             # Token counts and model are now persisted by the agent directly.
             # Keep only last_prompt_tokens here for context-window tracking and
@@ -12509,6 +12917,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         chat_id = event.source.chat_id
         voice_mode = self._voice_mode.get(self._voice_key(event.source.platform, chat_id), "off")
         is_voice_input = (event.message_type == MessageType.VOICE)
+        if already_sent and event.source.platform == Platform.VOICE_SERVER:
+            return False
 
         should = (
             (voice_mode == "all")
@@ -12640,7 +13050,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
 
             media_files, cleaned = adapter.extract_media(response)
-            media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+            # Voice-server messages are delivered back to a local voice runtime.
+            # That adapter can handle its own path semantics and tests use
+            # synthetic MEDIA paths, so do not apply the gateway attachment
+            # uploader safety filter on this platform. Other platforms still
+            # require validated local files before upload.
+            if event.source.platform != Platform.VOICE_SERVER:
+                media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
             # Chain the cleaned text through each extractor (extract_media →
             # extract_images → extract_local_files) so MEDIA: tags and image URLs
             # are removed before the bare-path auto-detect runs. Previously the
@@ -12694,7 +13110,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             for media_path, is_voice in non_image_media:
                 try:
                     ext = Path(media_path).suffix.lower()
-                    if should_send_media_as_audio(event.source.platform, ext, is_voice=is_voice):
+                    if event.source.platform == Platform.VOICE_SERVER:
+                        # Voice-server is a local runtime boundary: keep the
+                        # explicit MEDIA tag so the room can resolve the path
+                        # itself. Routing through BasePlatformAdapter.send_voice
+                        # would intentionally hide host paths from normal chat
+                        # platforms and would drop this attachment in tests or
+                        # when a lightweight voice adapter is used.
+                        await adapter.send(
+                            chat_id=event.source.chat_id,
+                            content=f"MEDIA:{media_path}",
+                            metadata=_thread_meta,
+                        )
+                    elif should_send_media_as_audio(event.source.platform, ext, is_voice=is_voice):
                         await adapter.send_voice(
                             chat_id=event.source.chat_id,
                             audio_path=media_path,
@@ -17151,6 +17579,274 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _want_stream_deltas = _streaming_enabled
             _want_interim_messages = interim_assistant_messages_enabled
             _want_interim_consumer = _want_interim_messages
+            _voice_stream_adapter = self.adapters.get(source.platform)
+            _voice_stream_enabled = (
+                source.platform == Platform.VOICE_SERVER
+                and _voice_stream_adapter is not None
+                and _voice_server_partial_llm_streaming_enabled(user_config, _voice_stream_adapter)
+            )
+            _voice_stream_lock = asyncio.Lock() if _voice_stream_enabled else None
+            _voice_stream_state = {
+                "started": False,
+                "accepted": False,
+                "ended": False,
+                "closed": False,
+                "failed": False,
+                "aborted": False,
+                "parts": [],
+                "strip_leading_segment_break": False,
+                "turn_id": "",
+                "completed_parts": [],
+                "completed_turn_id": "",
+                "completed_segments": [],
+            }
+            _voice_stream_metadata = dict(_status_thread_metadata or {})
+            if _voice_stream_enabled:
+                _voice_stream_metadata.update(
+                    {
+                        "_hermes_session_key": session_key or "",
+                        "_hermes_session_id": session_id or "",
+                    }
+                )
+                if source.user_id:
+                    _voice_stream_metadata.setdefault("participant_id", source.user_id)
+
+                def _capture_voice_stream_turn_id() -> str:
+                    turn_id = str(
+                        _voice_stream_metadata.get("turn_id")
+                        or _voice_stream_metadata.get("_voice_server_turn_id")
+                        or _voice_stream_state.get("turn_id")
+                        or ""
+                    ).strip()
+                    if turn_id:
+                        _voice_stream_state["turn_id"] = turn_id
+                        _voice_stream_metadata.setdefault("turn_id", turn_id)
+                    return turn_id
+
+                def _reset_voice_stream_segment() -> None:
+                    _voice_stream_state["started"] = False
+                    _voice_stream_state["accepted"] = False
+                    _voice_stream_state["ended"] = False
+                    _voice_stream_state["closed"] = False
+                    _voice_stream_state["parts"] = []
+                    _voice_stream_state["aborted"] = False
+                    _voice_stream_state["strip_leading_segment_break"] = True
+                    _voice_stream_state["turn_id"] = ""
+                    _voice_stream_metadata.pop("turn_id", None)
+                    _voice_stream_metadata.pop("_voice_server_turn_id", None)
+
+                def _record_completed_voice_stream_segment() -> None:
+                    turn_id = _capture_voice_stream_turn_id()
+                    if turn_id and _voice_stream_state["accepted"]:
+                        parts = list(_voice_stream_state["parts"])
+                        _voice_stream_state["completed_turn_id"] = turn_id
+                        _voice_stream_state["completed_parts"] = parts
+                        segments = _voice_stream_state.setdefault("completed_segments", [])
+                        if not any(str(segment.get("turn_id") or "") == turn_id for segment in segments):
+                            segments.append({"turn_id": turn_id, "parts": parts})
+
+                async def _voice_stream_delta(text: str | None) -> None:
+                    if not _run_still_current():
+                        return
+                    if _voice_stream_lock is None or _voice_stream_adapter is None:
+                        return
+                    async with _voice_stream_lock:
+                        if text is None:
+                            if (
+                                _voice_stream_state["started"]
+                                and _voice_stream_state["accepted"]
+                                and not _voice_stream_state["closed"]
+                                and not _voice_stream_state["failed"]
+                            ):
+                                end_result = await _voice_stream_adapter.end_assistant_stream(
+                                    source.chat_id,
+                                    metadata=_voice_stream_metadata,
+                                )
+                                if (
+                                    _voice_stream_state["failed"]
+                                    or _voice_stream_state["closed"]
+                                    or not _run_still_current()
+                                ):
+                                    return
+                                if not getattr(end_result, "success", False):
+                                    _voice_stream_state["failed"] = True
+                                    logger.debug(
+                                        "Voice partial stream boundary end failed for session %s: %s",
+                                        session_key or "?",
+                                        getattr(end_result, "error", ""),
+                                    )
+                                    return
+                                _record_completed_voice_stream_segment()
+                            if not _voice_stream_state["failed"]:
+                                _reset_voice_stream_segment()
+                            return
+                        if not text or _voice_stream_state["closed"]:
+                            return
+                        if _voice_stream_state["strip_leading_segment_break"]:
+                            text = text.lstrip("\r\n")
+                            _voice_stream_state["strip_leading_segment_break"] = False
+                            if not text:
+                                return
+                        if _voice_stream_state["closed"] or _voice_stream_state["failed"]:
+                            return
+                        if not _voice_stream_state["started"]:
+                            start_result = await _voice_stream_adapter.start_assistant_stream(
+                                source.chat_id,
+                                metadata=_voice_stream_metadata,
+                            )
+                            if (
+                                _voice_stream_state["failed"]
+                                or _voice_stream_state["closed"]
+                                or not _run_still_current()
+                            ):
+                                return
+                            if not getattr(start_result, "success", False):
+                                _voice_stream_state["failed"] = True
+                                logger.debug(
+                                    "Voice partial stream start failed for session %s: %s",
+                                    session_key or "?",
+                                    getattr(start_result, "error", ""),
+                                )
+                                return
+                            _voice_stream_state["started"] = True
+                            _capture_voice_stream_turn_id()
+                        text_result = await _voice_stream_adapter.push_assistant_delta(
+                            source.chat_id,
+                            text,
+                            metadata=_voice_stream_metadata,
+                        )
+                        if (
+                            _voice_stream_state["failed"]
+                            or _voice_stream_state["closed"]
+                            or not _run_still_current()
+                        ):
+                            return
+                        if getattr(text_result, "success", False):
+                            _capture_voice_stream_turn_id()
+                            _voice_stream_state["accepted"] = True
+                            _voice_stream_state["parts"].append(text)
+                            return
+                        _voice_stream_state["failed"] = True
+                        if _voice_stream_state["started"]:
+                            await _voice_stream_abort()
+                            _cleanup_voice_assistant_stream(
+                                _voice_stream_adapter,
+                                _voice_stream_metadata,
+                            )
+                        logger.debug(
+                            "Voice partial stream text failed for session %s after accepted=%s: %s",
+                            session_key or "?",
+                            _voice_stream_state["accepted"],
+                            getattr(text_result, "error", ""),
+                        )
+
+                async def _voice_stream_finish() -> None:
+                    if _voice_stream_lock is None or _voice_stream_adapter is None:
+                        return
+                    async with _voice_stream_lock:
+                        if (
+                            not _voice_stream_state["started"]
+                            or not _voice_stream_state["accepted"]
+                            or _voice_stream_state["closed"]
+                            or _voice_stream_state["failed"]
+                        ):
+                            return
+                        end_result = await _voice_stream_adapter.end_assistant_stream(
+                            source.chat_id,
+                            metadata=_voice_stream_metadata,
+                        )
+                        if (
+                            _voice_stream_state["failed"]
+                            or _voice_stream_state["closed"]
+                            or not _run_still_current()
+                        ):
+                            return
+                        _voice_stream_state["closed"] = True
+                        if getattr(end_result, "success", False):
+                            _capture_voice_stream_turn_id()
+                            _voice_stream_state["ended"] = True
+                        else:
+                            _voice_stream_state["failed"] = True
+                            logger.debug(
+                                "Voice partial stream end failed for session %s: %s",
+                                session_key or "?",
+                                getattr(end_result, "error", ""),
+                            )
+
+                async def _voice_stream_abort() -> None:
+                    if _voice_stream_adapter is None:
+                        return
+                    abort = getattr(_voice_stream_adapter, "abort_assistant_stream", None)
+                    if not callable(abort):
+                        return
+                    abort_result = await abort(source.chat_id, metadata=_voice_stream_metadata)
+                    if getattr(abort_result, "success", False):
+                        _voice_stream_state["aborted"] = True
+                    else:
+                        logger.debug(
+                            "Voice partial stream abort failed for session %s: %s",
+                            session_key or "?",
+                            getattr(abort_result, "error", ""),
+                        )
+
+                def _abort_voice_stream_after_timeout(reason: str) -> None:
+                    if _voice_stream_adapter is None:
+                        return
+                    abort = getattr(_voice_stream_adapter, "abort_assistant_stream", None)
+                    if not callable(abort):
+                        return
+                    abort_future: concurrent.futures.Future | None = None
+                    try:
+                        abort_future = asyncio.run_coroutine_threadsafe(
+                            _voice_stream_abort(),
+                            _loop_for_step,
+                        )
+                        abort_future.result(timeout=1.0)
+                    except Exception as exc:
+                        if abort_future is not None:
+                            try:
+                                abort_future.cancel()
+                            except Exception:
+                                pass
+                        logger.debug("voice stream abort after %s failed: %s", reason, exc)
+
+                def _schedule_voice_delta(text: str | None) -> None:
+                    if not _run_still_current():
+                        return
+                    future: concurrent.futures.Future | None = None
+                    try:
+                        future = asyncio.run_coroutine_threadsafe(
+                            _voice_stream_delta(text),
+                            _loop_for_step,
+                        )
+                        future.result(timeout=5.0)
+                    except concurrent.futures.TimeoutError as _voice_err:
+                        future.cancel()
+                        _voice_stream_state["failed"] = True
+                        if _voice_stream_state["started"]:
+                            _abort_voice_stream_after_timeout("delta timeout")
+                            _cleanup_voice_assistant_stream(
+                                _voice_stream_adapter,
+                                _voice_stream_metadata,
+                            )
+                        logger.debug("voice stream delta scheduling timed out: %s", _voice_err)
+                    except Exception as _voice_err:
+                        if future is not None:
+                            try:
+                                future.cancel()
+                            except Exception:
+                                pass
+                        _voice_stream_state["failed"] = True
+                        if _voice_stream_state["started"]:
+                            _cleanup_voice_assistant_stream(
+                                _voice_stream_adapter,
+                                _voice_stream_metadata,
+                            )
+                        logger.debug("voice stream delta scheduling failed: %s", _voice_err)
+
+                _stream_delta_cb = _schedule_voice_delta
+                _want_stream_deltas = False
+                _want_interim_consumer = False
             if _want_stream_deltas or _want_interim_consumer:
                 try:
                     from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
@@ -17415,6 +18111,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.
+            def _voice_assistant_message_metadata(_msg):
+                if not _voice_stream_enabled:
+                    return {}
+                if not _voice_stream_state["accepted"] or _voice_stream_state["failed"]:
+                    return {}
+                streamed_text = "".join(_voice_stream_state["parts"]).strip()
+                message_text = str((_msg or {}).get("content") or "").strip()
+                if not streamed_text or streamed_text != message_text:
+                    return {}
+                turn_id = _capture_voice_stream_turn_id()
+                return {"voice_turn_id": turn_id} if turn_id else {}
+
             # Gate on needs_progress_queue (tool_progress OR thinking_progress)
             # rather than tool_progress alone: the progress_callback also relays
             # _thinking assistant scratch text, which is gated on
@@ -17433,6 +18141,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             agent.step_callback = _step_callback_sync if _hooks_ref.loaded_hooks else None
             agent.stream_delta_callback = _stream_delta_cb
+            agent.assistant_message_metadata_callback = (
+                _voice_assistant_message_metadata if _voice_stream_enabled else None
+            )
             agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
             agent.status_callback = _status_callback_sync
             # Credits / out-of-band notices (usage bands, depletion, restored).
@@ -17929,6 +18640,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
+            result = None
+            _agent_run_completed = False
             try:
                 # If _prepare_inbound_message_text buffered image paths for native
                 # attachment, wrap the user turn as an OpenAI-style multimodal
@@ -17977,8 +18690,61 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _conversation_kwargs["moa_config"] = moa_config
                 if _persist_user_timestamp_override is not None:
                     _conversation_kwargs["persist_user_timestamp"] = _persist_user_timestamp_override
+                # Some test doubles and third-party agent shims do not yet
+                # accept newer persistence kwargs. Keep the real AIAgent path
+                # intact, but avoid failing when a run_conversation
+                # implementation has an older explicit signature.
+                _persist_kwarg_names = {
+                    "persist_user_message",
+                    "persist_user_timestamp",
+                }
+                if _persist_kwarg_names.intersection(_conversation_kwargs):
+                    try:
+                        _run_sig = inspect.signature(agent.run_conversation)
+                        _accepts_extra_kwargs = any(
+                            p.kind == inspect.Parameter.VAR_KEYWORD
+                            for p in _run_sig.parameters.values()
+                        )
+                        if not _accepts_extra_kwargs:
+                            for _persist_kwarg_name in _persist_kwarg_names:
+                                if _persist_kwarg_name not in _run_sig.parameters:
+                                    _conversation_kwargs.pop(_persist_kwarg_name, None)
+                    except (TypeError, ValueError):
+                        pass
                 result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
+                _agent_run_completed = True
             finally:
+                if _voice_stream_enabled:
+                    if not _agent_run_completed:
+                        if _voice_stream_state["started"]:
+                            _abort_voice_stream_after_timeout("agent error")
+                            _cleanup_voice_assistant_stream(
+                                _voice_stream_adapter,
+                                _voice_stream_metadata,
+                            )
+                        _voice_stream_state["failed"] = True
+                    else:
+                        _voice_finish_future: concurrent.futures.Future | None = None
+                        try:
+                            _voice_finish_future = asyncio.run_coroutine_threadsafe(
+                                _voice_stream_finish(),
+                                _loop_for_step,
+                            )
+                            _voice_finish_future.result(timeout=5.0)
+                        except Exception as _voice_finish_err:
+                            if _voice_finish_future is not None:
+                                try:
+                                    _voice_finish_future.cancel()
+                                except Exception:
+                                    pass
+                            if _voice_stream_state["started"]:
+                                _abort_voice_stream_after_timeout("finish timeout")
+                                _cleanup_voice_assistant_stream(
+                                    _voice_stream_adapter,
+                                    _voice_stream_metadata,
+                                )
+                            _voice_stream_state["failed"] = True
+                            logger.debug("Voice partial stream finish failed: %s", _voice_finish_err)
                 unregister_gateway_notify(_approval_session_key)
                 # Cancel any pending clarify entries so blocked agent
                 # threads don't hang past the end of the run (interrupt,
@@ -17994,7 +18760,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Signal the stream consumer that the agent is done
             if _stream_consumer is not None:
                 _stream_consumer.finish()
-            
             # Return final response, or a message if something went wrong
             final_response = result.get("final_response")
 
@@ -18010,6 +18775,196 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _output_toks = getattr(_agent, "session_completion_tokens", 0)
                 _context_length = getattr(_agent.context_compressor, "context_length", 0) or 0
             _resolved_model = getattr(_agent, "model", None) if _agent else None
+
+            def _apply_failed_voice_stream_result(visible_final: str) -> None:
+                if not _voice_stream_enabled or not _voice_stream_state["failed"]:
+                    return
+                _stale_voice_turn_id = _capture_voice_stream_turn_id()
+                _accepted_text = (
+                    "".join(_voice_stream_state["parts"]).strip()
+                    if _voice_stream_state["accepted"]
+                    else ""
+                )
+                if (
+                    _stale_voice_turn_id
+                    and _accepted_text
+                    and visible_final
+                    and _accepted_text == visible_final
+                    and not _voice_stream_state.get("aborted")
+                ):
+                    result["voice_turn_id"] = _stale_voice_turn_id
+                    result["voice_turn_ids"] = [_stale_voice_turn_id]
+                    _stamp_voice_turn_id_on_final_assistant(
+                        result.get("messages"),
+                        visible_final=visible_final,
+                        voice_turn_id=_stale_voice_turn_id,
+                    )
+                    result["response_previewed"] = True
+                    return
+                if _scrub_voice_turn_id_from_result(result, _stale_voice_turn_id):
+                    _agent_for_scrub = agent_holder[0]
+                    _session_id_for_scrub = (
+                        getattr(_agent_for_scrub, "session_id", session_id)
+                        if _agent_for_scrub
+                        else session_id
+                    )
+                    if self._session_db is not None and _session_id_for_scrub:
+                        try:
+                            self._session_db.replace_messages(
+                                _session_id_for_scrub,
+                                result.get("messages", []) if isinstance(result, dict) else [],
+                            )
+                        except Exception as exc:
+                            logger.debug(
+                                "Failed scrubbing stale voice turn id from SessionDB after stream failure: %s",
+                                exc,
+                            )
+                # Only the stale (failed) segment's turn id was scrubbed above;
+                # any earlier-completed segments must keep their voice_turn_ids
+                # so post-persistence spoken-turn drain / release logic still
+                # runs for them. Do NOT blanket-pop voice_turn_id(s) here.
+                result["response_previewed"] = False
+
+            if not final_response:
+                _apply_failed_voice_stream_result("")
+                error_msg = f"⚠️ {result['error']}" if result.get("error") else ""
+                return {
+                    "final_response": error_msg,
+                    "messages": result.get("messages", []),
+                    "api_calls": result.get("api_calls", 0),
+                    "failed": result.get("failed", False),
+                    "partial": result.get("partial", False),
+                    "completed": result.get("completed"),
+                    "interrupted": result.get("interrupted", False),
+                    "interrupt_message": result.get("interrupt_message"),
+                    "error": result.get("error"),
+                    "compression_exhausted": result.get("compression_exhausted", False),
+                    "tools": tools_holder[0] or [],
+                    "history_offset": len(agent_history),
+                    "last_prompt_tokens": _last_prompt_toks,
+                    "input_tokens": _input_toks,
+                    "output_tokens": _output_toks,
+                    "model": _resolved_model,
+                    "context_length": _context_length,
+                    "voice_turn_id": result.get("voice_turn_id") if _voice_stream_enabled else None,
+                    "voice_turn_ids": _voice_turn_ids_from_result(result) if _voice_stream_enabled else [],
+                    "response_previewed": result.get("response_previewed", False) if _voice_stream_enabled else False,
+                }
+            
+            # Scan tool results for MEDIA:<path> tags that need to be delivered
+            # as native audio/file attachments.  The TTS tool embeds MEDIA: tags
+            # in its JSON response, but the model's final text reply usually
+            # doesn't include them.  We collect unique tags from tool results and
+            # append any that aren't already present in the final response, so the
+            # adapter's extract_media() can find and deliver the files exactly once.
+            #
+            # Uses path-based deduplication against _history_media_paths (collected
+            # before run_conversation) instead of index slicing. This is safe even
+            # when context compression shrinks the message list. (Fixes #160)
+            if "MEDIA:" not in final_response:
+                media_tags = []
+                has_voice_directive = False
+                for msg in result.get("messages", []):
+                    if msg.get("role") in {"tool", "function"}:
+                        content = msg.get("content", "")
+                        if "MEDIA:" in content:
+                            _TOOL_MEDIA_RE = re.compile(
+                                r'MEDIA:((?:/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
+                                r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
+                                r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
+                                r'txt|csv|apk|ipa))',
+                                re.IGNORECASE
+                            )
+                            for match in _TOOL_MEDIA_RE.finditer(content):
+                                path = match.group(1).strip().rstrip('",}')
+                                if path and path not in _history_media_paths:
+                                    media_tags.append(f"MEDIA:{path}")
+                            if "[[audio_as_voice]]" in content:
+                                has_voice_directive = True
+                
+                if media_tags:
+                    seen = set()
+                    unique_tags = []
+                    for tag in media_tags:
+                        if tag not in seen:
+                            seen.add(tag)
+                            unique_tags.append(tag)
+                    if has_voice_directive:
+                        unique_tags.insert(0, "[[audio_as_voice]]")
+                    final_response = final_response + "\n" + "\n".join(unique_tags)
+            if _voice_stream_enabled:
+                _visible_final = _voice_visible_text(final_response)
+                _voice_turn_id = ""
+                _voice_turn_ids: list[str] = []
+                _voice_text_delivered = False
+                _active_parts = (
+                    list(_voice_stream_state["parts"])
+                    if _voice_stream_state["accepted"]
+                    and (_voice_stream_state["ended"] or _voice_stream_state["failed"])
+                    and not _voice_stream_state.get("aborted")
+                    else []
+                )
+                _active_turn_id = _capture_voice_stream_turn_id() if _active_parts else ""
+                _segments: list[tuple[str, list[str]]] = []
+                for _segment in _voice_stream_state.get("completed_segments") or []:
+                    if isinstance(_segment, dict):
+                        _segment_turn_id = str(_segment.get("turn_id") or "").strip()
+                        _segment_parts = list(_segment.get("parts") or [])
+                        if _segment_turn_id and _segment_parts:
+                            _segments.append((_segment_turn_id, _segment_parts))
+                if not _segments and _voice_stream_state.get("completed_turn_id"):
+                    _segments.append(
+                        (
+                            str(_voice_stream_state.get("completed_turn_id") or "").strip(),
+                            list(_voice_stream_state.get("completed_parts") or []),
+                        )
+                    )
+                if _active_turn_id and _active_parts:
+                    _segments.append((_active_turn_id, _active_parts))
+                for _candidate_turn_id, _candidate_parts in _segments:
+                    if _candidate_turn_id and _candidate_turn_id not in _voice_turn_ids:
+                        _voice_turn_ids.append(_candidate_turn_id)
+                    _candidate_text = _voice_visible_text("".join(_candidate_parts))
+                    if _candidate_text and _candidate_text == _visible_final:
+                        _voice_turn_id = _candidate_turn_id
+                        _voice_text_delivered = bool(_candidate_turn_id)
+                    elif _candidate_text and _candidate_turn_id:
+                        for _msg in reversed(result.get("messages") or []):
+                            if _assistant_message_matches_voice_final(_msg, _candidate_text):
+                                _msg["voice_turn_id"] = _candidate_turn_id
+                                break
+                if _voice_turn_ids:
+                    result["voice_turn_ids"] = _voice_turn_ids
+                if _voice_text_delivered:
+                    if _voice_turn_id:
+                        result["voice_turn_id"] = _voice_turn_id
+                        _stamp_voice_turn_id_on_final_assistant(
+                            result.get("messages"),
+                            visible_final=_visible_final,
+                            voice_turn_id=_voice_turn_id,
+                        )
+                    result["response_previewed"] = True
+                elif _voice_stream_state["failed"]:
+                    _apply_failed_voice_stream_result(_visible_final)
+            if (
+                source.platform == Platform.VOICE_SERVER
+                and final_response
+                and not result.get("failed")
+                and not result.get("voice_turn_id")
+            ):
+                import uuid as _uuid
+                _voice_turn_id = f"voice_server-{_uuid.uuid4().hex}"
+                result["voice_turn_id"] = _voice_turn_id
+                _voice_turn_ids = _voice_turn_ids_from_result(result)
+                if _voice_turn_id not in _voice_turn_ids:
+                    _voice_turn_ids.append(_voice_turn_id)
+                result["voice_turn_ids"] = _voice_turn_ids
+                _visible_final = _voice_visible_text(final_response)
+                _stamp_voice_turn_id_on_final_assistant(
+                    result.get("messages"),
+                    visible_final=_visible_final,
+                    voice_turn_id=_voice_turn_id,
+                )
 
             # Sync session_id immediately after run_conversation(). Compression
             # can rotate before a follow-up model call fails; the failure return
@@ -18239,6 +19194,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "model": _resolved_model,
                 "context_length": _context_length,
                 "session_id": effective_session_id,
+                "voice_turn_id": result.get("voice_turn_id"),
+                "voice_turn_ids": _voice_turn_ids_from_result(result),
                 "response_previewed": result.get("response_previewed", False),
                 "response_transformed": result.get("response_transformed", False),
                 # Pass through the agent_persisted flag so the persistence block
@@ -18735,7 +19692,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     self._evict_cached_agent(session_key)
 
             # Check if we were interrupted OR have a queued message (/queue).
-            result = result_holder[0]
+            result = response if isinstance(response, dict) else result_holder[0]
             adapter = self.adapters.get(source.platform)
             
             # Get pending message from adapter.
@@ -18891,6 +19848,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 pass
                         except Exception as e:
                             logger.debug("Stream consumer wait before queued message failed: %s", e)
+                    if source.platform == Platform.VOICE_SERVER:
+                        hold_pending_spoken_turn = getattr(adapter, "hold_pending_spoken_turn", None)
+                        if callable(hold_pending_spoken_turn):
+                            for _queued_turn_id in _voice_turn_ids_from_result(result):
+                                try:
+                                    hold_pending_spoken_turn(_queued_turn_id)
+                                except Exception as exc:
+                                    logger.debug("voice pending spoken hold before queued delivery failed: %s", exc)
                     _previewed = bool(result.get("response_previewed"))
                     first_response = result.get("final_response", "")
                     _already_streamed = _stream_confirmed_final_delivery(
@@ -18898,16 +19863,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         first_response,
                         previewed=_previewed,
                     )
+                    if source.platform == Platform.VOICE_SERVER and _previewed:
+                        # Voice-server partial streaming delivers directly through
+                        # the adapter, not GatewayStreamConsumer; its
+                        # response_previewed flag is stamped only after the final
+                        # visible text matched an accepted voice stream segment.
+                        _already_streamed = True
                     if first_response and not _already_streamed:
                         try:
                             logger.info(
                                 "Queued follow-up for session %s: final stream delivery not confirmed; sending first response before continuing.",
                                 session_key or "?",
                             )
+                            _first_response_metadata = dict(_status_thread_metadata or {})
+                            if source.platform == Platform.VOICE_SERVER:
+                                _first_response_metadata["_hermes_session_key"] = session_key or ""
+                                _first_response_metadata["_hermes_session_id"] = (
+                                    result.get("session_id") or session_id or ""
+                                )
+                                if source.user_id:
+                                    _first_response_metadata["participant_id"] = source.user_id
+                                if result.get("voice_turn_id"):
+                                    _first_response_metadata["turn_id"] = str(result["voice_turn_id"])
                             await adapter.send(
                                 source.chat_id,
                                 first_response,
-                                metadata=_status_thread_metadata,
+                                metadata=_first_response_metadata or _status_thread_metadata,
                             )
                         except Exception as e:
                             logger.warning("Failed to send first response before queued message: %s", e)
@@ -18916,6 +19897,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "Queued follow-up for session %s: skipping resend because final streamed delivery was confirmed.",
                             session_key or "?",
                         )
+                        try:
+                            _media_adapter = self.adapters.get(source.platform)
+                            if _media_adapter:
+                                _media_event = MessageEvent(
+                                    text="",
+                                    message_type=MessageType.TEXT,
+                                    source=source,
+                                    message_id=event_message_id,
+                                )
+                                await self._deliver_media_from_response(
+                                    first_response,
+                                    _media_event,
+                                    _media_adapter,
+                                )
+                        except Exception as e:
+                            logger.debug("Queued first-response media delivery failed: %s", e)
                     # Release deferred bg-review notifications now that the
                     # first response has been delivered.  Pop from the
                     # adapter's callback dict (prevents double-fire in
@@ -19091,6 +20088,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # exact final text was delivered. Unrelated commentary/progress
             # must not be mistaken for the final response (#14238).
             _previewed = bool(response.get("response_previewed"))
+            _voice_previewed = source.platform == Platform.VOICE_SERVER and _previewed
             _content_delivered = bool(
                 _sc and getattr(_sc, "final_content_delivered", False)
             )
@@ -19109,7 +20107,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _final,
                 previewed=_previewed,
             )
-            if not _is_empty_sentinel and not _transformed and (_streamed or _content_delivered):
+            if not _is_empty_sentinel and not _transformed and (_streamed or _voice_previewed or _content_delivered):
                 logger.info(
                     "Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s content_delivered=%s).",
                     session_key or "?",
