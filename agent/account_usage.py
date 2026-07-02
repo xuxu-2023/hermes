@@ -617,6 +617,72 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     )
 
 
+def _fetch_zai_account_usage(api_key: Optional[str]) -> Optional[AccountUsageSnapshot]:
+    """Fetch Z.AI (Zhipu) token quota via undocumented monitoring endpoint."""
+    token = str(api_key or "").strip()
+    if not token:
+        return None
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
+    with httpx.Client(timeout=10.0) as client:
+        resp = client.get(
+            "https://api.z.ai/api/monitor/usage/quota/limit",
+            headers=headers,
+        )
+        resp.raise_for_status()
+    payload = resp.json() or {}
+    data = payload.get("data") or {}
+    windows: list[AccountUsageWindow] = []
+    details: list[str] = []
+
+    limits = data.get("limits") or []
+    for lim in limits:
+        lim_type = str(lim.get("type") or "")
+        pct = lim.get("percentage")
+        next_reset_ms = lim.get("nextResetTime")
+        remaining = lim.get("remaining")
+
+        if lim_type == "TOKENS_LIMIT" and pct is not None:
+            unit_h = int(lim.get("unit") or 0)
+            num_w = int(lim.get("number") or 0)
+            label = f"Tokens ({num_w * unit_h}h window)"
+            reset_dt = _parse_dt(next_reset_ms / 1000) if next_reset_ms else None
+            windows.append(
+                AccountUsageWindow(
+                    label=label,
+                    used_percent=float(pct),
+                    reset_at=reset_dt,
+                )
+            )
+        elif lim_type == "TIME_LIMIT" and pct is not None:
+            reset_dt = _parse_dt(next_reset_ms / 1000) if next_reset_ms else None
+            windows.append(
+                AccountUsageWindow(
+                    label="Requests",
+                    used_percent=float(pct),
+                    reset_at=reset_dt,
+                    detail=f"{remaining} remaining" if remaining else None,
+                )
+            )
+
+    level = data.get("level")
+    if level:
+        details.append(f"Plan: {level}")
+
+    if not windows and not details:
+        return None
+
+    return AccountUsageSnapshot(
+        provider="zai",
+        source="quota_monitor_api",
+        fetched_at=_utc_now(),
+        windows=tuple(windows),
+        details=tuple(details),
+    )
+
+
 def fetch_account_usage(
     provider: Optional[str],
     *,
@@ -624,6 +690,25 @@ def fetch_account_usage(
     api_key: Optional[str] = None,
 ) -> Optional[AccountUsageSnapshot]:
     normalized = str(provider or "").strip().lower()
+    # Heuristic: resolve real provider from base_url when the name is not
+    # directly recognised (e.g. "xai-oauth" hitting api.z.ai for glm models).
+    if normalized not in {"openai-codex", "anthropic", "openrouter", "zai", "nous"}:
+        _host = (base_url or "").lower()
+        if "api.z.ai" in _host or "open.bigmodel.cn" in _host:
+            normalized = "zai"
+            # xai-oauth OAuth tokens won't work on the Z.AI quota endpoint;
+            # resolve the explicit zai provider key from config.
+            if not api_key:
+                try:
+                    for _name in ("zai", "custom:zai"):
+                        _rt = resolve_runtime_provider(
+                            requested=_name, explicit_base_url=None, explicit_api_key=None,
+                        )
+                        api_key = str(_rt.get("api_key", "") or "").strip()
+                        if api_key:
+                            break
+                except Exception:
+                    pass
     if normalized in {"", "auto", "custom"}:
         return None
     try:
@@ -633,6 +718,8 @@ def fetch_account_usage(
             return _fetch_anthropic_account_usage()
         if normalized == "openrouter":
             return _fetch_openrouter_account_usage(base_url, api_key)
+        if normalized == "zai":
+            return _fetch_zai_account_usage(api_key)
     except Exception:
         return None
     return None
