@@ -1027,11 +1027,11 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     base_url = oai_config.get("base_url", base_url)
     speed = float(oai_config.get("speed", tts_config.get("speed", 1.0)))
 
-    # Determine response format from extension
-    if output_path.endswith(".ogg"):
-        response_format = "opus"
-    else:
-        response_format = "mp3"
+    wants_opus = output_path.endswith(".ogg")
+    response_format = "mp3"
+    synthesis_path = output_path
+    if wants_opus:
+        synthesis_path = output_path.rsplit(".", 1)[0] + ".mp3"
 
     OpenAIClient = _import_openai_client()
     client = OpenAIClient(api_key=api_key, base_url=base_url)
@@ -1047,8 +1047,11 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
             create_kwargs["speed"] = max(0.25, min(4.0, speed))
         response = client.audio.speech.create(**create_kwargs)
 
-        response.stream_to_file(output_path)
-        return output_path
+        response.stream_to_file(synthesis_path)
+        if wants_opus:
+            opus_path = _convert_to_opus(synthesis_path)
+            return opus_path or synthesis_path
+        return synthesis_path
     finally:
         close = getattr(client, "close", None)
         if callable(close):
@@ -2272,7 +2275,7 @@ def text_to_speech_tool(
                     "error": "OpenAI provider selected but 'openai' package not installed."
                 }, ensure_ascii=False)
             logger.info("Generating speech with OpenAI TTS...")
-            _generate_openai_tts(text, file_str, tts_config)
+            file_str = _generate_openai_tts(text, file_str, tts_config)
 
         elif provider == "minimax":
             logger.info("Generating speech with MiniMax TTS...")
