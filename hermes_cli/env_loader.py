@@ -78,10 +78,21 @@ def format_secret_source_suffix(env_var: str) -> str:
         return ""
     if source == "bitwarden":
         return " (from Bitwarden)"
+    if source == "infisical":
+        return " (from Infisical)"
     # Generic fallback — future-proofing for additional secret sources
     # (e.g. 1Password, HashiCorp Vault) without having to update every
     # call site.
     return f" (from {source})"
+
+
+def _float_config(value: object, default: float) -> float:
+    if not isinstance(value, (str, int, float)):
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _format_offending_chars(value: str, limit: int = 3) -> str:
@@ -179,9 +190,8 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
     except ImportError:
         return  # early bootstrap — config module not available yet
 
-    read_kw = {"encoding": "utf-8-sig", "errors": "replace"}
     try:
-        with open(path, **read_kw) as f:
+        with open(path, encoding="utf-8-sig", errors="replace") as f:
             original = f.readlines()
         # Strip null bytes before _sanitize_env_lines so they never
         # reach python-dotenv (which passes them to os.environ and
@@ -281,10 +291,10 @@ def _apply_managed_env() -> None:
 
 
 def _apply_external_secret_sources(home_path: Path) -> None:
-    """Pull secrets from external sources (currently Bitwarden) into env.
+    """Pull secrets from external sources into env.
 
     Runs AFTER dotenv loads so .env values are visible (we use them to
-    locate the access token) but BEFORE the rest of Hermes reads
+    locate bootstrap credentials) but BEFORE the rest of Hermes reads
     ``os.environ`` for credentials.  Any failure here is logged and
     swallowed — external secret sources must never block startup.
 
@@ -308,50 +318,101 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         return
 
     bw_cfg = (cfg or {}).get("bitwarden") or {}
-    if not bw_cfg.get("enabled"):
-        return
+    if bw_cfg.get("enabled"):
+        try:
+            from agent.secret_sources.bitwarden import apply_bitwarden_secrets
+        except ImportError:
+            pass
+        else:
+            result = apply_bitwarden_secrets(
+                enabled=True,
+                access_token_env=bw_cfg.get("access_token_env", "BWS_ACCESS_TOKEN"),
+                project_id=bw_cfg.get("project_id", ""),
+                override_existing=bool(bw_cfg.get("override_existing", False)),
+                cache_ttl_seconds=_float_config(
+                    bw_cfg.get("cache_ttl_seconds", 300),
+                    300.0,
+                ),
+                auto_install=bool(bw_cfg.get("auto_install", True)),
+                server_url=str(bw_cfg.get("server_url", "") or "").strip(),
+                home_path=home_path,
+            )
 
-    try:
-        from agent.secret_sources.bitwarden import apply_bitwarden_secrets
-    except ImportError:
-        return
+            _report_secret_source_result(
+                label="Bitwarden Secrets Manager",
+                source="bitwarden",
+                result=result,
+            )
 
-    result = apply_bitwarden_secrets(
-        enabled=True,
-        access_token_env=bw_cfg.get("access_token_env", "BWS_ACCESS_TOKEN"),
-        project_id=bw_cfg.get("project_id", ""),
-        override_existing=bool(bw_cfg.get("override_existing", False)),
-        cache_ttl_seconds=float(bw_cfg.get("cache_ttl_seconds", 300)),
-        auto_install=bool(bw_cfg.get("auto_install", True)),
-        server_url=str(bw_cfg.get("server_url", "") or "").strip(),
-        home_path=home_path,
-    )
+    inf_cfg = (cfg or {}).get("infisical") or {}
+    if inf_cfg.get("enabled"):
+        try:
+            from agent.secret_sources.infisical import (
+                DEFAULT_API_URL as infisical_default_api_url,
+                apply_infisical_secrets,
+            )
+        except ImportError:
+            pass
+        else:
+            result = apply_infisical_secrets(
+                enabled=True,
+                client_id_env=inf_cfg.get("client_id_env", "INFISICAL_CLIENT_ID"),
+                client_secret_env=inf_cfg.get(
+                    "client_secret_env", "INFISICAL_CLIENT_SECRET"
+                ),
+                project_id=str(inf_cfg.get("project_id", "") or "").strip(),
+                project_id_env=inf_cfg.get("project_id_env", "INFISICAL_PROJECT_ID"),
+                environment=str(inf_cfg.get("env", "prod") or "prod").strip(),
+                secret_path=str(inf_cfg.get("path", "/") or "/").strip(),
+                api_url=str(
+                    inf_cfg.get("api_url")
+                    or os.environ.get("INFISICAL_API_URL")
+                    or infisical_default_api_url
+                ).strip(),
+                organization_slug=str(
+                    inf_cfg.get("organization_slug", "") or ""
+                ).strip(),
+                override_existing=bool(inf_cfg.get("override_existing", True)),
+                cache_ttl_seconds=_float_config(
+                    inf_cfg.get("cache_ttl_seconds", 300),
+                    300.0,
+                ),
+                recursive=bool(inf_cfg.get("recursive", False)),
+                include_imports=bool(inf_cfg.get("include_imports", True)),
+                expand_secret_references=bool(
+                    inf_cfg.get("expand_secret_references", True)
+                ),
+            )
 
+            _report_secret_source_result(
+                label="Infisical",
+                source="infisical",
+                result=result,
+            )
+
+
+def _report_secret_source_result(*, label: str, source: str, result) -> None:
     if result.applied:
-        # Re-run the ASCII sanitization pass: BSM values are user-supplied
-        # and might have the same copy-paste corruption as a manually
-        # edited .env (see #6843).
+        # Re-run the ASCII sanitization pass: external values are
+        # user-supplied and might have the same copy-paste corruption as a
+        # manually edited .env (see #6843).
         _sanitize_loaded_credentials()
-        # Remember where these came from so the setup / `hermes model`
-        # flows can label detected credentials with "(from Bitwarden)" —
-        # otherwise users see "credentials ✓" with no hint that the value
-        # came from BSM rather than .env.
         for name in result.applied:
-            _SECRET_SOURCES[name] = "bitwarden"
+            _SECRET_SOURCES[name] = source
         print(
-            f"  Bitwarden Secrets Manager: applied {len(result.applied)} "
+            f"  {label}: applied {len(result.applied)} "
             f"secret{'s' if len(result.applied) != 1 else ''} "
             f"({', '.join(sorted(result.applied))})",
             file=sys.stderr,
         )
     if result.error:
         print(
-            f"  Bitwarden Secrets Manager: {result.error}",
+            f"  {label}: {result.error}",
             file=sys.stderr,
         )
     for warn in result.warnings:
         print(
-            f"  Bitwarden Secrets Manager: {warn}",
+            f"  {label}: {warn}",
             file=sys.stderr,
         )
 
@@ -366,7 +427,7 @@ def _load_secrets_config(home_path: Path) -> dict:
     if not config_path.exists():
         return {}
     try:
-        import yaml  # type: ignore
+        import yaml
     except ImportError:
         return {}
     try:
