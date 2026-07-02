@@ -440,7 +440,7 @@ def cmd_status(args) -> None:
     provider_name = mem_config.get("provider", "")
 
     print(f"\nMemory status\n" + "─" * 40)
-    print(f"  Built-in:  always active")
+    print(f"  Memory subsystem:  active")
     print(f"  Provider:  {provider_name or '(none — built-in only)'}")
 
     providers = _get_available_providers()
