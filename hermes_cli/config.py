@@ -2005,6 +2005,7 @@ DEFAULT_CONFIG = {
     "stt": {
         "enabled": True,
         "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe) | "elevenlabs" (Scribe)
+        "hotwords": [],  # words/phrases to boost STT recognition for (e.g. ["Hermes", "Nous"])
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
