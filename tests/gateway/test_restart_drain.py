@@ -198,6 +198,36 @@ async def test_request_restart_is_idempotent():
     )
 
 
+def test_restart_context_checkpoint_noops_when_script_missing(tmp_path, monkeypatch):
+    runner, _adapter = make_restart_runner()
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner._save_restart_context_checkpoint()
+
+
+def test_restart_context_checkpoint_invokes_optional_script(tmp_path, monkeypatch):
+    runner, _adapter = make_restart_runner()
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    script = tmp_path / "scripts" / "save_restart_context.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return subprocess.CompletedProcess(cmd, 0, stdout="checkpoint saved\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    runner._save_restart_context_checkpoint(reason="test restart")
+
+    assert calls
+    cmd, kwargs = calls[0]
+    assert cmd == [str(script), "--reason", "test restart", "--tail", "18"]
+    assert kwargs["timeout"] == 15
+    assert kwargs["text"] is True
+
+
 @pytest.mark.asyncio
 async def test_run_restart_excluded_from_stop_cancel_loop():
     """Regression for #12875: _run_restart is held on self._restart_task and
