@@ -2183,6 +2183,8 @@ DEFAULT_CONFIG = {
                 "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
                 "reference_temperature": 0.6,
                 "aggregator_temperature": 0.4,
+                "reference_reasoning_effort": "",
+                "aggregator_reasoning_effort": "",
                 "max_tokens": 4096,
                 "enabled": True,
             }
