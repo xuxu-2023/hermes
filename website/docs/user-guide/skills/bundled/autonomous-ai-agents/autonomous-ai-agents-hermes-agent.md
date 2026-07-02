@@ -21,7 +21,7 @@ Configure, extend, or contribute to Hermes Agent.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `hermes`, `setup`, `configuration`, `multi-agent`, `spawning`, `cli`, `gateway`, `development` |
-| Related skills | [`claude-code`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code), [`codex`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-codex), [`opencode`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-opencode) |
+| Related skills | [`claude-code`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code), [`codex`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-codex), [`opencode`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-opencode), [`hermes-safe-update`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-safe-update) |
 
 ## Reference: full SKILL.md
 
@@ -173,6 +173,8 @@ hermes gateway setup        Configure platforms
 ```
 
 Supported platforms: Telegram, Discord, Slack, WhatsApp, Signal, Email, SMS, Matrix, Mattermost, Home Assistant, DingTalk, Feishu, WeCom, BlueBubbles (iMessage), Weixin (WeChat), API Server, Webhooks. Open WebUI connects via the API Server adapter.
+
+Before any Hermes update, macOS host update, reboot, or gateway restart, load `skill_view(name="hermes-safe-update")`. It defines the shared safe-update route: short semantic triggers such as "I'm going to update Hermes" and "I'm going to update macOS" are enough, long prompts are optional guardrails, and Nick remains the only operator for updates, reboots, gateway restarts, and credentials. The Mac Host Update route is distinct from the Hermes update route because macOS/Command Line Tools updates can affect `launchd`, Python/venv, networking, certificates, filesystem permissions, and the live gateway even when Hermes code is unchanged.
 
 Platform docs: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/
 

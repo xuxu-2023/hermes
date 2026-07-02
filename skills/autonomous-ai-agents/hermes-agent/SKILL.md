@@ -9,7 +9,7 @@ metadata:
   hermes:
     tags: [hermes, setup, configuration, multi-agent, spawning, cli, gateway, development]
     homepage: https://github.com/NousResearch/hermes-agent
-    related_skills: [claude-code, codex, opencode]
+    related_skills: [claude-code, codex, opencode, hermes-safe-update]
 ---
 
 # Hermes Agent
@@ -169,6 +169,8 @@ hermes gateway setup        Configure platforms
 ```
 
 Supported platforms (20+): Telegram, Discord, Slack, WhatsApp (Baileys bridge + official Business Cloud API), iMessage (Photon — `hermes photon setup`, the BlueBubbles successor with no Mac relay), Signal, Email, SMS, Matrix, Mattermost, Microsoft Teams, LINE, SimpleX, ntfy, Google Chat, Home Assistant, DingTalk, Feishu, WeCom, Weixin (WeChat), Raft (agent network), API Server, Webhooks. Open WebUI connects via the API Server adapter. Most adapters ship under `plugins/platforms/`, so new ones drop in without touching core.
+
+Before any Hermes update, macOS host update, reboot, or gateway restart, load `skill_view(name="hermes-safe-update")`. It defines the shared safe-update route: short semantic triggers such as "I'm going to update Hermes" and "I'm going to update macOS" are enough, long prompts are optional guardrails, and Nick remains the only operator for updates, reboots, gateway restarts, and credentials. The Mac Host Update route is distinct from the Hermes update route because macOS/Command Line Tools updates can affect `launchd`, Python/venv, networking, certificates, filesystem permissions, and the live gateway even when Hermes code is unchanged.
 
 Platform docs: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/
 
