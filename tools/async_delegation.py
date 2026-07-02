@@ -345,6 +345,7 @@ def dispatch_async_delegation_batch(
     toolsets: Optional[List[str]],
     role: str,
     model: Optional[str],
+    child_metadata: Optional[List[Dict[str, Any]]] = None,
     session_key: str,
     runner: Callable[[], Dict[str, Any]],
     interrupt_fn: Optional[Callable[[], None]] = None,
@@ -385,6 +386,7 @@ def dispatch_async_delegation_batch(
         "toolsets": list(toolsets) if toolsets else None,
         "role": role,
         "model": model,
+        "child_metadata": list(child_metadata or []),
         "session_key": session_key,
         "status": "running",
         "dispatched_at": dispatched_at,
@@ -489,6 +491,7 @@ def _finalize_batch(
         "toolsets": event_record.get("toolsets"),
         "role": event_record.get("role"),
         "model": event_record.get("model"),
+        "child_metadata": combined.get("child_metadata") or event_record.get("child_metadata") or [],
         "status": status,
         "is_batch": True,
         # The full per-task results list — the formatter renders a
