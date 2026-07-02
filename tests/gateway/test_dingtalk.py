@@ -323,24 +323,231 @@ class TestSend:
         assert payload["markdown"]["text"] == "Screenshot\n\n![image](https://example.com/demo.png)"
 
     @pytest.mark.asyncio
-    async def test_send_image_file_returns_explicit_unsupported_error(self):
+    async def test_send_image_file_routes_to_file_webhook(self, tmp_path):
         from plugins.platforms.dingtalk.adapter import DingTalkAdapter
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
 
-        result = await adapter.send_image_file("chat-123", "/tmp/demo.png")
+        img = tmp_path / "photo.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
 
-        assert result.success is False
-        assert result.error and "do not support local image uploads" in result.error
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"errcode": 0, "media_id": "@media_abc"}
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        adapter._http_client = mock_client
+        adapter._session_webhooks["chat-123"] = (
+            "https://oapi.dingtalk.com/robot/send?access_token=x",
+            9999999999999,
+        )
+        adapter._stream_client = MagicMock()
+        adapter._stream_client.get_access_token = MagicMock(return_value="tok")
+
+        result = await adapter.send_image_file("chat-123", str(img))
+        assert result.success is True
+        assert mock_client.post.call_count == 2  # upload + webhook send
 
     @pytest.mark.asyncio
-    async def test_send_document_returns_explicit_unsupported_error(self):
+    async def test_send_document_routes_to_file_webhook(self, tmp_path):
         from plugins.platforms.dingtalk.adapter import DingTalkAdapter
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
 
-        result = await adapter.send_document("chat-123", "/tmp/demo.pdf")
+        pdf = tmp_path / "report.pdf"
+        pdf.write_bytes(b"%PDF-1.4" + b"\x00" * 100)
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"errcode": 0, "media_id": "@media_def"}
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        adapter._http_client = mock_client
+        adapter._session_webhooks["chat-123"] = (
+            "https://oapi.dingtalk.com/robot/send?access_token=x",
+            9999999999999,
+        )
+        adapter._stream_client = MagicMock()
+        adapter._stream_client.get_access_token = MagicMock(return_value="tok")
+
+        result = await adapter.send_document("chat-123", str(pdf))
+        assert result.success is True
+        assert mock_client.post.call_count == 2  # upload + webhook send
+
+
+# ---------------------------------------------------------------------------
+# File delivery via OAPI media upload + session webhook
+# ---------------------------------------------------------------------------
+
+
+class TestSendFileViaWebhook:
+
+    def _make_adapter(self, tmp_path, file_name="test.pdf", file_size=1024):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+
+        fpath = tmp_path / file_name
+        fpath.write_bytes(b"\x00" * file_size)
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"errcode": 0, "media_id": "@media_123"}
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        adapter._http_client = mock_client
+        adapter._session_webhooks["chat-1"] = (
+            "https://oapi.dingtalk.com/robot/send?access_token=x",
+            9999999999999,
+        )
+        adapter._stream_client = MagicMock()
+        adapter._stream_client.get_access_token = MagicMock(return_value="tok")
+
+        return adapter, fpath, mock_client
+
+    @pytest.mark.asyncio
+    async def test_success_uploads_and_sends(self, tmp_path):
+        adapter, fpath, mock_client = self._make_adapter(tmp_path, "report.pdf")
+
+        result = await adapter._send_file_via_webhook("chat-1", str(fpath))
+
+        assert result.success is True
+        assert result.message_id
+        assert mock_client.post.call_count == 2
+
+        # Verify upload call
+        upload_call = mock_client.post.call_args_list[0]
+        assert "oapi.dingtalk.com/media/upload" in upload_call.args[0]
+        assert upload_call.kwargs["data"] == {"type": "file"}
+        files_arg = upload_call.kwargs["files"]
+        assert files_arg["media"][0] == "report.pdf"  # original filename
+        assert "pdf" in files_arg["media"][2]  # content type detected
+
+        # Verify webhook send call
+        send_call = mock_client.post.call_args_list[1]
+        payload = send_call.kwargs["json"]
+        assert payload["msgtype"] == "file"
+        assert payload["file"]["media_id"] == "@media_123"
+
+    @pytest.mark.asyncio
+    async def test_file_not_found(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+
+        result = await adapter._send_file_via_webhook("chat-1", "/nonexistent/file.pdf")
 
         assert result.success is False
-        assert result.error and "do not support local file attachments" in result.error
+        assert result.error and "File not found" in result.error
+
+    @pytest.mark.asyncio
+    async def test_no_http_client(self, tmp_path):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        fpath = tmp_path / "test.pdf"
+        fpath.write_bytes(b"\x00" * 10)
+
+        result = await adapter._send_file_via_webhook("chat-1", str(fpath))
+
+        assert result.success is False
+        assert result.error and "HTTP client not initialized" in result.error
+
+    @pytest.mark.asyncio
+    async def test_file_too_large(self, tmp_path):
+        adapter, fpath, _ = self._make_adapter(
+            tmp_path, "huge.zip", file_size=21 * 1024 * 1024,
+        )
+
+        result = await adapter._send_file_via_webhook("chat-1", str(fpath))
+
+        assert result.success is False
+        assert result.error and "too large" in result.error
+        assert result.error and "20 MB" in result.error
+
+    @pytest.mark.asyncio
+    async def test_no_access_token(self, tmp_path):
+        adapter, fpath, _ = self._make_adapter(tmp_path)
+        adapter._stream_client.get_access_token = MagicMock(return_value=None)
+
+        result = await adapter._send_file_via_webhook("chat-1", str(fpath))
+
+        assert result.success is False
+        assert result.error and "access token" in result.error
+
+    @pytest.mark.asyncio
+    async def test_upload_http_error(self, tmp_path):
+        adapter, fpath, mock_client = self._make_adapter(tmp_path)
+        err_resp = MagicMock()
+        err_resp.status_code = 500
+        err_resp.text = "Internal Server Error"
+        mock_client.post = AsyncMock(return_value=err_resp)
+
+        result = await adapter._send_file_via_webhook("chat-1", str(fpath))
+
+        assert result.success is False
+        assert result.error and "500" in result.error
+
+    @pytest.mark.asyncio
+    async def test_upload_api_error(self, tmp_path):
+        adapter, fpath, mock_client = self._make_adapter(tmp_path)
+        err_resp = MagicMock()
+        err_resp.status_code = 200
+        err_resp.json.return_value = {"errcode": 40001, "errmsg": "invalid token"}
+        mock_client.post = AsyncMock(return_value=err_resp)
+
+        result = await adapter._send_file_via_webhook("chat-1", str(fpath))
+
+        assert result.success is False
+        assert result.error and "invalid token" in result.error
+
+    @pytest.mark.asyncio
+    async def test_upload_no_media_id(self, tmp_path):
+        adapter, fpath, mock_client = self._make_adapter(tmp_path)
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {"errcode": 0}  # no media_id
+        resp.text = '{"errcode": 0}'
+        mock_client.post = AsyncMock(return_value=resp)
+
+        result = await adapter._send_file_via_webhook("chat-1", str(fpath))
+
+        assert result.success is False
+        assert result.error and "no media_id" in result.error
+
+    @pytest.mark.asyncio
+    async def test_no_valid_webhook(self, tmp_path):
+        adapter, fpath, _ = self._make_adapter(tmp_path)
+        adapter._session_webhooks.clear()  # no webhook cached
+
+        result = await adapter._send_file_via_webhook("chat-1", str(fpath))
+
+        assert result.success is False
+        assert result.error and "session_webhook" in result.error
+
+    @pytest.mark.asyncio
+    async def test_webhook_send_failure(self, tmp_path):
+        adapter, fpath, mock_client = self._make_adapter(tmp_path)
+        # First call (upload) succeeds, second call (webhook send) fails
+        upload_resp = MagicMock()
+        upload_resp.status_code = 200
+        upload_resp.json.return_value = {"errcode": 0, "media_id": "@media_123"}
+
+        webhook_resp = MagicMock()
+        webhook_resp.status_code = 403
+        webhook_resp.text = "Forbidden"
+
+        mock_client.post = AsyncMock(side_effect=[upload_resp, webhook_resp])
+
+        result = await adapter._send_file_via_webhook("chat-1", str(fpath))
+
+        assert result.success is False
+        assert result.error and "403" in result.error
+
+    @pytest.mark.asyncio
+    async def test_content_type_detection(self, tmp_path):
+        adapter, fpath, mock_client = self._make_adapter(tmp_path, "video.mp4")
+
+        await adapter._send_file_via_webhook("chat-1", str(fpath))
+
+        upload_call = mock_client.post.call_args_list[0]
+        files_arg = upload_call.kwargs["files"]
+        assert "video/mp4" in files_arg["media"][2]
 
 
 # ---------------------------------------------------------------------------

@@ -29,6 +29,7 @@ Configuration in config.yaml:
 import asyncio
 import json
 import logging
+import mimetypes
 import os
 import re
 import traceback
@@ -874,6 +875,23 @@ class DingTalkAdapter(BasePlatformAdapter):
 
         # Try AI Card first (using alibabacloud_dingtalk.card_1_0 SDK).
         if self._card_template_id and current_message and self._card_sdk:
+            # Extract and deliver MEDIA: files separately before card content,
+            # because the card template's content variable may truncate long
+            # file paths (e.g. /home/xinlei.kang/.hermes/...mp3), causing
+            # the media delivery pipeline to fail with "file not found".
+            _media_files, _cleaned_for_card = self.extract_media(content)
+            if _media_files:
+                for _media_path, _ in _media_files:
+                    try:
+                        await self._send_file_via_webhook(
+                            chat_id, _media_path,
+                        )
+                    except Exception as _e:
+                        logger.warning(
+                            "[%s] Failed to send pre-card media %s: %s",
+                            self.name, _media_path, _e,
+                        )
+                content = _cleaned_for_card
             # Close any previously-open streaming cards for this chat
             # before creating a new one (handles tool-progress → final-
             # response handoff; also cleans up lingering commentary cards).
@@ -937,6 +955,101 @@ class DingTalkAdapter(BasePlatformAdapter):
         """DingTalk does not support typing indicators."""
         pass
 
+    async def _send_file_via_webhook(
+        self,
+        chat_id: str,
+        file_path: str,
+    ) -> SendResult:
+        """Upload a file to DingTalk OAPI and send as file attachment via session webhook.
+
+        DingTalk's session webhook only supports text/markdown payloads natively.
+        To deliver files (PDFs, images, videos, archives, etc.) we:
+          1. Upload the file to OAPI media endpoint to get a ``media_id``
+          2. Send a ``msgtype=file`` payload through the active session webhook
+
+        The OAPI media upload has a **20 MB** size limit. Files exceeding this
+        are rejected with a clear error rather than failing silently.
+        """
+        if not os.path.isfile(file_path):
+            return SendResult(success=False, error=f"File not found: {file_path}")
+        if not self._http_client:
+            return SendResult(success=False, error="HTTP client not initialized")
+
+        file_size = os.path.getsize(file_path)
+        max_size = 20 * 1024 * 1024  # 20 MB — DingTalk OAPI media upload limit
+        if file_size > max_size:
+            return SendResult(
+                success=False,
+                error=(
+                    f"File too large ({file_size / 1024 / 1024:.1f} MB). "
+                    f"DingTalk media upload limit is 20 MB."
+                ),
+            )
+
+        token = await self._get_access_token()
+        if not token:
+            return SendResult(success=False, error="Failed to get access token")
+
+        # Upload to OAPI media endpoint
+        filename = os.path.basename(file_path)
+        content_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+        try:
+            with open(file_path, "rb") as f:
+                file_data = f.read()
+
+            upload_url = f"https://oapi.dingtalk.com/media/upload?access_token={token}"
+            upload_resp = await self._http_client.post(
+                upload_url,
+                data={"type": "file"},
+                files={"media": (filename, file_data, content_type)},
+                timeout=60.0,
+            )
+            if upload_resp.status_code != 200:
+                return SendResult(
+                    success=False,
+                    error=f"Media upload failed HTTP {upload_resp.status_code}: {upload_resp.text[:200]}",
+                )
+            upload_data = upload_resp.json()
+            if upload_data.get("errcode", 0) != 0:
+                return SendResult(
+                    success=False,
+                    error=f"Media upload error: {upload_data.get('errmsg', upload_resp.text[:200])}",
+                )
+            media_id = upload_data.get("media_id", "")
+            if not media_id:
+                return SendResult(
+                    success=False,
+                    error=f"Media upload returned no media_id: {upload_resp.text[:200]}",
+                )
+        except Exception as e:
+            logger.error("[%s] File upload error: %s", self.name, e)
+            return SendResult(success=False, error=f"File upload error: {e}")
+
+        # Send via session webhook
+        webhook_info = self._get_valid_webhook(chat_id)
+        if not webhook_info:
+            return SendResult(
+                success=False,
+                error="No valid session_webhook for file delivery",
+            )
+        session_webhook, _ = webhook_info
+
+        try:
+            resp = await self._http_client.post(
+                session_webhook,
+                json={"msgtype": "file", "file": {"media_id": media_id}},
+                timeout=15.0,
+            )
+            if resp.status_code < 300:
+                return SendResult(success=True, message_id=uuid.uuid4().hex[:12])
+            return SendResult(
+                success=False,
+                error=f"File send failed HTTP {resp.status_code}: {resp.text[:200]}",
+            )
+        except Exception as e:
+            logger.error("[%s] File send error: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
     async def send_image(
         self,
         chat_id: str,
@@ -970,14 +1083,8 @@ class DingTalkAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
-        """DingTalk webhook replies cannot send local image files directly."""
-        return SendResult(
-            success=False,
-            error=(
-                "DingTalk session webhook replies do not support local image uploads. "
-                "Only markdown/text replies are supported without OpenAPI media upload."
-            ),
-        )
+        """Send a local image file via OAPI media upload + session webhook."""
+        return await self._send_file_via_webhook(chat_id, image_path)
 
     async def send_document(
         self,
@@ -989,14 +1096,8 @@ class DingTalkAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
-        """DingTalk webhook replies cannot send local file attachments directly."""
-        return SendResult(
-            success=False,
-            error=(
-                "DingTalk session webhook replies do not support local file attachments. "
-                "Only markdown/text replies are supported without OpenAPI message send."
-            ),
-        )
+        """Send a local file (PDF, ZIP, etc.) via OAPI media upload + session webhook."""
+        return await self._send_file_via_webhook(chat_id, file_path)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return basic info about a DingTalk conversation."""
