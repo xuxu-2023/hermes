@@ -195,6 +195,7 @@ class TestImageRejectionPhraseIsolation:
         "does not support vision",
         "model does not support image",
         "image_url'. expected",
+        "image data you provided does not represent a valid image",
         "no endpoints found that support image input",
     )
 
@@ -245,6 +246,7 @@ class TestImageRejectionPhraseIsolation:
             # match the agent cascaded into compression / context-too-large
             # recovery instead of just stripping the images.
             "Invalid 'input[56].content[1].image_url'. Expected a valid URL, but got a value with an invalid format.",
+            "The image data you provided does not represent a valid image. Please check your input and try again.",
             # OpenRouter 404 when no upstream endpoint for the model accepts
             # image input — issue #21160. The exact wording from the report.
             "HTTP 404: No endpoints found that support image input",
