@@ -90,6 +90,39 @@ def test_openviking_env_writer_restricts_file_permissions(tmp_path):
     assert stat.S_IMODE(env_path.stat().st_mode) == 0o600
 
 
+def test_openviking_env_writer_strips_embedded_newlines_in_values(tmp_path):
+    # A secret pasted with an embedded CR/LF must not spill onto a new line,
+    # or the round-trip re-parses the tail as a separate KEY=VALUE entry and
+    # injects an arbitrary variable into the persisted credentials file.
+    env_path = tmp_path / ".env"
+
+    openviking_module._write_env_vars(
+        env_path,
+        {"OPENVIKING_API_KEY": "good\nINJECTED_KEY=attacker"},
+    )
+
+    lines = env_path.read_text(encoding="utf-8").splitlines()
+    assert lines == ["OPENVIKING_API_KEY=goodINJECTED_KEY=attacker"]
+    # No injected line means a follow-up read sees no rogue key.
+    parsed = dict(line.split("=", 1) for line in lines if "=" in line)
+    assert set(parsed) == {"OPENVIKING_API_KEY"}
+    assert "INJECTED_KEY" not in parsed
+
+
+def test_openviking_env_writer_strips_newlines_when_updating_existing_key(tmp_path):
+    env_path = tmp_path / ".env"
+    env_path.write_text("OPENVIKING_API_KEY=old\n", encoding="utf-8")
+
+    openviking_module._write_env_vars(
+        env_path,
+        {"OPENVIKING_API_KEY": "new\r\nROGUE=1"},
+    )
+
+    lines = env_path.read_text(encoding="utf-8").splitlines()
+    assert lines == ["OPENVIKING_API_KEY=newROGUE=1"]
+    assert all(not line.startswith("ROGUE=") for line in lines)
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
 def test_ovcli_config_writer_restricts_file_permissions(tmp_path):
     config_path = tmp_path / "ovcli.conf"
@@ -912,10 +945,14 @@ def test_runtime_openviking_waiter_attaches_client_after_health_recovers(monkeyp
     assert provider._client is not None
     assert provider._client.endpoint == "http://127.0.0.1:1934"
     assert provider._client.api_key == "secret"
-    assert wait_calls == [(
-        "http://127.0.0.1:1934",
-        {"timeout_seconds": openviking_module._LOCAL_OPENVIKING_AUTOSTART_TIMEOUT},
-    )]
+    assert len(wait_calls) == 1
+    endpoint, wait_kwargs = wait_calls[0]
+    assert endpoint == "http://127.0.0.1:1934"
+    assert wait_kwargs["timeout_seconds"] == openviking_module._LOCAL_OPENVIKING_AUTOSTART_TIMEOUT
+    assert callable(wait_kwargs["should_stop"])
+    assert wait_kwargs["should_stop"]() is False
+    provider._shutting_down = True
+    assert wait_kwargs["should_stop"]() is True
     assert any("OpenViking memory is active" in message for message in statuses)
 
 
