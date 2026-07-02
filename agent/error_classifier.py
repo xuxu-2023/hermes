@@ -299,6 +299,46 @@ _REQUEST_VALIDATION_PATTERNS = [
     "unsupported_parameter",
 ]
 
+# Local-inference memory/resource-ceiling rejections (oMLX / MLX memory guard,
+# llama.cpp/vLLM OOM, Metal/CUDA allocation ceilings).  The server aborts on a
+# GPU/unified-memory PREFILL peak — NOT a context-window limit — yet the
+# rejection text often suggests "reduce context length" / "reduce context size"
+# as a remediation hint, which collides with _CONTEXT_OVERFLOW_PATTERNS.
+# Compressing conversation history cannot lower a prefill memory peak (the
+# conversation is typically far below the window), so routing these into the
+# compress-and-shrink loop burns max_compression_attempts, re-hits the wedged
+# server with each compression call, and ends in "Cannot compress further" →
+# destructive session reset.  These tokens reference memory/allocation/ceiling/
+# guard wording exclusively (never a token or window count), so they are
+# disjoint from genuine context-window-overflow language.  Must be checked
+# BEFORE context_overflow at every classification site.  See issue #52261.
+_MEMORY_CEILING_PATTERNS = [
+    "memory guard",                      # "prefill memory guard rejected"
+    "memory limit exceeded",             # "process memory limit exceeded"
+    "memory_guard_tier",                 # "lower memory_guard_tier"
+    "dynamic ceiling",                   # "dynamic ceiling is 13.50 GB"
+    "memory ceiling",
+    "available memory",                  # "too large for available memory"
+    "out of memory",
+    "insufficient memory",
+    "prefill would require",             # "Prefill would require ~13.87 GB peak"
+]
+
+# Structured error codes that unambiguously identify a local-inference memory/
+# resource-ceiling rejection at the source — before an OpenAI-compatible proxy
+# (LiteLLM) flattens the body and drops the code, and independent of message
+# wording (which can be reworded by the provider or the proxy).  oMLX returns
+# ``code: "prefill_memory_exceeded"`` (mirrored in ``omlx_code``) with
+# ``limit_bytes`` in *bytes* — definitively memory, not a token/window count.
+# Deliberately NARROW: only memory-prefill codes, never ``resource_exhausted``
+# (already mapped to rate_limit) or generic ``invalid_request_error``.
+# See issue #52261.
+_MEMORY_CEILING_ERROR_CODES = frozenset({
+    "prefill_memory_exceeded",
+    "omlx_prefill_memory_exceeded",
+    "memory_limit_exceeded",
+})
+
 # OpenRouter aggregator policy-block patterns.
 #
 # When a user's OpenRouter account privacy setting (or a per-request
@@ -1119,6 +1159,37 @@ def _classify_400(
             should_fallback=True,
         )
 
+    # Local-inference memory/resource-ceiling rejection (oMLX/MLX memory guard,
+    # OOM).  Checked BEFORE context_overflow: the prompt is often tiny and the
+    # remediation hint ("reduce context length"/"reduce context size") collides
+    # with the overflow patterns, but compressing history cannot relieve a
+    # prefill memory peak — routing it into compression wedges the session into
+    # a "Cannot compress further" reset loop.  Treat as a transient server-side
+    # capacity condition: retry with backoff, NO compression, NO session reset
+    # (mirrors the 503/529 ``overloaded`` recovery).  See issue #52261.
+    # Match the structured code in ADDITION to the message patterns so a direct
+    # (non-proxied) connection whose 400 body carries
+    # ``code: "prefill_memory_exceeded"`` is caught even when the message has
+    # been reworded and contains no memory substring — otherwise it would fall
+    # through to context_overflow or, with no overflow wording, to a
+    # non-retryable ``format_error``.  (A LiteLLM proxy strips the code, so the
+    # message patterns remain the fallback there.)
+    if (
+        error_code_lower in _MEMORY_CEILING_ERROR_CODES
+        or any(p in error_msg for p in _MEMORY_CEILING_PATTERNS)
+    ):
+        return result_fn(
+            FailoverReason.overloaded,
+            retryable=True,
+            # A local-inference memory wall stays wedged until the server is
+            # restarted, so the durable recovery is failing over to a roomier
+            # provider once the primary's retries are exhausted.  Mark it
+            # failover-eligible for diagnostic consistency with the other
+            # recoverable reasons (auth/billing/rate_limit) — the exhaustion
+            # path already activates the fallback chain.
+            should_fallback=True,
+        )
+
     # Context overflow from 400
     if any(p in error_msg for p in _CONTEXT_OVERFLOW_PATTERNS):
         return result_fn(
@@ -1199,6 +1270,17 @@ def _classify_by_error_code(
     """Classify by structured error codes from the response body."""
     code_lower = error_code.lower()
 
+    # Local-inference memory-ceiling code (oMLX ``prefill_memory_exceeded`` and
+    # kin).  The structured code survives provider message rewording and is the
+    # only signal on a direct (non-proxied) connection whose message carries no
+    # memory substring.  Maps to the same transient ``overloaded`` recovery as
+    # the message-pattern path — retry, no compression.  See issue #52261.
+    if code_lower in _MEMORY_CEILING_ERROR_CODES:
+        return result_fn(
+            FailoverReason.overloaded,
+            retryable=True,
+        )
+
     if code_lower in {"resource_exhausted", "throttled", "rate_limit_exceeded"}:
         return result_fn(
             FailoverReason.rate_limit,
@@ -1278,6 +1360,28 @@ def _classify_by_message(
         return result_fn(
             FailoverReason.image_too_large,
             retryable=True,
+        )
+
+    # Local-inference memory/resource-ceiling rejection without an HTTP status
+    # (streaming / no-status APIError, e.g. "process memory limit exceeded" or
+    # "Prefill context too large for available memory").  Checked BEFORE the
+    # usage-limit/billing/rate-limit patterns below — NOT just before
+    # context_overflow — because oMLX's streaming memory abort
+    # ("Request aborted: process memory limit exceeded …") contains the
+    # substring "limit exceeded", which is a _USAGE_LIMIT_PATTERN.  With no
+    # transient signal it would disambiguate to billing (non-retryable, rotate
+    # credential) below — a different wrong bucket than context_overflow — so
+    # the memory guard must run first.  Compressing or rotating credentials
+    # cannot relieve a prefill memory peak; the correct recovery is the
+    # transient ``overloaded`` path (retry, no compression).  See issue #52261.
+    if any(p in error_msg for p in _MEMORY_CEILING_PATTERNS):
+        return result_fn(
+            FailoverReason.overloaded,
+            retryable=True,
+            # Failover-eligible for the same reason as the 400/error-code site
+            # above: a wedged local-inference memory wall recovers by switching
+            # to a roomier provider, not by retrying the same server forever.
+            should_fallback=True,
         )
 
     # Usage-limit patterns need the same disambiguation as 402: some providers
