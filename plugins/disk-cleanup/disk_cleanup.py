@@ -10,7 +10,7 @@ Rules:
   - test files    → delete immediately at task end (age >= 0)
   - temp files    → delete after 7 days
   - cron-output   → delete after 14 days
-  - empty dirs    → always delete (under HERMES_HOME)
+  - empty dirs    → delete when safe under HERMES_HOME (excluding checkpoint shadow-repo dirs and git internals)
   - research      → keep 10 newest, prompt for older (deep only)
   - chrome-profile→ prompt after 14 days (deep only)
   - >500 MB files → prompt always (deep only)
@@ -160,6 +160,32 @@ _EMPTY_DIR_SWEEP_PRUNE_DIRS = frozenset({
 # regardless of what the stored category says.  This is a defense-in-depth
 # guard against stale tracked.json entries from before #34840.
 _PROTECTED_CRON_PATHS: set[str] = set()
+
+
+def _is_protected_empty_dir(dirpath: Path, hermes_home: Path) -> bool:
+    """Return True when an empty-dir cleanup candidate must be preserved.
+
+    This protects git internals for both Hermes checkpoint shadow repos
+    (stored under ``checkpoints/<id>/...``) and ordinary repos living under
+    ``HERMES_HOME`` (stored under ``.git/...``).
+    """
+    try:
+        rel_parts = dirpath.relative_to(hermes_home).parts
+    except ValueError:
+        return False
+
+    if ".git" in rel_parts and rel_parts[-1] != ".git":
+        return True
+
+    if len(rel_parts) >= 2 and rel_parts[0] == "checkpoints":
+        repo_root = hermes_home / rel_parts[0] / rel_parts[1]
+        if any(
+            (repo_root / marker).exists()
+            for marker in ("HEAD", "HERMES_WORKDIR", "config")
+        ):
+            return True
+
+    return False
 
 
 def _is_protected_cron_path(p: Path) -> bool:
@@ -385,6 +411,8 @@ def quick() -> Dict[str, Any]:
 
     while sweep_stack:
         dirpath, visited = sweep_stack.pop()
+        if _is_protected_empty_dir(dirpath, hermes_home):
+            continue
         if visited:
             try:
                 if not any(dirpath.iterdir()):
@@ -402,6 +430,7 @@ def quick() -> Dict[str, Any]:
                     child.is_dir()
                     and not child.is_symlink()
                     and child.name not in _EMPTY_DIR_SWEEP_PRUNE_DIRS
+                    and not _is_protected_empty_dir(child, hermes_home)
                 ):
                     sweep_stack.append((child, False))
         except OSError:
