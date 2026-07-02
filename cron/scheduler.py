@@ -3156,7 +3156,14 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
 
     except Exception as e:
         logger.error("Error processing job %s: %s", job['id'], e)
-        mark_job_run(job["id"], False, str(e))
+        try:
+            mark_job_run(job["id"], False, str(e))
+        except Exception as e2:
+            logger.exception(
+                "CRITICAL: mark_job_run also failed for job %s "
+                "(original error: %s, mark_job_run error: %s)",
+                job['id'], e, e2,
+            )
         return False
 
 
