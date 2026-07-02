@@ -313,16 +313,30 @@ def parse_duration(s: str) -> int:
     return value * multipliers[unit]
 
 
+# Matches the one-shot display string emitted by ``_schedule_display_for_job``
+# and the ISO-timestamp branch below (e.g. ``"once at 2026-06-19 12:00"``).
+# The Edit Job modal pre-fills its schedule input with that display string, so
+# parse_schedule must accept the system's own output. Case-insensitive and
+# whitespace-tolerant between tokens; optional seconds component.
+ONCE_AT_RE = re.compile(
+    r"^\s*once\s+at\s+"
+    r"(?P<date>\d{4}-\d{2}-\d{2})"
+    r"\s+"
+    r"(?P<time>\d{2}:\d{2}(?::\d{2})?)\s*$",
+    re.IGNORECASE,
+)
+
+
 def parse_schedule(schedule: str) -> Dict[str, Any]:
     """
     Parse schedule string into structured format.
-    
+
     Returns dict with:
         - kind: "once" | "interval" | "cron"
         - For "once": "run_at" (ISO timestamp)
         - For "interval": "minutes" (int)
         - For "cron": "expr" (cron expression)
-    
+
     Examples:
         "30m"              → once in 30 minutes
         "2h"               → once in 2 hours
@@ -330,11 +344,25 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         "every 2h"         → recurring every 2 hours
         "0 9 * * *"        → cron expression
         "2026-02-03T14:00" → once at timestamp
+
+    Also accepts the ``"once at YYYY-MM-DD HH:MM[:SS]"`` form that the system
+    emits as a one-shot display string, so that re-submitting an unchanged
+    schedule_display (e.g. from the Edit Job modal) round-trips cleanly. This
+    form is system-generated and intentionally omitted from the user-facing
+    suggestion list below.
     """
     schedule = schedule.strip()
     original = schedule
     schedule_lower = schedule.lower()
-    
+
+    # System-emitted one-shot display string. Normalize to the ISO form and let
+    # the timestamp branch below produce an identical result (gateway-local
+    # time), so the display round-trips back to the same run_at.
+    once_at = ONCE_AT_RE.match(schedule)
+    if once_at:
+        schedule = f"{once_at.group('date')}T{once_at.group('time')}"
+        schedule_lower = schedule.lower()
+
     # "every X" pattern → recurring interval
     if schedule_lower.startswith("every "):
         duration_str = schedule[6:].strip()
