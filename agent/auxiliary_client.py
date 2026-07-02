@@ -186,6 +186,17 @@ def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
     return OpenAI(api_key=api_key, base_url=base_url, **kwargs)
 
 
+def _tag_auxiliary_client(client: Any, provider: str) -> Any:
+    """Attach the resolved provider label to a client when the object allows it."""
+    if client is None:
+        return client
+    try:
+        setattr(client, "_hermes_aux_provider_label", _normalize_chain_label(provider))
+    except Exception:
+        pass
+    return client
+
+
 # ── Interrupt protection for atomic auxiliary tasks ──────────────────────
 # Some auxiliary tasks must NOT be aborted mid-flight by a gateway interrupt
 # (e.g. an incoming user message while the agent is busy). Context
@@ -1716,7 +1727,10 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
 
                 if is_native_gemini_base_url(base_url):
-                    return GeminiNativeClient(api_key=api_key, base_url=base_url), model
+                    return _tag_auxiliary_client(
+                        GeminiNativeClient(api_key=api_key, base_url=base_url),
+                        provider_id,
+                    ), model
             extra = {}
             if base_url_host_matches(base_url, "api.kimi.com"):
                 extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
@@ -1739,7 +1753,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 extra["default_headers"] = _merged_aux
             _client = _create_openai_client(api_key=api_key, base_url=base_url, **extra)
             _client = _maybe_wrap_anthropic(_client, model, api_key, raw_base_url)
-            return _client, model
+            return _tag_auxiliary_client(_client, provider_id), model
 
         creds = resolve_api_key_provider_credentials(provider_id)
         api_key = str(creds.get("api_key", "")).strip()
@@ -1756,7 +1770,10 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
 
             if is_native_gemini_base_url(base_url):
-                return GeminiNativeClient(api_key=api_key, base_url=base_url), model
+                return _tag_auxiliary_client(
+                    GeminiNativeClient(api_key=api_key, base_url=base_url),
+                    provider_id,
+                ), model
         extra = {}
         if base_url_host_matches(base_url, "api.kimi.com"):
             extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
@@ -1779,7 +1796,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             extra["default_headers"] = _merged_aux2
         _client = _create_openai_client(api_key=api_key, base_url=base_url, **extra)
         _client = _maybe_wrap_anthropic(_client, model, api_key, raw_base_url)
-        return _client, model
+        return _tag_auxiliary_client(_client, provider_id), model
 
     return None, None
 
@@ -2497,14 +2514,13 @@ def _get_provider_chain() -> List[tuple]:
     ]
 
 
-# ── Auxiliary "recently 402'd" unhealthy-provider cache ────────────────────
+# ── Auxiliary unhealthy-provider cache ─────────────────────────────────────
 #
 # When an auxiliary provider returns HTTP 402 (Payment Required / credit
-# exhaustion), retrying it on every subsequent aux call is wasteful — the
-# provider stays depleted for hours or days, but the chain re-tries it as
-# the FIRST entry on every compression/title-gen/session-search call,
-# burns ~1 RTT, gets 402 again, then falls back. On a long Discord/LCM
-# session that adds up to dozens of doomed 402s.
+# exhaustion) or a confirmed credential failure, retrying it on every
+# subsequent aux call is wasteful — the provider stays unusable for a while,
+# but the chain re-tries it as the FIRST entry on every compression/title-gen/
+# session-search call, burns ~1 RTT, fails again, then falls back.
 #
 # Solution: when ANY caller observes a payment error against a provider,
 # mark it unhealthy for ``_AUX_UNHEALTHY_TTL_SECONDS``. ``_resolve_auto``
@@ -2546,10 +2562,15 @@ def _normalize_chain_label(provider: str) -> str:
     return _AUX_UNHEALTHY_LABEL_ALIASES.get(p, p)
 
 
-def _mark_provider_unhealthy(provider: str, ttl: Optional[float] = None) -> None:
-    """Mark ``provider`` as recently-402'd, hidden from chain iteration
-    until the TTL expires. Called from the payment-fallback branches in
-    ``call_llm`` and ``acall_llm`` after a confirmed payment error.
+def _mark_provider_unhealthy(
+    provider: str,
+    ttl: Optional[float] = None,
+    reason: str = "payment / credit error",
+) -> None:
+    """Mark ``provider`` unhealthy and hide it from chain iteration.
+
+    Called from fallback branches after confirmed payment/credit errors or
+    credential failures. The mark lasts until the TTL expires.
     """
     label = _normalize_chain_label(provider)
     if not label:
@@ -2557,10 +2578,11 @@ def _mark_provider_unhealthy(provider: str, ttl: Optional[float] = None) -> None
     expires_at = time.time() + (ttl if ttl is not None else _AUX_UNHEALTHY_TTL_SECONDS)
     _aux_unhealthy_until[label] = expires_at
     logger.warning(
-        "Auxiliary: marking %s unhealthy for %ds (payment / credit error). "
+        "Auxiliary: marking %s unhealthy for %ds (%s). "
         "Subsequent auxiliary calls will skip it until %s.",
         label,
         int(ttl if ttl is not None else _AUX_UNHEALTHY_TTL_SECONDS),
+        reason,
         time.strftime("%H:%M:%S", time.localtime(expires_at)),
     )
 
@@ -2592,7 +2614,7 @@ def _log_skip_unhealthy(label: str, task: Optional[str] = None) -> None:
         _aux_unhealthy_logged_at[label] = now
         expires_at = _aux_unhealthy_until.get(label, now)
         logger.info(
-            "Auxiliary %s: skipping %s (recently returned payment error, retry in %ds)",
+            "Auxiliary %s: skipping %s (recent provider error, retry in %ds)",
             task or "call", label, max(0, int(expires_at - now)),
         )
 
@@ -2808,6 +2830,14 @@ def _is_auth_error(exc: Exception) -> bool:
         return True
     err_lower = str(exc).lower()
     if "error code: 401" in err_lower or "authenticationerror" in type(exc).__name__.lower():
+        return True
+    if any(kw in err_lower for kw in (
+        "api key not valid",
+        "invalid api key",
+        "invalid_api_key",
+        "api key is invalid",
+        "provided api key is invalid",
+    )):
         return True
     # xAI returns HTTP 403 with "unauthenticated:bad-credentials" when an OAuth2
     # access token has expired or is invalid — semantically a 401 auth failure,
@@ -3066,6 +3096,9 @@ def _recoverable_pool_provider(
     main_runtime: Optional[Dict[str, Any]] = None,
 ) -> Optional[str]:
     """Infer which provider pool can recover the current auxiliary client."""
+    tagged = getattr(client, "_hermes_aux_provider_label", None)
+    if isinstance(tagged, str) and tagged.strip():
+        return tagged.strip()
     normalized = _normalize_aux_provider(resolved_provider)
     if normalized not in {"", "auto", "custom"}:
         return normalized
@@ -3082,6 +3115,8 @@ def _recoverable_pool_provider(
         return "copilot"
     if base_url_host_matches(base, "api.kimi.com"):
         return "kimi-coding"
+    if base_url_host_matches(base, "generativelanguage.googleapis.com"):
+        return "gemini"
     if base_url_host_matches(base, "api.x.ai"):
         return "xai-oauth"
     # For api_key providers not in the hardcoded list (e.g. opencode-go), match
@@ -3362,11 +3397,17 @@ def _try_payment_fallback(
             continue
         client, model = try_fn()
         if client is not None:
+            tagged_label = getattr(client, "_hermes_aux_provider_label", None)
+            actual_label = (
+                tagged_label.strip()
+                if isinstance(tagged_label, str) and tagged_label.strip()
+                else label
+            )
             logger.info(
                 "Auxiliary %s: %s on %s — falling back to %s (%s)",
-                task or "call", reason, failed_provider, label, model or "default",
+                task or "call", reason, failed_provider, actual_label, model or "default",
             )
-            return client, model, label
+            return client, model, actual_label
         tried.append(label)
 
     logger.warning(
@@ -6437,15 +6478,43 @@ def call_llm(
                     fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
                         resolved_provider, task, reason=reason)
 
-            if fb_client is not None:
+            fallback_attempts = 0
+            while fb_client is not None:
+                fallback_attempts += 1
                 fb_kwargs = _build_call_kwargs(
                     fb_label, fb_model, messages,
                     temperature=temperature, max_tokens=max_tokens,
                     tools=tools, timeout=effective_timeout,
                     extra_body=effective_extra_body,
                     base_url=str(getattr(fb_client, "base_url", "") or ""))
-                return _validate_llm_response(
-                    fb_client.chat.completions.create(**fb_kwargs), task)
+                try:
+                    return _validate_llm_response(
+                        fb_client.chat.completions.create(**fb_kwargs), task)
+                except Exception as fb_err:
+                    if not _is_auth_error(fb_err):
+                        raise
+                    failed_fallback = (
+                        _recoverable_pool_provider(
+                            fb_label, fb_client, main_runtime=main_runtime
+                        )
+                        or fb_label
+                        or resolved_provider
+                    )
+                    _mark_provider_unhealthy(
+                        failed_fallback,
+                        reason="auth / credential error",
+                    )
+                    logger.info(
+                        "Auxiliary %s: fallback %s rejected credentials (%s), trying next fallback",
+                        task or "call", failed_fallback or "unknown", fb_err,
+                    )
+                    if not is_auto or fallback_attempts >= len(_get_provider_chain()):
+                        raise
+                    fb_client, fb_model, fb_label = _try_payment_fallback(
+                        failed_fallback or resolved_provider or "auto",
+                        task,
+                        reason="auth error",
+                    )
             # All fallback layers exhausted — emit a single user-visible
             # warning so the operator knows aux task is about to fail.
             # (#26882) The error itself is re-raised below.

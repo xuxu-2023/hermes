@@ -2028,6 +2028,70 @@ class TestCallLlmPaymentFallback:
         # Labelled as an auth error, not mis-tagged as a connection error.
         assert mock_fb.call_args.kwargs.get("reason") == "auth error"
 
+    def test_gemini_invalid_api_key_400_is_auth_error(self):
+        """Gemini reports invalid API keys as HTTP 400 INVALID_ARGUMENT."""
+        from agent.auxiliary_client import _is_auth_error
+
+        err = Exception(
+            "Gemini HTTP 400 (INVALID_ARGUMENT): API key not valid. "
+            "Please pass a valid API key."
+        )
+        err.status_code = 400
+
+        assert _is_auth_error(err) is True
+
+    def test_invalid_api_key_fallback_is_marked_and_next_candidate_tried(self, monkeypatch):
+        """A bad direct API-key fallback must not abort auto compression.
+
+        Regression for Codex timeout -> api-key/Gemini fallback -> invalid
+        Gemini key. The bad fallback candidate should be marked unhealthy and
+        the built-in chain should continue to the next available provider.
+        """
+        from agent.auxiliary_client import _is_provider_unhealthy
+
+        primary_client = MagicMock()
+        primary_client.base_url = "https://chatgpt.com/backend-api/codex/"
+        primary_client.chat.completions.create.side_effect = ConnectionError(
+            "Codex auxiliary Responses stream exceeded 120.0s total timeout"
+        )
+
+        gemini_client = MagicMock()
+        gemini_client.base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+        gemini_err = Exception(
+            "Gemini HTTP 400 (INVALID_ARGUMENT): API key not valid. "
+            "Please pass a valid API key."
+        )
+        gemini_err.status_code = 400
+        gemini_client.chat.completions.create.side_effect = gemini_err
+
+        recovered_client = MagicMock()
+        recovered_client.base_url = "https://inference-api.nousresearch.com/v1"
+        recovered_client.chat.completions.create.return_value = _DummyResponse("recovered")
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "gpt-5.5")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("auto", "gpt-5.5", None, None, None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(None, None, "")), \
+             patch("agent.auxiliary_client._try_main_fallback_chain",
+                   return_value=(None, None, "")), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                   side_effect=[
+                       (gemini_client, "gemini-3.5-flash", "gemini"),
+                       (recovered_client, "hermes-4", "nous"),
+                   ]) as mock_fallback:
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result.choices[0].message.content == "recovered"
+        assert gemini_client.chat.completions.create.call_count == 1
+        assert recovered_client.chat.completions.create.call_count == 1
+        assert mock_fallback.call_count == 2
+        assert _is_provider_unhealthy("gemini") is True
+
     def test_401_auth_error_no_fallback_with_explicit_provider(self, monkeypatch):
         """401 on an explicitly-configured provider must NOT silently switch.
 
