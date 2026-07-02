@@ -308,6 +308,22 @@ def split_markdown_table_row(line: str) -> list[str]:
     return [cell.strip() for cell in stripped.split("|")]
 
 
+def _normalize_table_group_heading(heading: str) -> str:
+    """Return plain heading text before wrapping it as a bullet-group title."""
+    text = heading.strip()
+    link_match = re.fullmatch(r"\[([^\]]+)\]\([^)]+\)", text)
+    if link_match:
+        return link_match.group(1).strip() or text
+
+    for marker in ("***", "___", "**", "__", "*", "_", "`"):
+        if text.startswith(marker) and text.endswith(marker):
+            inner = text[len(marker) : -len(marker)].strip()
+            if inner:
+                return _normalize_table_group_heading(inner)
+
+    return text
+
+
 def _render_table_block(table_block: list[str]) -> str:
     """Render a detected GFM table as bold-heading + bullet groups.
 
@@ -351,7 +367,7 @@ def _render_table_block(table_block: list[str]) -> str:
                 continue
             bullets.append(f"• {header}: {value}")
 
-        group_lines = [f"**{heading}**", *bullets]
+        group_lines = [f"**{_normalize_table_group_heading(heading)}**", *bullets]
         rendered_groups.append("\n".join(group_lines))
 
     return "\n\n".join(rendered_groups)
