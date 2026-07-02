@@ -941,6 +941,15 @@ def test_first_install_nous_auto_configures_video_gen(monkeypatch):
 class TestPlatformToolsetConsistency:
     """Every platform in tools_config.PLATFORMS must have a matching toolset."""
 
+    def test_sms_platform_is_registered(self):
+        """SMS is a real gateway platform (Platform.SMS, registered in
+        gateway/run.py), but it was missing from the platform registry, so
+        SMS gateway sessions couldn't resolve a default toolset. (#14112)"""
+        from hermes_cli.tools_config import PLATFORMS
+
+        assert "sms" in PLATFORMS
+        assert PLATFORMS["sms"]["default_toolset"] == "hermes-sms"
+
     def test_all_platforms_have_toolset_definitions(self):
         """Each platform's default_toolset must exist in TOOLSETS."""
         from hermes_cli.tools_config import PLATFORMS
