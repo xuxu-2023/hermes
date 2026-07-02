@@ -4740,6 +4740,30 @@ class TestStatusRemoteGateway:
         assert data["gateway_pid"] is None
         assert data["gateway_state"] == "running"
 
+    def test_status_treats_pid_probe_error_as_not_running(self, monkeypatch):
+        """Local PID probe errors must not make /api/status return 500."""
+        import gateway.config as gateway_config
+        import hermes_cli.web_server as ws
+
+        class _GatewayConfig:
+            def get_connected_platforms(self):
+                return []
+
+        def raise_probe_error():
+            raise SystemError("OSError returned a result with an exception set")
+
+        monkeypatch.setattr(ws, "get_running_pid", raise_probe_error)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", None)
+        monkeypatch.setattr(ws, "check_config_version", lambda: (1, 1))
+        monkeypatch.setattr(gateway_config, "load_gateway_config", lambda: _GatewayConfig())
+
+        resp = self.client.get("/api/status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["gateway_running"] is False
+        assert data["gateway_pid"] is None
 
 class TestGatewayBusyReadout:
     """Tests for the NAS busy/drainable readout on /api/status.
