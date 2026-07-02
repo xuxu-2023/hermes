@@ -267,6 +267,8 @@ class TestCmdUpdateBranchFallback:
         import subprocess as _subprocess
         build_ok = _subprocess.CompletedProcess([], 0, stdout="", stderr="")
         with patch.object(hm, "_is_termux_env", return_value=False), \
+             patch.object(hm, "_node_deps_need_install", return_value=True), \
+             patch.object(hm, "_web_ui_build_needed", return_value=True), \
              patch.object(hm, "_run_with_idle_timeout", return_value=build_ok) as mock_idle:
             cmd_update(mock_args)
 
@@ -276,23 +278,23 @@ class TestCmdUpdateBranchFallback:
             if call.args and call.args[0][0] == "/usr/bin/npm"
         ]
 
-        # cmd_update runs npm commands in these locations:
-        #   1. repo root  — root-only install (--workspaces=false)
-        #   2. repo root  — workspace install (--workspace ui-tui --workspace web)
-        #   3. web/       — npm ci --silent (if lockfile not at root)
-        #                  via _build_web_ui (subprocess.run)
-        #   4. web/       — npm run build (_run_with_idle_timeout)
+        # cmd_update order: _build_web_ui runs first, _update_node_dependencies last.
+        # This guarantees root deps (e.g. agent-browser) installed by the root
+        # npm ci are not pruned by a subsequent workspace-scoped npm ci.
         #
-        # With a single workspace lockfile at the repo root, the root
-        # install covers all workspaces.  The web/ ci call runs from the
-        # workspace root too (parent of web_dir) when the root lockfile
-        # exists.
+        #   1. web/       — npm ci --workspace web --silent (via _build_web_ui)
+        #                   With a single workspace lockfile at the repo root, the
+        #                   web/ ci call runs from the workspace root too.
+        #   2. web/       — npm run build (_run_with_idle_timeout)
+        #   3. repo root  — npm ci --workspaces=false installs root node_modules
+        #                   (hoisted tree) including agent-browser with its
+        #                   postinstall; apps/desktop Electron postinstall skipped
         #
-        # The root install omits `--silent` and runs without
-        # `capture_output` so optional postinstall scripts (e.g.
-        # `@askjo/camofox-browser`'s browser-binary fetch) print progress —
-        # otherwise long downloads look like a hang (#18840).
-        root_flags = [
+        # The root install omits --silent and runs without capture_output so
+        # postinstall scripts print progress (long downloads look like hangs
+        # otherwise).
+        web_install_flags = ["/usr/bin/npm", "ci", "--workspace", "web", "--silent"]
+        root_install_flags = [
             "/usr/bin/npm",
             "ci",
             "--no-fund",
@@ -300,27 +302,12 @@ class TestCmdUpdateBranchFallback:
             "--progress=false",
             "--workspaces=false",
         ]
-        ws_flags = [
-            "/usr/bin/npm",
-            "ci",
-            "--no-fund",
-            "--no-audit",
-            "--progress=false",
-            "--workspace",
-            "ui-tui",
-            "--workspace",
-            "web",
+        assert npm_calls[:1] == [
+            (web_install_flags, PROJECT_ROOT),
         ]
-        assert npm_calls[:2] == [
-            (root_flags, PROJECT_ROOT),
-            (ws_flags, PROJECT_ROOT),
+        assert npm_calls[-1:] == [
+            (root_install_flags, PROJECT_ROOT),
         ]
-        if len(npm_calls) > 2:
-            # The web/ install runs from the workspace root when the root
-            # lockfile exists (npm workspaces hoist node_modules upward).
-            assert npm_calls[2:] == [
-                (["/usr/bin/npm", "ci", "--workspace", "web", "--silent"], PROJECT_ROOT),
-            ]
 
         # The web UI build itself went through the streaming helper.
         mock_idle.assert_called_once()
@@ -328,10 +315,10 @@ class TestCmdUpdateBranchFallback:
         assert idle_args[0] == ["/usr/bin/npm", "run", "build"]
         assert idle_kwargs["cwd"] == PROJECT_ROOT / "web"
 
-        # Regression for #18840: root npm installs must stream output
-        # (capture_output=False) so postinstall progress is visible
-        # to the user.  The _build_web_ui install uses --silent and
-        # capture_output=True, so exclude it.
+        # Regression for #18840: repo-root npm install must stream output
+        # (capture_output=False) so postinstall progress is visible.
+        # The _build_web_ui install uses --silent and capture_output=True,
+        # so exclude it from this check.
         root_install_calls = [
             call
             for call in mock_run.call_args_list
@@ -341,7 +328,7 @@ class TestCmdUpdateBranchFallback:
             and call.kwargs.get("cwd") == PROJECT_ROOT
             and "--silent" not in call.args[0]
         ]
-        assert len(root_install_calls) == 2  # root-only + workspace install
+        assert len(root_install_calls) == 1  # single combined install
         for call in root_install_calls:
             assert call.kwargs.get("capture_output") is False, (
                 "repo-root npm install must stream output "
@@ -872,3 +859,214 @@ termux = ["rich>=14"]
 
     assert hm._load_installable_optional_extras(group="all") == ["mcp"]
     assert hm._load_installable_optional_extras(group="termux-all") == ["termux", "mcp"]
+
+
+class TestUpdateNodeDependencies:
+    """Unit tests for _update_node_dependencies — issue #43564.
+
+    The npm install must use --workspaces=false so only the hoisted tree
+    (root node_modules/) is installed, including agent-browser with its
+    postinstall scripts, while apps/desktop's Electron postinstall (~200 MB
+    binary download) is never triggered.
+    Uses a tmp_path root so tests never touch real node_modules.
+    """
+
+    def _npm_calls(self, mock_run):
+        return [
+            call.args[0]
+            for call in mock_run.call_args_list
+            if call.args and "npm" in str(call.args[0][0])
+        ]
+
+    @patch("subprocess.run")
+    @patch("shutil.which", return_value="/usr/bin/npm")
+    def test_install_uses_workspaces_false(self, _which, mock_run, tmp_path, monkeypatch):
+        """Regression for #43564: --workspaces=false must appear so only the
+        hoisted tree is installed (root deps like agent-browser included with
+        their postinstalls) while apps/desktop's Electron postinstall is never
+        triggered.
+        """
+        from hermes_cli import main as hm
+
+        (tmp_path / "package.json").write_text("{}")
+        (tmp_path / "package-lock.json").write_text("{}")
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        mock_run.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+        hm._update_node_dependencies()
+
+        calls = self._npm_calls(mock_run)
+        assert len(calls) == 1, f"expected exactly 1 npm call, got: {calls}"
+        joined = " ".join(str(a) for a in calls[0])
+        assert "--workspaces=false" in joined, (
+            f"--workspaces=false missing from npm call; actual: {calls[0]}"
+        )
+        assert "--workspace" not in joined.replace("--workspaces=false", ""), (
+            f"named --workspace selectors prune root deps and must not appear; actual: {calls[0]}"
+        )
+        assert "desktop" not in joined, (
+            f"apps/desktop must not appear (avoids ~200 MB Electron download); actual: {calls[0]}"
+        )
+
+    @patch("subprocess.run")
+    @patch("shutil.which", return_value="/usr/bin/npm")
+    def test_single_step_preserves_standard_flags(self, _which, mock_run, tmp_path, monkeypatch):
+        """--no-fund, --no-audit, --progress=false must survive alongside --workspaces=false."""
+        from hermes_cli import main as hm
+
+        (tmp_path / "package.json").write_text("{}")
+        (tmp_path / "package-lock.json").write_text("{}")
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        mock_run.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+        hm._update_node_dependencies()
+
+        calls = self._npm_calls(mock_run)
+        assert len(calls) == 1
+        joined = " ".join(str(a) for a in calls[0])
+        for flag in ("--no-fund", "--no-audit", "--progress=false"):
+            assert flag in joined, f"{flag} missing from npm call; actual: {calls[0]}"
+
+    @patch("subprocess.run")
+    @patch("shutil.which", return_value="/usr/bin/npm")
+    def test_skips_install_when_deps_up_to_date(self, _which, mock_run, tmp_path, monkeypatch):
+        """When node_modules matches package-lock.json, npm must not be called."""
+        import json as _json
+        from hermes_cli import main as hm
+
+        (tmp_path / "package.json").write_text("{}")
+        lock_data = {"packages": {"node_modules/foo": {"version": "1.0.0"}}}
+        (tmp_path / "package-lock.json").write_text(_json.dumps(lock_data))
+        nm = tmp_path / "node_modules"
+        nm.mkdir()
+        (nm / ".package-lock.json").write_text(_json.dumps(lock_data))
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+
+        hm._update_node_dependencies()
+
+        assert not self._npm_calls(mock_run), (
+            "npm must not run when node_modules/.package-lock.json matches package-lock.json"
+        )
+
+    @patch("subprocess.run")
+    @patch("shutil.which", return_value="/usr/bin/npm")
+    def test_skips_install_when_workspace_paths_in_lockfile(self, _which, mock_run, tmp_path, monkeypatch):
+        """Workspace-specific paths in package-lock.json must not trigger install.
+
+        --workspaces=false only installs the hoisted tree (node_modules/).
+        Workspace-specific paths like apps/desktop/... are in the lockfile but
+        are never installed; _node_deps_need_install must ignore them.
+        """
+        import json as _json
+        from hermes_cli import main as hm
+
+        (tmp_path / "package.json").write_text("{}")
+        lock_data = {
+            "packages": {
+                "node_modules/foo": {"version": "1.0.0"},
+                "apps/desktop": {"version": "1.0.0"},
+                "apps/desktop/node_modules/electron": {"version": "40.0.0", "dev": True},
+            }
+        }
+        # .package-lock.json only has the hoisted package (as --workspaces=false would produce)
+        installed_data = {"packages": {"node_modules/foo": {"version": "1.0.0"}}}
+        (tmp_path / "package-lock.json").write_text(_json.dumps(lock_data))
+        nm = tmp_path / "node_modules"
+        nm.mkdir()
+        (nm / ".package-lock.json").write_text(_json.dumps(installed_data))
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+
+        hm._update_node_dependencies()
+
+        assert not self._npm_calls(mock_run), (
+            "workspace-specific paths in lockfile must not trigger npm install"
+        )
+
+    @patch("subprocess.run")
+    @patch("shutil.which", return_value="/usr/bin/npm")
+    def test_runs_install_when_lockfile_changed(self, _which, mock_run, tmp_path, monkeypatch):
+        """When package-lock.json differs from the hidden marker, npm must run."""
+        import json as _json
+        from hermes_cli import main as hm
+
+        (tmp_path / "package.json").write_text("{}")
+        wanted = {"packages": {"node_modules/foo": {"version": "2.0.0"}}}
+        installed = {"packages": {"node_modules/foo": {"version": "1.0.0"}}}
+        (tmp_path / "package-lock.json").write_text(_json.dumps(wanted))
+        nm = tmp_path / "node_modules"
+        nm.mkdir()
+        (nm / ".package-lock.json").write_text(_json.dumps(installed))
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        mock_run.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+        hm._update_node_dependencies()
+
+        calls = self._npm_calls(mock_run)
+        assert len(calls) == 1, f"expected npm to run when lockfile changed; got: {calls}"
+
+    @patch("subprocess.run")
+    @patch("shutil.which", return_value="/usr/bin/npm")
+    def test_runs_install_when_node_modules_absent(self, _which, mock_run, tmp_path, monkeypatch):
+        """Deleted node_modules → no .package-lock.json → npm must run."""
+        from hermes_cli import main as hm
+
+        (tmp_path / "package.json").write_text("{}")
+        (tmp_path / "package-lock.json").write_text('{"packages":{}}')
+        # node_modules intentionally absent
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        mock_run.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+        hm._update_node_dependencies()
+
+        calls = self._npm_calls(mock_run)
+        assert len(calls) == 1, "npm must run when node_modules is absent"
+
+    @patch("subprocess.run")
+    @patch("shutil.which", return_value=None)
+    def test_returns_silently_when_npm_not_found(self, _which, mock_run, tmp_path, monkeypatch):
+        """No npm on PATH → return without calling subprocess."""
+        from hermes_cli import main as hm
+
+        (tmp_path / "package.json").write_text("{}")
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+
+        hm._update_node_dependencies()
+
+        mock_run.assert_not_called()
+
+    @patch("subprocess.run")
+    @patch("shutil.which", return_value="/usr/bin/npm")
+    def test_returns_silently_when_package_json_absent(self, _which, mock_run, tmp_path, monkeypatch):
+        """No package.json → return without calling npm."""
+        from hermes_cli import main as hm
+
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+
+        hm._update_node_dependencies()
+
+        mock_run.assert_not_called()
+
+    @patch("subprocess.run")
+    @patch("shutil.which", return_value="/usr/bin/npm")
+    def test_install_runs_from_project_root(self, _which, mock_run, tmp_path, monkeypatch):
+        """npm install must execute from PROJECT_ROOT, not a workspace subdir."""
+        from hermes_cli import main as hm
+
+        (tmp_path / "package.json").write_text("{}")
+        (tmp_path / "package-lock.json").write_text("{}")
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+
+        cwd_calls = []
+
+        def capture(cmd, **kwargs):
+            if "npm" in str(cmd[0]):
+                cwd_calls.append(kwargs.get("cwd"))
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        mock_run.side_effect = capture
+
+        hm._update_node_dependencies()
+
+        assert cwd_calls, "expected at least one npm call"
+        for cwd in cwd_calls:
+            assert cwd == tmp_path, f"npm must run from PROJECT_ROOT; got cwd={cwd}"
