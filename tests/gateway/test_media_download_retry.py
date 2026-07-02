@@ -234,6 +234,67 @@ class TestCacheImageFromUrl:
         assert mock_client.stream.call_count == 1
         mock_sleep.assert_not_called()
 
+    def test_rejects_non_image_response_body(self, _mock_safe, tmp_path, monkeypatch):
+        """cache_image_from_url keeps image validation despite media helper refactor."""
+        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
+        mock_client = _make_stream_client(
+            responses=[_make_stream_response(b"<!DOCTYPE html><title>not image</title>")]
+        )
+
+        async def run():
+            with patch("httpx.AsyncClient", return_value=mock_client):
+                from gateway.platforms.base import cache_image_from_url
+                await cache_image_from_url(
+                    "http://example.com/not-image.jpg", ext=".jpg"
+                )
+
+        with pytest.raises(ValueError, match="non-image data"):
+            asyncio.run(run())
+
+    def test_preserves_image_accept_header(self, _mock_safe, tmp_path, monkeypatch):
+        """Image URL caching keeps the stricter image Accept header."""
+        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
+        mock_client = _make_stream_client(
+            responses=[_make_stream_response(b"\xff\xd8\xff fake jpeg")]
+        )
+
+        async def run():
+            with patch("httpx.AsyncClient", return_value=mock_client):
+                from gateway.platforms.base import cache_image_from_url
+                return await cache_image_from_url(
+                    "http://example.com/img.jpg", ext=".jpg"
+                )
+
+        asyncio.run(run())
+        headers = mock_client.stream.call_args.kwargs["headers"]
+        assert headers["Accept"] == "image/*,*/*;q=0.8"
+
+
+@patch("tools.url_safety.is_safe_url", return_value=True)
+class TestCacheMediaFromUrl:
+    def test_generic_media_allows_non_image_response_body(self, _mock_safe, tmp_path, monkeypatch):
+        """Generic media URL caching accepts non-image payloads into media cache."""
+        import gateway.platforms.base as base
+
+        def fake_get_hermes_dir(_path, _env):
+            return tmp_path / "media"
+
+        monkeypatch.setattr(base, "get_hermes_dir", fake_get_hermes_dir)
+        mock_client = _make_stream_client(responses=[_make_stream_response(b"audio bytes")])
+
+        async def run():
+            with patch("httpx.AsyncClient", return_value=mock_client):
+                from gateway.platforms.base import cache_media_from_url
+                return await cache_media_from_url(
+                    "http://example.com/audio.m4a", ext=".m4a"
+                )
+
+        path = asyncio.run(run())
+        assert path.endswith(".m4a")
+        assert (tmp_path / "media").exists()
+        headers = mock_client.stream.call_args.kwargs["headers"]
+        assert headers["Accept"] == "*/*"
+
 
 # ---------------------------------------------------------------------------
 # cache_audio_from_url (base.py)
