@@ -1784,7 +1784,8 @@ _TOOL_DOC_LINES = [
      "    Replaces old_string with new_string in the file."),
     ("terminal",
      "  terminal(command: str, timeout=None, workdir=None) -> dict\n"
-     "    Foreground only (no background/pty). Returns {\"output\": \"...\", \"exit_code\": N}"),
+     "    Foreground only (no background/pty). Use direct terminal calls for one shell command; wrapping\n"
+     "    them here uses broader script approval. Returns {\"output\": \"...\", \"exit_code\": N}"),
 ]
 
 
@@ -1835,6 +1836,25 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
             "so project deps (pandas, etc.) and relative paths work like in terminal()."
         )
 
+    # Discourage wrapping a single command in execute_code purely to dodge
+    # command-level approval. Only name the ``terminal`` tool when it is an
+    # available sandbox tool — otherwise we'd point the model at a tool it
+    # can't call (the cross-tool-reference pitfall; the dynamic rebuild in
+    # model_tools passes the actually-available sandbox set).
+    if "terminal" in enabled_sandbox_tools:
+        no_wrap_note = (
+            "Do not wrap a single terminal command or subprocess in execute_code. "
+            "The script approval guard cannot review inner shell commands the way "
+            "terminal's command-level guard can, so these wrappers require broader "
+            "one-shot review. Call terminal directly for one command.\n\n"
+        )
+    else:
+        no_wrap_note = (
+            "Do not wrap a single subprocess call in execute_code purely to avoid "
+            "command-level review — the script approval guard cannot inspect the "
+            "inner commands, so these wrappers require broader one-shot review.\n\n"
+        )
+
     description = (
         "Run a Python script that can call Hermes tools programmatically. "
         "Use this when you need 3+ tool calls with processing logic between them, "
@@ -1844,6 +1864,7 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
         "Use normal tool calls instead when: single tool call with no processing, "
         "you need to see the full result and apply complex reasoning, "
         "or the task requires interactive user input.\n\n"
+        f"{no_wrap_note}"
         f"Available via `from hermes_tools import ...`:\n\n"
         f"{tool_lines}\n\n"
         "Limits: 5-minute timeout, 50KB stdout cap, max 50 tool calls per script. "
