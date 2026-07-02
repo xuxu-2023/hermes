@@ -29,17 +29,21 @@ from hermes_cli import kanban_db as kb
 
 
 def _load_plugin_router():
+    return _load_plugin_module("hermes_dashboard_plugin_kanban_attach_test").router
+
+
+def _load_plugin_module(module_name: str):
     repo_root = Path(__file__).resolve().parents[2]
     plugin_file = repo_root / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
     assert plugin_file.exists(), f"plugin file missing: {plugin_file}"
     spec = importlib.util.spec_from_file_location(
-        "hermes_dashboard_plugin_kanban_attach_test", plugin_file,
+        module_name, plugin_file,
     )
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
-    return mod.router
+    return mod
 
 
 @pytest.fixture
@@ -246,6 +250,34 @@ def test_upload_list_download_delete_roundtrip(client):
     assert client.get(
         f"/api/plugins/kanban/tasks/{task_id}/attachments"
     ).json()["attachments"] == []
+
+
+def test_board_routes_still_mount_without_python_multipart(kanban_home, monkeypatch):
+    """Missing multipart support must not take down the whole kanban API."""
+    orig_find_spec = importlib.util.find_spec
+
+    def fake_find_spec(name, package=None):
+        if name == "multipart":
+            return None
+        return orig_find_spec(name, package)
+
+    monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
+
+    mod_name = "hermes_dashboard_plugin_kanban_nomultipart_test"
+    sys.modules.pop(mod_name, None)
+    mod = _load_plugin_module(mod_name)
+
+    app = FastAPI()
+    app.include_router(mod.router, prefix="/api/plugins/kanban")
+    client = TestClient(app)
+
+    board = client.get("/api/plugins/kanban/board")
+    assert board.status_code == 200, board.text
+
+    task_id = _create_task_via_api(client)
+    upload = client.post(f"/api/plugins/kanban/tasks/{task_id}/attachments")
+    assert upload.status_code == 501
+    assert "python-multipart" in upload.json()["detail"]
 
 
 def test_upload_sanitizes_traversal_filename(client):
