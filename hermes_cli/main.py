@@ -10805,6 +10805,7 @@ def cmd_profile(args):
         remove_wrapper_script,
         _is_wrapper_dir_in_path,
         _get_wrapper_dir,
+        _get_path_guidance,
     )
     from hermes_constants import display_hermes_home
 
@@ -10879,7 +10880,7 @@ def cmd_profile(args):
         try:
             set_active_profile(name)
             if name == "default":
-                print(f"Switched to: default (~/.hermes)")
+                print(f"Switched to: default ({display_hermes_home()})")
             else:
                 print(f"Switched to: {name}")
         except (ValueError, FileNotFoundError) as e:
@@ -10967,10 +10968,7 @@ def cmd_profile(args):
                         print(f"Wrapper created: {wrapper_path}")
                         if not _is_wrapper_dir_in_path():
                             print(f"\n⚠ {_get_wrapper_dir()} is not in your PATH.")
-                            print(
-                                f"  Add to your shell config (~/.bashrc or ~/.zshrc):"
-                            )
-                            print(f'    export PATH="$HOME/.local/bin:$PATH"')
+                            print(_get_path_guidance())
 
             # Profile dir for display
             try:
