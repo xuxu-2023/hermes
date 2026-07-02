@@ -26,23 +26,44 @@ const DEFAULT_SIGN_IN_COPY: SignInCopy = {
   withProvider: provider => `Sign in with ${provider}`
 }
 
-// A remote, gated (oauth-bucket), not-currently-connected gateway is a
-// remote-reauth boot failure: the access cookie lapsed (e.g. the remote
+// A remote, gated (oauth-bucket OR basic), not-currently-connected gateway is
+// a remote-reauth boot failure: the access cookie lapsed (e.g. the remote
 // dashboard restarted) and the local-recovery buttons (Retry/Repair) can't
 // fix it — only re-establishing the remote session can. A connected oauth
 // session, or a token/local gateway, boots for some other reason the
 // local-recovery buttons address, so those return false here.
+//
+// 'basic' is treated as reauth-shaped alongside oauth because the same login
+// window machinery is used; the desktop detects both via the gateway's
+// advertised provider shape (basic ⇒ password form, oauth ⇒ provider
+// redirect). Token-remote gateways don't go through this branch — they're not
+// gated, the boot fails for a different reason, and re-running the connect
+// probe is the recovery path.
 export function isRemoteReauthFailure(config: DesktopConnectionConfig | null | undefined): boolean {
   if (!config) {
     return false
   }
 
-  return (
-    config.mode === 'remote' &&
-    config.remoteAuthMode === 'oauth' &&
-    !config.remoteOauthConnected &&
-    Boolean(config.remoteUrl)
-  )
+  if (config.mode !== 'remote') {
+    return false
+  }
+
+  // The public remoteAuthMode union is 'oauth' | 'token' today; we deliberately
+  // also recognise 'basic' as reauth-shaped, but comparing directly against
+  // the literal 'basic' would fail tsc with "no overlap". Casting through
+  // `string` keeps the comparison tsc-clean for today; the follow-up PR that
+  // widens the public type replaces these casts with plain equality again.
+  const authMode: string = String(config.remoteAuthMode)
+
+  if (authMode === 'oauth') {
+    return !config.remoteOauthConnected && Boolean(config.remoteUrl)
+  }
+
+  if (authMode === 'basic') {
+    return Boolean(config.remoteUrl)
+  }
+
+  return false
 }
 
 // Derive the password flag + display label from the probed providers. A
