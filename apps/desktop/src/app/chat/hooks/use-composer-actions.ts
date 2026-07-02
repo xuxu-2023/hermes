@@ -3,6 +3,7 @@ import { useCallback } from 'react'
 import { requestComposerFocus, requestComposerInsert, requestComposerInsertRefs } from '@/app/chat/composer/focus'
 import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
+import type { HermesWindowInfo } from '@/global'
 import { useI18n } from '@/i18n'
 import { attachmentId, contextPath, pathLabel } from '@/lib/chat-runtime'
 import { readDesktopFileDataUrl, selectDesktopPaths } from '@/lib/desktop-fs'
@@ -12,6 +13,7 @@ import {
   removeComposerAttachment,
   setComposerTerminalSelection
 } from '@/store/composer'
+import { $dockedWindow, dockWindow, undockWindow } from '@/store/dock'
 import { notify, notifyError } from '@/store/notifications'
 
 import type { ImageDetachResponse } from '../../types'
@@ -573,9 +575,38 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
     [attachContextFilePath, attachContextFolderPath, attachImageBlob, attachImagePath, copy.dropFiles]
   )
 
+  // Attach an open desktop window as a live target. Unlike file/image
+  // attachments (static bytes/paths), this is a handle the agent re-resolves
+  // and drives via the hermes-eats-world sidecar. The @window: ref carries the
+  // title into the prompt; pid disambiguates same-titled windows. Selecting a
+  // window also docks Hermes beside it (app tiled left, Hermes snapped right).
+  const attachWindow = useCallback((win: HermesWindowInfo) => {
+    const title = (win.name || '').trim() || `PID ${win.pid}`
+    const refText = `@window:${formatRefValue(title)}`
+
+    attachToMain({
+      id: attachmentId('window', `${refText}#${win.hwnd ?? win.pid}`),
+      kind: 'window',
+      label: title,
+      detail: win.class_name ? `${win.class_name} · PID ${win.pid}` : `PID ${win.pid}`,
+      refText,
+      pid: win.pid,
+      hwnd: win.hwnd ?? undefined
+    })
+
+    void dockWindow(win.hwnd, title)
+  }, [])
+
   const removeAttachment = useCallback(
     async (id: string) => {
       const removed = removeComposerAttachment(id)
+
+      // Removing the docked window's chip is the natural "stop controlling it"
+      // gesture — undock so the user isn't stranded in the narrow panel with a
+      // stale banner.
+      if (removed?.kind === 'window' && $dockedWindow.get() === removed.label) {
+        void undockWindow()
+      }
 
       if (
         removed?.kind === 'image' &&
@@ -602,6 +633,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
     attachDroppedItems,
     attachImageBlob,
     attachImagePath,
+    attachWindow,
     insertContextPathInlineRef,
     pasteClipboardImage,
     pickContextPaths,

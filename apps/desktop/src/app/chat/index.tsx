@@ -16,6 +16,7 @@ import { PromptOverlays } from '@/components/prompt-overlays'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ErrorState } from '@/components/ui/error-state'
+import type { HermesWindowInfo } from '@/global'
 import { getGlobalModelOptions, type HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
@@ -79,6 +80,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   onPickFiles: () => void
   onPickFolders: () => void
   onPickImages: () => void
+  onPickWindow: (win: HermesWindowInfo) => void
   onRemoveAttachment: (id: string) => void
   onSteer: (text: string) => Promise<boolean> | boolean
   onSubmit: (
@@ -270,6 +272,7 @@ export function ChatView({
   onPickFiles,
   onPickFolders,
   onPickImages,
+  onPickWindow,
   onRemoveAttachment,
   onSteer,
   onSubmit,
@@ -510,6 +513,7 @@ export function ChatView({
               onPickFiles={onPickFiles}
               onPickFolders={onPickFolders}
               onPickImages={onPickImages}
+              onPickWindow={onPickWindow}
               onRemoveAttachment={onRemoveAttachment}
               onSteer={onSteer}
               onSubmit={onSubmit}

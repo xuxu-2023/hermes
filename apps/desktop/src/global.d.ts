@@ -68,6 +68,17 @@ declare global {
       readFileDataUrl: (filePath: string) => Promise<string>
       readFileText: (filePath: string) => Promise<HermesReadFileTextResult>
       selectPaths: (options?: HermesSelectPathsOptions) => Promise<string[]>
+      // List open top-level windows on the desktop (via the hermes-eats-world
+      // sidecar). Powers the composer's "attach app/window" picker.
+      listWindows: () => Promise<HermesWindowInfo[]>
+      // Capture a window (by exact hwnd) as a base64 PNG data URL, or null if it
+      // can't be captured. Powers the live preview panel.
+      captureWindow: (hwnd: number) => Promise<string | null>
+      // Dock mode: tile the window (by exact hwnd) on the left and snap Hermes
+      // to a narrow panel on the right. undockWindow restores prior geometry.
+      dockToWindow: (hwnd: number) => Promise<{ ok: boolean; error?: string }>
+      undockWindow: () => Promise<{ ok: boolean }>
+
       writeClipboard: (text: string) => Promise<boolean>
       saveImageFromUrl: (url: string) => Promise<boolean>
       saveImageBuffer: (data: ArrayBuffer | Uint8Array, ext: string) => Promise<string>
@@ -676,6 +687,20 @@ export interface HermesSelectPathsOptions {
   directories?: boolean
   multiple?: boolean
   filters?: Array<{ name: string; extensions: string[] }>
+}
+
+/** An open top-level window reported by the hermes-eats-world sidecar
+ *  (`--list --json`). Mirrors the sidecar's WindowInfo payload. */
+export interface HermesWindowInfo {
+  name: string
+  class_name: string
+  automation_id: string
+  pid: number
+  /** Native window handle — the precise, unambiguous selector used for capture
+   *  and dock so we never act on a wrong same-titled window. */
+  hwnd: number | null
+  bounding_box: { left: number; top: number; width: number; height: number } | null
+  is_enabled: boolean
 }
 
 export interface BackendExit {

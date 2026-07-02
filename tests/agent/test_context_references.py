@@ -72,6 +72,61 @@ def test_parse_typed_references_ignores_emails_and_handles():
     assert refs[2].target == "2"
 
 
+def test_parse_window_reference():
+    from agent.context_references import parse_context_references
+
+    refs = parse_context_references('drive @window:Notepad and @window:"My App"')
+
+    assert [ref.kind for ref in refs] == ["window", "window"]
+    assert refs[0].target == "Notepad"
+    assert refs[1].target == "My App"
+
+
+def test_window_reference_expands_to_actionable_block(tmp_path: Path):
+    import os
+
+    from agent.context_references import preprocess_context_references
+
+    # Point the sidecar at a nonexistent dir so the subprocess fails fast and we
+    # exercise the deterministic "could not confirm" fallback (no live sidecar).
+    missing = tmp_path / "no-sidecar-here"
+    with patch.dict(os.environ, {"HERMES_SIDECAR_DIR": str(missing)}):
+        result = preprocess_context_references(
+            "rename the file in @window:Notepad", cwd=str(tmp_path), context_length=128000
+        )
+
+    assert result.expanded
+    assert [ref.kind for ref in result.references] == ["window"]
+    # The model is handed the exact commands to drive the window via its tools.
+    assert "sidecar.service" in result.message
+    assert "--run-goal" in result.message
+    assert "Notepad" in result.message
+
+
+def test_window_reference_quotes_malicious_title(tmp_path: Path):
+    """A window title is attacker-influenceable; it must never reach the emitted
+    shell command unescaped (command-injection blocker from the release review)."""
+    import os
+    import shlex
+
+    from agent.context_references import preprocess_context_references
+
+    # An unquoted ref token with shell metacharacters (no spaces, so it survives
+    # the @-ref regex) is the realistic injection vector.
+    evil = "a;echo;rm"
+    missing = tmp_path / "no-sidecar-here"  # force the title-fallback path
+    with patch.dict(os.environ, {"HERMES_SIDECAR_DIR": str(missing)}):
+        result = preprocess_context_references(
+            f"@window:{evil}", cwd=str(tmp_path), context_length=128000
+        )
+
+    assert result.expanded
+    # The title appears ONLY in its shlex-quoted form...
+    assert shlex.quote(evil) in result.message
+    # ...and never spliced raw into a command.
+    assert "--target a;echo;rm" not in result.message
+
+
 def test_parse_references_strips_trailing_punctuation():
     from agent.context_references import parse_context_references
 

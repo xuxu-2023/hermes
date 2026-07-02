@@ -340,6 +340,22 @@ function pathWithHermesManagedNode(...entries) {
 const ACTIVE_HERMES_ROOT = path.join(HERMES_HOME, 'hermes-agent')
 // VENV_ROOT — venv lives inside the repo, exactly like install.ps1 does it.
 const VENV_ROOT = path.join(ACTIVE_HERMES_ROOT, 'venv')
+// SIDECAR_DIR — the hermes-eats-world sidecar (Windows UI-automation engine).
+// The composer's "attach app/window" picker shells out to its CLI. Resolution:
+//   1. HERMES_SIDECAR_DIR (explicit override)
+//   2. packaged builds: the copy staged into resources at build time
+//      (scripts/stage-sidecar.cjs) — so a shipped app is self-contained and
+//      doesn't depend on a user-managed ~/hermes-eats-world checkout
+//   3. dev / fallback: the working copy at ~/hermes-eats-world
+function resolveSidecarDir() {
+  if (process.env.HERMES_SIDECAR_DIR) return process.env.HERMES_SIDECAR_DIR
+  if (app.isPackaged && process.resourcesPath) {
+    const bundled = path.join(process.resourcesPath, 'native-deps', 'hermes-eats-world')
+    if (directoryExists(bundled)) return bundled
+  }
+  return path.join(app.getPath('home'), 'hermes-eats-world')
+}
+const SIDECAR_DIR = resolveSidecarDir()
 // BOOTSTRAP_COMPLETE_MARKER — written by the first-launch bootstrap runner
 // (Phase 1D) after install.ps1 has completed all stages and the user has
 // finished initial configuration. Presence of this marker means the install
@@ -6580,6 +6596,147 @@ ipcMain.handle('hermes:selectPaths', async (_event, options = {}) => {
 
   if (result.canceled) return []
   return result.filePaths
+})
+
+ipcMain.handle('hermes:listWindows', async () => {
+  const { execFile } = require('node:child_process')
+  const python = getNoConsoleVenvPython(VENV_ROOT)
+  if (!fileExists(python)) {
+    throw new Error(`Hermes Python environment not found at ${VENV_ROOT}`)
+  }
+  if (!directoryExists(SIDECAR_DIR)) {
+    throw new Error(`Sidecar not found at ${SIDECAR_DIR} (set HERMES_SIDECAR_DIR to override)`)
+  }
+
+  const env = {
+    ...process.env,
+    ...buildDesktopBackendEnv({
+      hermesHome: HERMES_HOME,
+      pythonPathEntries: [SIDECAR_DIR, ...getVenvSitePackagesEntries(VENV_ROOT)],
+      venvRoot: VENV_ROOT
+    })
+  }
+
+  const stdout = await new Promise((resolve, reject) => {
+    execFile(
+      python,
+      ['-m', 'sidecar.service', '--list', '--json'],
+      { cwd: SIDECAR_DIR, env, timeout: 15000, maxBuffer: 4 * 1024 * 1024, windowsHide: true },
+      (err, out, errOut) => {
+        if (err) {
+          const tail = errOut ? `\n${String(errOut).slice(-500)}` : ''
+          reject(new Error(`Window list failed: ${err.message}${tail}`))
+          return
+        }
+        resolve(String(out || ''))
+      }
+    )
+  })
+
+  let parsed
+  try {
+    parsed = JSON.parse(stdout)
+  } catch {
+    throw new Error('Window list returned non-JSON output')
+  }
+  return Array.isArray(parsed?.windows) ? parsed.windows : []
+})
+
+ipcMain.handle('hermes:captureWindow', async (_event, hwnd) => {
+  const handle = Number(hwnd)
+  if (!Number.isInteger(handle) || handle <= 0) return null
+
+  const python = getNoConsoleVenvPython(VENV_ROOT)
+  if (!fileExists(python) || !directoryExists(SIDECAR_DIR)) {
+    return null
+  }
+
+  const { execFile } = require('node:child_process')
+  const env = {
+    ...process.env,
+    ...buildDesktopBackendEnv({
+      hermesHome: HERMES_HOME,
+      pythonPathEntries: [SIDECAR_DIR, ...getVenvSitePackagesEntries(VENV_ROOT)],
+      venvRoot: VENV_ROOT
+    })
+  }
+
+  try {
+    const stdout = await new Promise((resolve, reject) => {
+      execFile(
+        python,
+        ['-m', 'sidecar.service', '--hwnd', String(handle), '--capture', '--json'],
+        { cwd: SIDECAR_DIR, env, timeout: 15000, maxBuffer: 16 * 1024 * 1024, windowsHide: true },
+        (err, out) => (err ? reject(err) : resolve(String(out || '')))
+      )
+    })
+    const parsed = JSON.parse(stdout)
+    return typeof parsed?.image === 'string' ? parsed.image : null
+  } catch {
+    // Window closed / not found / capture failed — preview shows a placeholder.
+    return null
+  }
+})
+
+// Dock mode: tile the selected app on the left and snap Hermes to a narrow
+// panel on the right. dockPrevBounds remembers Hermes's pre-dock geometry so
+// undock can restore it.
+let dockPrevBounds = null
+
+ipcMain.handle('hermes:dockToWindow', async (_event, hwnd) => {
+  const handle = Number(hwnd)
+  if (!Number.isInteger(handle) || handle <= 0 || !mainWindow) return { ok: false, error: 'no target' }
+
+  const python = getNoConsoleVenvPython(VENV_ROOT)
+  if (!fileExists(python) || !directoryExists(SIDECAR_DIR)) {
+    return { ok: false, error: 'sidecar unavailable' }
+  }
+
+  const display = screen.getDisplayMatching(mainWindow.getBounds())
+  const wa = display.workArea // device-independent px
+  const sf = display.scaleFactor || 1
+  const hermesW = Math.max(360, Math.round(wa.width * 0.3))
+  const appW = wa.width - hermesW
+  const hermesDip = { x: wa.x + appW, y: wa.y, width: hermesW, height: wa.height }
+  // The sidecar's SetWindowPos is per-monitor-DPI-aware → physical pixels.
+  const phys = [wa.x * sf, wa.y * sf, appW * sf, wa.height * sf].map(Math.round).join(',')
+
+  const { execFile } = require('node:child_process')
+  const env = {
+    ...process.env,
+    ...buildDesktopBackendEnv({
+      hermesHome: HERMES_HOME,
+      pythonPathEntries: [SIDECAR_DIR, ...getVenvSitePackagesEntries(VENV_ROOT)],
+      venvRoot: VENV_ROOT
+    })
+  }
+
+  try {
+    await new Promise((resolve, reject) => {
+      execFile(
+        python,
+        ['-m', 'sidecar.service', '--hwnd', String(handle), '--move', phys, '--json'],
+        { cwd: SIDECAR_DIR, env, timeout: 15000, windowsHide: true },
+        (err, out) => (err ? reject(err) : resolve(String(out || '')))
+      )
+    })
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e) }
+  }
+
+  if (!dockPrevBounds) dockPrevBounds = mainWindow.getBounds()
+  if (mainWindow.isMaximized?.()) mainWindow.unmaximize()
+  mainWindow.setBounds(hermesDip)
+  return { ok: true }
+})
+
+ipcMain.handle('hermes:undockWindow', async () => {
+  if (mainWindow && dockPrevBounds) {
+    if (mainWindow.isMaximized?.()) mainWindow.unmaximize()
+    mainWindow.setBounds(dockPrevBounds)
+    dockPrevBounds = null
+  }
+  return { ok: true }
 })
 
 ipcMain.handle('hermes:writeClipboard', (_event, text) => {
