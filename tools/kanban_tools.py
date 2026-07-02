@@ -885,6 +885,11 @@ def _handle_create(args: dict, **kw) -> str:
     if goal_bool_error:
         return tool_error(goal_bool_error)
     goal_max_turns = args.get("goal_max_turns")
+    model_override = args.get("model")
+    if model_override is None:
+        model_override = args.get("model_override")
+    if model_override is not None:
+        model_override = str(model_override).strip() or None
     if isinstance(parents, str):
         parents = [parents]
     if not isinstance(parents, (list, tuple)):
@@ -926,6 +931,7 @@ def _handle_create(args: dict, **kw) -> str:
                     if max_runtime_seconds is not None else None
                 ),
                 skills=skills,
+                model_override=model_override,
                 goal_mode=goal_mode,
                 goal_max_turns=(
                     int(goal_max_turns) if goal_max_turns is not None else None
@@ -1516,6 +1522,13 @@ KANBAN_CREATE_SCHEMA = {
                     "task, ['github-code-review'] for a reviewer task. "
                     "The names must match skills installed on the "
                     "assignee's profile."
+                ),
+            },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Optional per-task model id. When set, the dispatcher "
+                    "passes this model to the assigned worker for this card."
                 ),
             },
             "goal_mode": {
