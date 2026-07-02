@@ -21,6 +21,7 @@ import type {
 } from '../gatewayTypes.js'
 import { useGitBranch } from '../hooks/useGitBranch.js'
 import { useVirtualHistory } from '../hooks/useVirtualHistory.js'
+import { translate, type TranslationKey } from '../i18n/index.js'
 import { composerPromptWidth } from '../lib/inputMetrics.js'
 import { appendTranscriptMessage } from '../lib/messages.js'
 import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
@@ -189,6 +190,7 @@ export function useMainApp(gw: GatewayClient) {
   const [bellOnComplete, setBellOnComplete] = useState(false)
 
   const ui = useStore($uiState)
+  const ti = useCallback((key: TranslationKey, vars?: Record<string, string | number>) => translate(ui.locale, key, vars), [ui.locale])
   const overlay = useStore($overlayState)
 
   const turnLiveTailActive = useTurnSelector(state =>
@@ -276,7 +278,7 @@ export function useMainApp(gw: GatewayClient) {
     gw,
     onClipboardPaste: quiet => clipboardPasteRef.current(quiet),
     onImageAttached: info => {
-      sys(attachedImageNotice(info))
+      sys(attachedImageNotice(info, ui.locale))
     },
     submitRef
   })
@@ -439,10 +441,10 @@ export function useMainApp(gw: GatewayClient) {
       const warning = (value as { warning?: unknown } | null)?.warning
 
       if (typeof warning === 'string' && warning) {
-        sys(`warning: ${warning}`)
+        sys(ti('common.warning') + `: ${warning}`)
       }
     },
-    [sys]
+    [sys, ti]
   )
 
   const maybeGoodVibes = useCallback((text: string) => {
@@ -463,14 +465,14 @@ export function useMainApp(gw: GatewayClient) {
           return result
         }
 
-        sys(`error: invalid response: ${method}`)
+        sys(ti('errors.invalidResponse', { method }))
       } catch (e) {
         sys(`error: ${rpcErrorMessage(e)}`)
       }
 
       return null
     },
-    [gw, sys]
+    [gw, sys, ti]
   )
 
   const gateway = useMemo(() => ({ gw, rpc }), [gw, rpc])
@@ -670,16 +672,16 @@ export function useMainApp(gw: GatewayClient) {
         }
 
         if (r.attached) {
-          const meta = imageTokenMeta(r)
+          const meta = imageTokenMeta(r, ui.locale)
 
-          return sys(`📎 Image #${r.count} attached from clipboard${meta ? ` · ${meta}` : ''}`)
+          return sys(ti('image.attached', { count: String(r.count), meta: meta ? ` · ${meta}` : '' }))
         }
 
         if (!quiet) {
-          sys(r.message || 'No image found in clipboard')
+          sys(r.message || ti('paste.noImage'))
         }
       }),
-    [rpc, sys]
+    [rpc, sys, ti, ui.locale]
   )
 
   clipboardPasteRef.current = paste
@@ -823,7 +825,7 @@ export function useMainApp(gw: GatewayClient) {
 
       recoverSidRef.current = null
       turnController.pushActivity('gateway exited · /logs to inspect', 'error')
-      sys('error: gateway exited')
+      sys(ti('errors.gatewayExited'))
     }
 
     gw.on('event', handler)
@@ -835,7 +837,7 @@ export function useMainApp(gw: GatewayClient) {
       gw.off('event', handler)
       gw.off('exit', exitHandler)
     }
-  }, [gw, sys])
+  }, [gw, sys, ti])
 
   useLongRunToolCharms()
 
@@ -1114,11 +1116,13 @@ export function useMainApp(gw: GatewayClient) {
       turnStartedAt: ui.sid ? turnStartedAt : null,
       // CLI parity: the classic prompt_toolkit status bar shows a red dot
       // on REC (cli.py:_get_voice_status_fragments line 2344).
-      voiceLabel: voiceRecording
-        ? '● REC'
-        : voiceProcessing
-          ? '◉ STT'
-          : `voice ${voiceEnabled ? 'on' : 'off'}${voiceTts ? ' [tts]' : ''}`
+      // Raw voice state passed through so StatusRule (inside I18nProvider)
+      // can compute the translated label — useMainApp runs outside I18nProvider
+      // so its useI18n() always returns the default 'en' context.
+      voiceRecording,
+      voiceProcessing,
+      voiceEnabled,
+      voiceTts,
     }),
     [
       cwd,

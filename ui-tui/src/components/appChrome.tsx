@@ -8,9 +8,9 @@ import type { IndicatorStyle, Notice } from '../app/interfaces.js'
 import { useTurnSelector } from '../app/turnStore.js'
 import { DEV_CREDITS_MODE } from '../config/env.js'
 import { FACES } from '../content/faces.js'
-import { VERBS } from '../content/verbs.js'
 import { fmtDuration } from '../domain/messages.js'
 import { stickyPromptFromViewport } from '../domain/viewport.js'
+import { getThinkingVerbs, type I18nApi, LOCALES, shouldEllipsisVerb, useI18n } from '../i18n/index.js'
 import { buildSubagentTree, treeTotals, widthByDepth } from '../lib/subagentTree.js'
 import { fmtK } from '../lib/text.js'
 import { useScrollbarSnapshot, useViewportSnapshot } from '../lib/viewportStore.js'
@@ -20,10 +20,38 @@ import type { Msg, Usage } from '../types.js'
 const FACE_TICK_MS = 2500
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
 
+// Terminal display width: ASCII=1, CJK/fullwidth=2
+const charDispWidth = (c: string) => {
+  const code = c.codePointAt(0) ?? 0
+
+  return (
+    (code >= 0x1100 && code <= 0x115f) ||
+    (code >= 0x2e80 && code <= 0xa4cf) ||
+    (code >= 0xac00 && code <= 0xd7a3) ||
+    (code >= 0xf900 && code <= 0xfaff) ||
+    (code >= 0xfe10 && code <= 0xfe19) ||
+    (code >= 0xfe30 && code <= 0xfe6f) ||
+    (code >= 0xff00 && code <= 0xff60) ||
+    (code >= 0xffe0 && code <= 0xffe6)
+  ) ? 2 : 1
+}
+
+export const displayWidth = (s: string) => { let w = 0;
+
+ for (const c of s) {w += charDispWidth(c);}
+
+ return w }
+
 // Keep verb segment width stable so status-bar content to the right doesn't
 // jitter when the ticker rotates between short/long verbs.
-export const VERB_PAD_LEN = VERBS.reduce((max, v) => Math.max(max, v.length), 0) + 1 // + ellipsis
-export const padVerb = (verb: string) => `${verb}…`.padEnd(VERB_PAD_LEN, ' ')
+export const VERB_PAD_LEN = Math.max(...LOCALES.flatMap(l => getThinkingVerbs(l)).map(v => displayWidth(v))) + 1 // + ellipsis
+
+export const padVerb = (verb: string) => {
+  const text = `${verb}…`
+  const pad = Math.max(0, VERB_PAD_LEN - displayWidth(text))
+
+  return text + ' '.repeat(pad)
+}
 
 // Compact alternates for the `emoji` and `ascii` indicator styles.
 // Each entry is a fixed-width (display-width) glyph.
@@ -117,8 +145,9 @@ export const busyIndicatorWidth = (style: IndicatorStyle, hasDuration: boolean):
 }
 
 function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: null | number; style: IndicatorStyle }) {
+  const { locale, verbs } = useI18n()
   const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
-  const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * VERBS.length))
+  const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * verbs.length))
   const [now, setNow] = useState(() => Date.now())
 
   // Pre-compute cadence + verb-visibility for the active style so an
@@ -145,8 +174,8 @@ function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: nu
   }, [intervalMs, showVerb])
 
   const { frame } = renderIndicator(style, tick)
-  const verb = VERBS[verbTick % VERBS.length] ?? ''
-  const verbSegment = showVerb ? ` ${padVerb(verb)}` : ''
+  const verb = verbs[verbTick % verbs.length] ?? ''
+  const verbSegment = showVerb ? ` ${shouldEllipsisVerb(locale) ? `${verb}…` : padVerb(verb)}` : ''
   // Leading space keeps a gap between the frame and the duration when the
   // verb segment is hidden (e.g. `unicode` spinner style).  When the verb
   // IS shown, its trailing padding already provides the gap, so the extra
@@ -402,7 +431,13 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   return <Text color={color}>♥</Text>
 }
 
-export function StatusRule({
+export function StatusRule(props: StatusRuleProps) {
+  const i18n = useI18n()
+
+  return <StatusRuleView {...props} i18n={i18n} />
+}
+
+export function StatusRuleView({
   cwdLabel,
   cols,
   busy,
@@ -419,10 +454,14 @@ export function StatusRule({
   liveSessionCount,
   sessionStartedAt,
   turnStartedAt,
-  voiceLabel,
+  voiceRecording,
+  voiceProcessing,
+  voiceEnabled,
+  voiceTts,
   onSessionCountClick,
+  i18n,
   t
-}: StatusRuleProps) {
+}: StatusRuleProps & { i18n: I18nApi }) {
   const pct = usage.context_percent
   const barColor = ctxBarColor(pct, t)
   const segs = statusBarSegments(cols)
@@ -434,11 +473,21 @@ export function StatusRule({
       ? `${fmtK(usage.context_used ?? 0)} tok`
       : `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
     : usage.total > 0
-      ? `${fmtK(usage.total)} tok`
+      ? `${fmtK(usage.total)} ${i18n.t('usage.tokensShort')}`
       : ''
 
   const bar = !segs.compactCtx && usage.context_max ? ctxBar(pct) : ''
   const modelText = modelLabel(model, modelReasoningEffort, modelFast)
+  const statusText = i18n.tStatus(status)
+  const compressions = typeof usage.compressions === 'number' ? usage.compressions : 0
+  const compressionText = `${i18n.t('usage.compressionsShort')} ${compressions}`
+  const bgText = `${bgCount} ${i18n.t('background.short')}`
+
+  const voiceLabel = voiceRecording
+    ? '● REC'
+    : voiceProcessing
+      ? '◉ STT'
+      : i18n.t('voice.idle', { state: voiceEnabled ? i18n.t('voice.on') : i18n.t('voice.off') }) + (voiceTts ? ' [tts]' : '')
 
   // A credits notice replaces the status/verb slot, but only when idle —
   // while busy the FaceTicker always wins (R1 render priority). The notice
@@ -461,7 +510,7 @@ export function StatusRule({
     ? busyIndicatorWidth(indicatorStyle, turnStartedAt != null)
     : showNotice
       ? noticeReserve
-      : stringWidth(status)
+      : stringWidth(statusText)
 
   const essentialWidth =
     stringWidth('─ ') +
@@ -473,10 +522,11 @@ export function StatusRule({
   const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, cwdLabel, essentialWidth)
 
   // Whole-segment progressive disclosure for the tail: a segment renders only
-  // if it fits in the space left after the pinned essentials, evaluated in
-  // descending priority order — bar, duration, compressions, voice, session
-  // count, bg, cost. Lower-priority segments drop first and nothing truncates
-  // mid-segment, so status/model/context are never crushed.
+  // if it fits in the space left after the pinned essentials. Idle background
+  // subagents explain an upcoming auto-resume, so that reassurance outranks
+  // telemetry like the context bar and voice state. Lower-priority segments
+  // drop first and nothing truncates mid-segment, so status/model/context are
+  // never crushed.
   const SEP = stringWidth(' │ ')
   let tailBudget = Math.max(0, leftWidth - essentialWidth)
 
@@ -491,7 +541,12 @@ export function StatusRule({
   }
 
   const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
-  const compressions = typeof usage.compressions === 'number' ? usage.compressions : 0
+  const subagentCount = typeof usage.active_subagents === 'number' ? usage.active_subagents : 0
+
+  const resumeHintText =
+    subagentCount === 1
+      ? i18n.t('background.resumeWhenSubagentFinishes')
+      : i18n.t('background.resumeWhenSubagentsFinish', { count: String(subagentCount) })
 
   // Dev-only readout (HERMES_DEV_CREDITS). The server omits the key entirely unless the
   // flag is on, so this segment self-hides for normal users. micros→cents is allowed money
@@ -502,6 +557,12 @@ export function StatusRule({
       ? `Δ ${(usage.dev_credits_spent_micros / 10000).toFixed(1)}¢`
       : ''
 
+  // Parked-background reassurance: a top-level delegate_task runs in the
+  // background, so the turn ends (idle) while the subagent keeps working and its
+  // result re-enters as a fresh turn later. When idle with work still in flight,
+  // spell out that the agent resumes on its own — no spinner, nothing to poll.
+  const showResumeHint = !busy && subagentCount > 0 && fits(SEP + stringWidth(resumeHintText))
+  const showSubagents = segs.subagents && subagentCount > 0 && fits(SEP + stringWidth(`⛓ ${subagentCount}`))
   const showBar = !!bar && fits(SEP + stringWidth(`[${bar}] ${pct != null ? `${pct}%` : ''}`))
   const showDuration = segs.duration && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
 
@@ -511,23 +572,10 @@ export function StatusRule({
   const showIdle =
     segs.duration && !busy && lastTurnEndedAt != null && fits(SEP + stringWidth('✓ ') + MAX_DURATION_WIDTH)
 
-  const showCompressions = segs.compressions && compressions > 0 && fits(SEP + stringWidth(`cmp ${compressions}`))
+  const showCompressions = segs.compressions && compressions > 0 && fits(SEP + stringWidth(compressionText))
   const showVoice = segs.voice && !!voiceLabel && fits(SEP + stringWidth(voiceLabel))
   const showSessionCount = !!sessionCountText && fits(SEP + stringWidth(sessionCountText))
-  const showBg = segs.bg && bgCount > 0 && fits(SEP + stringWidth(`${bgCount} bg`))
-  const subagentCount = typeof usage.active_subagents === 'number' ? usage.active_subagents : 0
-  const showSubagents = segs.subagents && subagentCount > 0 && fits(SEP + stringWidth(`⛓ ${subagentCount}`))
-
-  // Parked-background reassurance: a top-level delegate_task runs in the
-  // background, so the turn ends (idle) while the subagent keeps working and its
-  // result re-enters as a fresh turn later. When idle with work still in flight,
-  // spell out that the agent resumes on its own — no spinner, nothing to poll.
-  // Width-budgeted like every tail segment, so it drops first on a tight
-  // terminal where ⛓ already carries the signal.
-  const resumeHintText =
-    subagentCount === 1 ? '↩ resumes when subagent finishes' : `↩ resumes when ${subagentCount} subagents finish`
-
-  const showResumeHint = !busy && subagentCount > 0 && fits(SEP + stringWidth(resumeHintText))
+  const showBg = segs.bg && bgCount > 0 && fits(SEP + stringWidth(bgText))
   // Dev-gated readout (HERMES_DEV_CREDITS), lowest priority,
   // so it consumes tail budget LAST and drops first on a narrow terminal.
   const showDevCredits = !!devCreditsText && fits(SEP + stringWidth(devCreditsText))
@@ -558,7 +606,7 @@ export function StatusRule({
             <FaceTicker color={statusColor} startedAt={turnStartedAt} style={indicatorStyle} />
           ) : showNotice ? null : (
             <Text color={statusColor} wrap="truncate-end">
-              {status}
+              {statusText}
             </Text>
           )}
         </Box>
@@ -612,7 +660,7 @@ export function StatusRule({
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
             <Text color={compressions >= 10 ? t.color.error : compressions >= 5 ? t.color.warn : t.color.muted}>
-              cmp {compressions}
+              {compressionText}
             </Text>
           </Text>
         ) : null}
@@ -631,7 +679,7 @@ export function StatusRule({
         {showBg ? (
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
-            {bgCount} bg
+            {bgText}
           </Text>
         ) : null}
         {showSubagents ? (
@@ -688,8 +736,9 @@ export function FloatBox({ children, color }: { children: ReactNode; color: stri
 }
 
 export function StickyPromptTracker({ messages, offsets, scrollRef, onChange }: StickyPromptTrackerProps) {
+  const { locale } = useI18n()
   const { atBottom, bottom, top } = useViewportSnapshot(scrollRef)
-  const text = stickyPromptFromViewport(messages, offsets, top, bottom, atBottom)
+  const text = stickyPromptFromViewport(messages, offsets, top, bottom, atBottom, locale)
 
   useEffect(() => onChange(text), [onChange, text])
 
@@ -787,7 +836,10 @@ interface StatusRuleProps {
   t: Theme
   turnStartedAt?: null | number
   usage: Usage
-  voiceLabel?: string
+  voiceRecording: boolean
+  voiceProcessing: boolean
+  voiceEnabled: boolean
+  voiceTts: boolean
   onSessionCountClick?: () => void
 }
 

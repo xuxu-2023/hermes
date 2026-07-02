@@ -676,7 +676,7 @@ export function TextInput({
     canFastEchoBase() && canFastAppendShape(current, cursor, text, columns, lineWidthRef.current)
 
   const canFastBackspace = (current: string, cursor: number) =>
-    canFastEchoBase() && canFastBackspaceShape(current, cursor, columns)
+canFastEchoBase() && canFastBackspaceShape(current, cursor, columns)
 
   const commit = (
     next: string,

@@ -37,6 +37,7 @@ import { titleFromSessionInfoPayload } from "@/lib/chat-title";
 import { cn } from "@/lib/utils";
 import { AlertCircle, ChevronDown, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useI18n } from "@/i18n";
 
 interface SessionInfo {
   cwd?: string;
@@ -50,14 +51,6 @@ interface RpcEnvelope {
   method?: string;
   params?: { type?: string; payload?: unknown };
 }
-
-const STATE_LABEL: Record<ConnectionState, string> = {
-  idle: "idle",
-  connecting: "connecting",
-  open: "live",
-  closed: "closed",
-  error: "error",
-};
 
 const STATE_TONE: Record<
   ConnectionState,
@@ -86,6 +79,7 @@ export function ChatSidebar({
   onDashboardNewSessionRequest,
   onSessionTitleChange,
 }: ChatSidebarProps) {
+  const { t } = useI18n();
   // `version` bumps on reconnect; gw is derived so we never call setState
   // for it inside an effect (React 19's set-state-in-effect rule). The
   // counter is the dependency on purpose — it's not read in the memo body,
@@ -136,6 +130,14 @@ export function ChatSidebar({
         // Best-effort: keep the last known label rather than blanking it.
       });
   }, []);
+
+  const STATE_LABEL: Record<ConnectionState, string> = {
+    idle: t.common.off,
+    connecting: t.status.starting,
+    open: t.common.live,
+    closed: t.status.stopped,
+    error: t.status.error,
+  };
 
   // Profile or PTY channel change tears down both WebSockets. Bump `version`
   // (same path as the manual Reconnect button) so the gateway client is
@@ -239,14 +241,14 @@ export function ChatSidebar({
       // `unmounting` suppresses the banner during cleanup — `ws.close()`
       // from the effect's return fires a close event with code 1005 that
       // would otherwise look like an unexpected drop.
-      const DISCONNECTED = "events feed disconnected — tool calls may not appear";
+      const DISCONNECTED = t.chatSidebar.eventsDisconnected;
       const surface = (msg: string) => !unmounting && setError(msg);
 
       ws.addEventListener("error", () => surface(DISCONNECTED));
 
       ws.addEventListener("close", (ev) => {
         if (ev.code === 4401 || ev.code === 4403) {
-          surface(`events feed rejected (${ev.code}) — reload the page`);
+          surface(t.chatSidebar.eventsRejected.replace("{code}", String(ev.code)));
         } else if (ev.code !== 1000) {
           surface(DISCONNECTED);
         }
@@ -282,7 +284,14 @@ export function ChatSidebar({
       unmounting = true;
       ws?.close();
     };
-  }, [channel, onDashboardNewSessionRequest, onSessionTitleChange, version]);
+  }, [
+    channel,
+    onDashboardNewSessionRequest,
+    onSessionTitleChange,
+    version,
+    t.chatSidebar.eventsDisconnected,
+    t.chatSidebar.eventsRejected,
+  ]);
 
   // Seed the badge on mount and re-read it whenever the sockets are rebuilt
   // (a profile/channel switch bumps `version`).
@@ -313,7 +322,7 @@ export function ChatSidebar({
       <Card className="flex items-center justify-between gap-2 px-3 py-2">
         <div className="min-w-0 flex-1">
           <div className="text-display text-xs tracking-wider text-text-tertiary">
-            model
+            {t.chatSidebar.model}
           </div>
 
           <Button
@@ -325,7 +334,7 @@ export function ChatSidebar({
               "self-start normal-case tracking-normal text-sm font-medium",
               "hover:underline disabled:no-underline",
             )}
-            title={modelName === "—" ? "switch model" : modelName}
+            title={modelName === "—" ? t.chatSidebar.switchModel : modelName}
           >
             <span className="flex min-w-0 max-w-full items-center gap-1">
               <span className="truncate">{modelLabel}</span>
@@ -346,9 +355,7 @@ export function ChatSidebar({
             currentModel={modelName}
             refreshKey={modelRefreshKey}
             onChanged={(effort) =>
-              setModelNotice(
-                `Reasoning effort set to ${effort}. Run /new or refresh the page to apply it to this chat.`,
-              )
+              setModelNotice(t.chatSidebar.reasoningEffortSet.replace("{effort}", effort))
             }
           />
         </Card>
@@ -379,7 +386,7 @@ export function ChatSidebar({
                 onClick={reconnect}
                 prefix={<RefreshCw />}
               >
-                reconnect
+                {t.chatSidebar.reconnect}
               </Button>
             )}
           </div>

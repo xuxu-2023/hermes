@@ -100,7 +100,7 @@ export function submitPrompt(text: string, deps: SubmitPromptDeps, showUserMessa
       }
 
       if (r.is_image) {
-        turnController.pushActivity(attachedImageNotice(r))
+        turnController.pushActivity(attachedImageNotice(r, getUiState().locale))
       } else {
         turnController.pushActivity(`detected file: ${r.name}`)
       }

@@ -58,7 +58,7 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
 
   const current = availableThemes.find((th) => th.name === themeName);
   const label = current?.label ?? themeName;
-  const sheetTitle = t.theme?.title ?? "Theme";
+  const sheetTitle = t.theme.title;
 
   return (
     <div ref={wrapperRef} className="relative">
@@ -101,6 +101,7 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
               availableThemes={availableThemes}
               close={close}
               setTheme={setTheme}
+              t={t}
               themeName={themeName}
             />
             <FontSection
@@ -143,6 +144,7 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
               availableThemes={availableThemes}
               close={close}
               setTheme={setTheme}
+              t={t}
               themeName={themeName}
             />
             <FontSection
@@ -162,6 +164,7 @@ function ThemeSwitcherOptions({
   availableThemes,
   close,
   setTheme,
+  t,
   themeName,
 }: ThemeSwitcherOptionsProps) {
   return (
@@ -192,7 +195,7 @@ function ThemeSwitcherOptions({
               <Typography
                 className="truncate text-display text-xs tracking-wide"
               >
-                {th.label}
+                {t ? (t.theme.presets[th.name]?.label ?? th.label) : th.label}
               </Typography>
               {th.description && (
                 <Typography className="truncate text-xs tracking-normal text-text-tertiary">
@@ -343,6 +346,7 @@ interface ThemeSwitcherOptionsProps {
   availableThemes: ThemeListEntry[];
   close: () => void;
   setTheme: (name: string) => void;
+  t?: ReturnType<typeof useI18n>["t"];
   themeName: string;
 }
 

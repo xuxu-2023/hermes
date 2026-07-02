@@ -33,26 +33,43 @@ import type {
 } from "@/lib/api";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { usePageHeader } from "@/contexts/usePageHeader";
+import { useI18n } from "@/i18n";
+import type { Translations } from "@/i18n/types";
 import { cn, themedBody } from "@/lib/utils";
 
 // State → badge mapping. The backend emits a small, fixed vocabulary plus
 // whatever the live gateway runtime reports (connected/disconnected/fatal).
 const STATE_BADGE: Record<
   string,
-  { tone: "success" | "warning" | "destructive" | "secondary" | "outline"; label: string }
+  {
+    tone: "success" | "warning" | "destructive" | "secondary" | "outline";
+    labelKey: keyof Translations["channels"]["state"];
+  }
 > = {
-  connected: { tone: "success", label: "Connected" },
-  pending_restart: { tone: "warning", label: "Restart to apply" },
-  gateway_stopped: { tone: "warning", label: "Gateway stopped" },
-  startup_failed: { tone: "destructive", label: "Start failed" },
-  disconnected: { tone: "warning", label: "Disconnected" },
-  not_configured: { tone: "outline", label: "Not configured" },
-  disabled: { tone: "secondary", label: "Disabled" },
-  fatal: { tone: "destructive", label: "Error" },
+  connected: { tone: "success", labelKey: "connected" },
+  pending_restart: { tone: "warning", labelKey: "pendingRestart" },
+  gateway_stopped: { tone: "warning", labelKey: "gatewayStopped" },
+  startup_failed: { tone: "destructive", labelKey: "startupFailed" },
+  disconnected: { tone: "warning", labelKey: "disconnected" },
+  not_configured: { tone: "outline", labelKey: "notConfigured" },
+  disabled: { tone: "secondary", labelKey: "disabled" },
+  fatal: { tone: "destructive", labelKey: "fatal" },
 };
 
-function stateBadge(state: string) {
-  return STATE_BADGE[state] ?? { tone: "outline" as const, label: state };
+function formatTemplate(
+  template: string,
+  values: Record<string, string | number>,
+): string {
+  return template.replace(/\{(\w+)\}/g, (match, key: string) =>
+    Object.prototype.hasOwnProperty.call(values, key) ? String(values[key]) : match,
+  );
+}
+
+function stateBadge(state: string, t: Translations) {
+  const meta = STATE_BADGE[state];
+  return meta
+    ? { tone: meta.tone, label: t.channels.state[meta.labelKey] }
+    : { tone: "outline" as const, label: state };
 }
 
 const TELEGRAM_USER_ID_RE = /^\d+$/;
@@ -103,6 +120,7 @@ function isTerminalTelegramOnboardingError(error: unknown): boolean {
 }
 
 export default function ChannelsPage() {
+  const { t } = useI18n();
   const [platforms, setPlatforms] = useState<MessagingPlatform[]>([]);
   const [envPath, setEnvPath] = useState("~/.hermes/.env");
   const [gatewayStartCommand, setGatewayStartCommand] = useState(
@@ -139,8 +157,13 @@ export default function ChannelsPage() {
         setEnvPath(res.env_path || "~/.hermes/.env");
         setGatewayStartCommand(res.gateway_start_command || "hermes gateway start");
       })
-      .catch((e) => showToast(`Error: ${e}`, "error"));
-  }, [showToast]);
+      .catch((e) =>
+        showToast(
+          formatTemplate(t.channels.errorToast, { error: String(e) }),
+          "error",
+        ),
+      );
+  }, [showToast, t]);
 
   useEffect(() => {
     load().finally(() => setLoading(false));
@@ -165,14 +188,19 @@ export default function ChannelsPage() {
       if (v.trim()) env[k] = v.trim();
     });
     if (Object.keys(env).length === 0) {
-      showToast("Nothing to save — fill in at least one field.", "error");
+      showToast(t.channels.nothingToSave, "error");
       return;
     }
     const missing = editing.env_vars.filter(
       (v) => v.required && !v.is_set && !env[v.key],
     );
     if (missing.length > 0) {
-      showToast(`${missing[0].prompt || missing[0].key} is required`, "error");
+      showToast(
+        formatTemplate(t.channels.requiredField, {
+          field: missing[0].prompt || missing[0].key,
+        }),
+        "error",
+      );
       return;
     }
     const nextFieldErrors: Record<string, string> = {};
@@ -189,12 +217,15 @@ export default function ChannelsPage() {
     try {
       const body: MessagingPlatformUpdate = { env, enabled: true };
       await api.updateMessagingPlatform(editing.id, body);
-      showToast(`${editing.name} saved`, "success");
+      showToast(formatTemplate(t.channels.saved, { name: editing.name }), "success");
       setEditing(null);
       setRestartNeeded(true);
       await load();
     } catch (e) {
-      showToast(`Failed to save: ${e}`, "error");
+      showToast(
+        formatTemplate(t.channels.failedToSave, { error: String(e) }),
+        "error",
+      );
     } finally {
       setSaving(false);
     }
@@ -214,7 +245,10 @@ export default function ChannelsPage() {
       );
       setRestartNeeded(true);
     } catch (e) {
-      showToast(`Error: ${e}`, "error");
+      showToast(
+        formatTemplate(t.channels.errorToast, { error: String(e) }),
+        "error",
+      );
     } finally {
       setTogglingId(null);
     }
@@ -224,28 +258,40 @@ export default function ChannelsPage() {
     setTestingId(platform.id);
     try {
       const res = await api.testMessagingPlatform(platform.id);
-      showToast(`${platform.name}: ${res.message}`, res.ok ? "success" : "error");
+      showToast(
+        formatTemplate(t.channels.platformMessage, {
+          name: platform.name,
+          message: res.message,
+        }),
+        res.ok ? "success" : "error",
+      );
     } catch (e) {
-      showToast(`Error: ${e}`, "error");
+      showToast(
+        formatTemplate(t.channels.errorToast, { error: String(e) }),
+        "error",
+      );
     } finally {
       setTestingId(null);
     }
   };
 
-  const handleRestart = async () => {
+  const handleRestart = useCallback(async () => {
     setRestarting(true);
     try {
       await api.restartGateway();
-      showToast("Gateway restarting…", "success");
+      showToast(t.channels.gatewayRestarting, "success");
       setRestartNeeded(false);
       // Give the gateway a moment to come up, then refresh status.
       setTimeout(() => void load(), 4000);
     } catch (e) {
-      showToast(`Failed to restart: ${e}`, "error");
+      showToast(
+        formatTemplate(t.channels.failedToRestart, { error: String(e) }),
+        "error",
+      );
     } finally {
       setRestarting(false);
     }
-  };
+  }, [load, showToast, t]);
 
   useLayoutEffect(() => {
     setEnd(
@@ -256,12 +302,11 @@ export default function ChannelsPage() {
         disabled={restarting}
         prefix={restarting ? <Spinner /> : <RotateCw className="h-4 w-4" />}
       >
-        {restarting ? "Restarting…" : "Restart gateway"}
+        {restarting ? t.channels.restartingGateway : t.channels.restartGateway}
       </Button>,
     );
     return () => setEnd(null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [setEnd, restarting]);
+  }, [handleRestart, restarting, setEnd, t]);
 
   const configured = useMemo(
     () => platforms.filter((p) => p.configured).length,
@@ -286,9 +331,7 @@ export default function ChannelsPage() {
           <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-center gap-2 text-sm">
               <AlertTriangle className="h-4 w-4 shrink-0 text-warning" />
-              <span>
-                Changes are saved. Restart the gateway for them to take effect.
-              </span>
+              <span>{t.channels.changesSaved}</span>
             </div>
             <Button
               size="sm"
@@ -297,7 +340,7 @@ export default function ChannelsPage() {
               disabled={restarting}
               prefix={restarting ? <Spinner /> : <RotateCw className="h-4 w-4" />}
             >
-              {restarting ? "Restarting…" : "Restart now"}
+              {restarting ? t.channels.restartingGateway : t.channels.restartNow}
             </Button>
           </CardContent>
         </Card>
@@ -308,18 +351,20 @@ export default function ChannelsPage() {
           <CardContent className="flex items-center gap-2 p-4 text-sm text-muted-foreground">
             <WifiOff className="h-4 w-4 shrink-0" />
             <span>
-              The gateway is not running. Configure channels here, then start the
-              gateway with <code className="font-courier">{gatewayStartCommand}</code>{" "}
-              (or the Restart button above).
+              {formatTemplate(t.channels.gatewayNotRunning, {
+                command: gatewayStartCommand,
+              })}
             </span>
           </CardContent>
         </Card>
       )}
 
       <p className="text-xs text-muted-foreground">
-        {configured} of {platforms.length} channels configured. Credentials are
-        written to <code className="font-courier">{envPath}</code>; the
-        gateway connects each enabled channel on its next restart.
+        {formatTemplate(t.channels.configuredSummary, {
+          configured,
+          total: platforms.length,
+          path: envPath,
+        })}
       </p>
 
       {/* Config modal */}
@@ -343,7 +388,7 @@ export default function ChannelsPage() {
               size="icon"
               onClick={() => setEditing(null)}
               className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-              aria-label="Close"
+              aria-label={t.common.close}
             >
               <X />
             </Button>
@@ -353,7 +398,7 @@ export default function ChannelsPage() {
                 id="channel-config-title"
                 className="font-mondwest text-display text-base tracking-wider"
               >
-                Configure {editing.name}
+                {formatTemplate(t.channels.configureTitle, { name: editing.name })}
               </h2>
               {editing.docs_url && (
                 <a
@@ -362,7 +407,7 @@ export default function ChannelsPage() {
                   rel="noopener noreferrer"
                   className="mt-1 inline-flex items-center gap-1 text-xs text-primary hover:underline"
                 >
-                  Setup guide <ExternalLink className="h-3 w-3" />
+                  {t.channels.setupGuide} <ExternalLink className="h-3 w-3" />
                 </a>
               )}
             </header>
@@ -399,7 +444,7 @@ export default function ChannelsPage() {
                     type={field.is_password ? "password" : "text"}
                     placeholder={
                       field.is_set
-                        ? field.redacted_value || "•••••• (set — leave blank to keep)"
+                        ? field.redacted_value || t.channels.keepExistingPlaceholder
                         : field.key
                     }
                     value={draftEnv[field.key] ?? ""}
@@ -425,7 +470,7 @@ export default function ChannelsPage() {
 
               <div className="flex justify-end gap-2 pt-1">
                 <Button ghost size="sm" onClick={() => setEditing(null)}>
-                  Cancel
+                  {t.common.cancel}
                 </Button>
                 <Button
                   className="uppercase"
@@ -434,7 +479,7 @@ export default function ChannelsPage() {
                   disabled={saving}
                   prefix={saving ? <Spinner /> : undefined}
                 >
-                  {saving ? "Saving…" : "Save & enable"}
+                  {saving ? t.common.saving : t.channels.saveAndEnable}
                 </Button>
               </div>
             </div>
@@ -445,7 +490,7 @@ export default function ChannelsPage() {
       {/* Platform list */}
       <div className="grid gap-3">
         {platforms.map((platform) => {
-          const badge = stateBadge(platform.state);
+          const badge = stateBadge(platform.state, t);
           const busy = togglingId === platform.id;
           const StateIcon =
             platform.state === "connected"
@@ -495,7 +540,9 @@ export default function ChannelsPage() {
                         <Switch
                           checked={platform.enabled}
                           onCheckedChange={() => void handleToggle(platform)}
-                          aria-label={`Enable ${platform.name}`}
+                          aria-label={formatTemplate(t.channels.enablePlatform, {
+                            name: platform.name,
+                          })}
                         />
                       )}
                     </div>
@@ -509,10 +556,10 @@ export default function ChannelsPage() {
                           <Spinner />
                         ) : (
                           <PlugZap className="h-4 w-4" />
-                        )
-                      }
-                    >
-                      Test
+                      )
+                    }
+                  >
+                      {t.channels.test}
                     </Button>
                     <Button
                       size="sm"
@@ -520,7 +567,7 @@ export default function ChannelsPage() {
                       onClick={() => openConfig(platform)}
                       prefix={<Settings2 className="h-4 w-4" />}
                     >
-                      Configure
+                      {t.channels.configure}
                     </Button>
                   </div>
                 </div>

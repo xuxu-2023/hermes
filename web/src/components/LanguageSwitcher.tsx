@@ -27,7 +27,7 @@ import { cn } from "@/lib/utils";
  * viewport / overflow ancestors. Below the `sm` breakpoint, `dropUp` uses a
  * bottom sheet portaled to `document.body` instead of an anchored dropdown.
  */
-export function LanguageSwitcher({ collapsed = false, dropUp = false }: LanguageSwitcherProps) {
+export function LanguageSwitcher({ collapsed = false, dropUp = false, onLocaleChange }: LanguageSwitcherProps) {
   const { locale, setLocale, t } = useI18n();
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -98,6 +98,7 @@ export function LanguageSwitcher({ collapsed = false, dropUp = false }: Language
               locale={locale}
               setLocale={setLocale}
               setOpen={setOpen}
+              onLocaleChange={onLocaleChange}
             />
           </div>
         </BottomSheet>
@@ -125,6 +126,7 @@ export function LanguageSwitcher({ collapsed = false, dropUp = false }: Language
               locale={locale}
               setLocale={setLocale}
               setOpen={setOpen}
+              onLocaleChange={onLocaleChange}
             />
           </div>
         );
@@ -139,6 +141,7 @@ function LanguageSwitcherOptions({
   locale,
   setLocale,
   setOpen,
+  onLocaleChange,
 }: LanguageSwitcherOptionsProps) {
   return (
     <>
@@ -157,6 +160,7 @@ function LanguageSwitcherOptions({
             key={code}
             onClick={() => {
               setLocale(code);
+              onLocaleChange?.(code);
               setOpen(false);
             }}
             role="option"
@@ -177,9 +181,12 @@ interface LanguageSwitcherOptionsProps {
   locale: Locale;
   setLocale: (code: Locale) => void;
   setOpen: (open: boolean) => void;
+  onLocaleChange?: (locale: Locale) => void;
 }
 
 interface LanguageSwitcherProps {
   collapsed?: boolean;
   dropUp?: boolean;
+  /** Fire-and-forget hook for syncing a dashboard locale choice to config.yaml. */
+  onLocaleChange?: (locale: Locale) => void;
 }
