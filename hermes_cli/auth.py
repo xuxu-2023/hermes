@@ -1328,6 +1328,16 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
     return list(global_entries) if isinstance(global_entries, list) else []
 
 
+def _is_placeholder_only_entry(entry: Any) -> bool:
+    """Return True when a pool entry's only secret is a placeholder value."""
+    if not isinstance(entry, dict):
+        return False
+    token = str(entry.get("access_token") or entry.get("api_key") or "").strip()
+    if not token:
+        return False
+    return token.lower() in _PLACEHOLDER_SECRET_VALUES
+
+
 def write_credential_pool(
     provider_id: str,
     entries: List[Dict[str, Any]],
@@ -1347,6 +1357,9 @@ def write_credential_pool(
 
     Pass ``removed_ids`` for entries the caller intentionally removed, so the
     merge does not resurrect them from the on-disk copy.
+    Entries whose only secret field is a placeholder value (e.g. "none",
+    "changeme") are evicted before writing so stale UI-injected credentials
+    do not block real credentials from being seeded. See issue #38799.
     """
     removed = {rid for rid in (removed_ids or ()) if rid}
     with _auth_store_lock():
@@ -1359,6 +1372,9 @@ def write_credential_pool(
             sanitize_borrowed_credential_payload(entry, provider_id)
             if isinstance(entry, dict) else entry
             for entry in entries
+        ]
+        sanitized_entries = [
+            entry for entry in sanitized_entries if not _is_placeholder_only_entry(entry)
         ]
         existing = pool.get(provider_id)
         existing_list = existing if isinstance(existing, list) else []
@@ -1375,7 +1391,9 @@ def write_credential_pool(
             if not disk_id or disk_id in new_ids or disk_id in removed:
                 continue
             merged.append(sanitize_borrowed_credential_payload(disk_entry, provider_id))
-        pool[provider_id] = merged
+        pool[provider_id] = [
+            entry for entry in merged if not _is_placeholder_only_entry(entry)
+        ]
         return _save_auth_store(auth_store)
 
 
