@@ -6081,7 +6081,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         except Exception:
             pass
 
-    
+
     def _show_security_advisories(self):
         """Show a startup banner if any unacked security advisories match.
 
@@ -6438,7 +6438,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 self._console_print("[dim]   Run 'hermes setup' to configure[/]")
         except Exception:
             pass  # Don't crash on import errors
-    
+
     def _show_status(self):
         """Show compact startup status line."""
         # Avoid pulling the full tool registry into the bare Termux prompt path.
@@ -6676,7 +6676,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 # Mark if currently enabled
                 marker = "(*)" if self.enabled_toolsets and name in self.enabled_toolsets else "   "
                 print(f"  {marker} {name:<18} [{tool_count:>2} tools] - {desc}")
-        
+
         print()
         print("  (*) = currently enabled")
         print()
@@ -8246,14 +8246,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         return str(value)
 
 
-    
-
 
 
     def _show_gateway_status(self):
         """Show status of the gateway and connected messaging platforms."""
         from gateway.config import load_gateway_config, Platform
-        
+
         print()
         print("+" + "-" * 60 + "+")
         print("|" + " " * 15 + "(✿◠‿◠) Gateway Status" + " " * 17 + "|")
@@ -10626,32 +10624,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # Refresh the agent's tool list so the model can call new tools.
             # Route through the shared helper so this CLI /reload-mcp path stays
             # in lockstep with the TUI RPC / gateway reload / late-binding paths
-            # (name-diff, thread-safe, and — critically — additive-preserving so
-            # memory-provider and context-engine tools survive the rebuild).
+            # while picking up MCP toolsets added to config mid-session.
             if self.agent is not None:
+                from hermes_cli.config import load_config
+                from hermes_cli.tools_config import _get_platform_tools
                 from tools.mcp_tool import refresh_agent_mcp_tools
-                # Explicit reload: pick up MCP servers the user ENABLED in config
-                # this session. self.enabled_toolsets was resolved once at
-                # startup; merge in any now-connected server names (unless the
-                # user pinned `all`/`*`, which already includes everything) so a
-                # freshly-added server isn't filtered out. Mirrors startup, where
-                # MCP server names are part of enabled_toolsets (see __init__).
-                enabled_override = None
-                et = self.enabled_toolsets
-                if et and "all" not in et and "*" not in et:
-                    merged = list(et)
-                    for _name in sorted(connected_servers):
-                        if _name not in merged:
-                            merged.append(_name)
-                    enabled_override = merged
+
+                enabled_override = _get_platform_tools(load_config(), "cli")
                 refresh_agent_mcp_tools(
                     self.agent,
                     enabled_override=enabled_override,
                     quiet_mode=True,
                 )
-                # Keep the CLI's own list in sync with what the agent now uses.
-                if enabled_override is not None:
-                    self.enabled_toolsets = enabled_override
+                self.enabled_toolsets = enabled_override
 
             # Inject a message at the END of conversation history so the
             # model knows tools changed.  Appended after all existing
