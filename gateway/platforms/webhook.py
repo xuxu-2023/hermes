@@ -160,17 +160,42 @@ class WebhookAdapter(BasePlatformAdapter):
         # Validate routes at startup — secret is required per route
         for name, route in self._routes.items():
             secret = route.get("secret", self._global_secret)
-            if not secret:
+            allow_insecure = bool(route.get("allow_insecure", False))
+
+            # allow_insecure: true in config.yaml is the supported opt-in for
+            # skipping HMAC validation (local testing only). This replaces the
+            # old INSECURE_NO_AUTH magic string so the opt-in lives in
+            # config.yaml (Hermes convention for behavioral settings) rather
+            # than as a magic credential value (#6440, #6445 review feedback).
+            if allow_insecure:
+                if not _is_loopback_host(self._host):
+                    raise ValueError(
+                        f"[webhook] Route '{name}' has allow_insecure: true "
+                        f"but is bound to non-loopback host '{self._host}'. "
+                        f"allow_insecure is for local testing only. "
+                        f"Refusing to start to prevent accidental RCE exposure."
+                    )
+                logger.warning(
+                    "[webhook] Route '%s' has allow_insecure: true — "
+                    "HMAC validation is DISABLED. For local testing only. "
+                    "Never expose this route to the public internet.",
+                    name,
+                )
+                # Do NOT inject sentinel here — _reload_dynamic_routes()
+                # rebuilds self._routes from _static_routes and would drop
+                # the sentinel on the next reload. Instead, auth is handled
+                # at request time via the allow_insecure key directly.
+                # Fall through to remaining validations (deliver_only etc.)
+
+            elif not secret:
                 raise ValueError(
                     f"[webhook] Route '{name}' has no HMAC secret. "
-                    f"Set 'secret' on the route or globally. "
-                    f"For testing without auth, set secret to '{_INSECURE_NO_AUTH}'."
+                    f"Set 'secret' on the route or set 'allow_insecure: true' "
+                    f"for local testing only."
                 )
 
-            # Safety rail: refuse to start if INSECURE_NO_AUTH is combined with a
-            # non-loopback bind. The escape hatch is for local testing only;
-            # serving an unauthenticated route on a public interface is a
-            # deployment-grade footgun we'd rather crash early than ship.
+            # Legacy: keep supporting secret: INSECURE_NO_AUTH for backwards
+            # compatibility, but still require loopback host.
             if secret == _INSECURE_NO_AUTH and not _is_loopback_host(self._host):
                 raise ValueError(
                     f"[webhook] Route '{name}' uses INSECURE_NO_AUTH secret "
@@ -483,12 +508,18 @@ class WebhookAdapter(BasePlatformAdapter):
             logger.error("[webhook] Failed to read body: %s", e)
             return web.json_response({"error": "Bad request"}, status=400)
 
-        # Validate HMAC signature FIRST (skip only for the explicit local-test
-        # INSECURE_NO_AUTH mode). Missing/empty secrets must fail closed here,
-        # not only during connect(), so direct handler reuse cannot turn a
-        # network webhook route into an unauthenticated agent-dispatch surface.
+        # Validate HMAC signature FIRST. Skip only when allow_insecure: true
+        # is set in config.yaml (loopback-only opt-in) or the legacy
+        # INSECURE_NO_AUTH sentinel is present. Missing/empty secrets must
+        # fail closed here so network routes cannot become unauthenticated.
+        # Note: we check allow_insecure directly from route_config (not via
+        # sentinel) so dynamic-route reloads that rebuild self._routes from
+        # _static_routes cannot silently drop the opt-in state.
+        allow_insecure = bool(route_config.get("allow_insecure", False))
         secret = route_config.get("secret", self._global_secret)
-        if not secret:
+        if allow_insecure and _is_loopback_host(self._host):
+            pass  # explicit config.yaml opt-in — skip HMAC validation
+        elif not secret:
             logger.error(
                 "[webhook] Route %s has no HMAC secret; refusing request",
                 route_name,
@@ -497,7 +528,9 @@ class WebhookAdapter(BasePlatformAdapter):
                 {"error": "Webhook route is missing an HMAC secret"},
                 status=403,
             )
-        if secret != _INSECURE_NO_AUTH:
+        elif secret == _INSECURE_NO_AUTH:
+            pass  # legacy opt-in — skip HMAC validation
+        if not (allow_insecure and _is_loopback_host(self._host)) and secret != _INSECURE_NO_AUTH:
             if not self._validate_signature(request, raw_body, secret):
                 logger.warning(
                     "[webhook] Invalid signature for route %s", route_name
