@@ -851,6 +851,32 @@ PLATFORM_HINTS = {
 }
 
 # ---------------------------------------------------------------------------
+# CRON_DELIVERY_INVARIANTS — load-bearing cron delivery semantics.
+#
+# Unlike PLATFORM_HINTS["cron"] above (a descriptive hint, overridable via
+# config.yaml's platform_hints.cron.{replace,append} — see
+# agent/system_prompt.py::_resolve_platform_hint), this text encodes
+# scheduler *mechanics* that cron/scheduler.py::run_job actually depends on:
+# the [SILENT] suppression marker and the prohibition on calling
+# send_message (cron sessions have no live delivery channel to call it on).
+# It is appended in agent/system_prompt.py unconditionally for platform ==
+# "cron", AFTER the overridable hint is resolved, specifically so an admin
+# customizing platform_hints.cron's tone/wording (a supported, documented
+# override point) can never accidentally silence delivery mechanics the
+# scheduler relies on to detect suppression. Previously this text lived in
+# a ~150-token "[IMPORTANT: ...]" block cron/scheduler.py::_build_job_prompt
+# prepended to the user-message body of every cron invocation (paid per
+# invocation, since the user-message slot isn't prefix-cached, unlike the
+# system slot this now lands in).
+# ---------------------------------------------------------------------------
+CRON_DELIVERY_INVARIANTS = (
+    "Do NOT call send_message or any other delivery tool — the gateway handles "
+    "delivery from your final response text. If there is genuinely nothing new "
+    "to report, respond with exactly \"[SILENT]\" (nothing else) to suppress "
+    "delivery; never combine [SILENT] with content."
+)
+
+# ---------------------------------------------------------------------------
 # Environment hints — execution-environment awareness for the agent.
 # Unlike PLATFORM_HINTS (which describe the messaging channel), these describe
 # the machine/OS the agent's tools actually run on.

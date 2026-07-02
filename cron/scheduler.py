@@ -1387,6 +1387,19 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             )
             in_channel_surface = False
 
+        if in_channel_surface:
+            # Force flat delivery (D2): an in_channel surface must ignore any
+            # inherited origin/target thread_id, or the flat continuable
+            # session seeded below (thread_id=None, via
+            # _seed_cron_channel_session) never matches where the brief is
+            # actually delivered — route_thread_id further down in this loop,
+            # and the standalone no-live-adapter fallback, both still read
+            # `thread_id` and would otherwise route into the origin thread
+            # instead of flat into the channel. Must stay AFTER
+            # mirror_this_target / origin_user_id are computed above — those
+            # need the ORIGINAL thread_id to match the origin conversation.
+            thread_id = None
+
         # For an in_channel delivery the flat continuation session is created
         # explicitly below (the shipped mirror only APPENDS to an existing
         # session, and the flat channel row is otherwise absent for a
@@ -2029,20 +2042,16 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                 logger.warning("context_from: failed to read output for job %r: %s", source_job_id, e)
                 # silent skip — do not pollute the prompt with error messages
 
-    # Always prepend cron execution guidance so the agent knows how
-    # delivery works and can suppress delivery when appropriate.
-    cron_hint = (
-        "[IMPORTANT: You are running as a scheduled cron job. "
-        "DELIVERY: Your final response will be automatically delivered "
-        "to the user — do NOT use send_message or try to deliver "
-        "the output yourself. Just produce your report/output as your "
-        "final response and the system handles the rest. "
-        "SILENT: If there is genuinely nothing new to report, respond "
-        "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
-        "Never combine [SILENT] with content — either report your "
-        "findings normally, or say [SILENT] and nothing more.]\n\n"
-    )
-    prompt = cron_hint + prompt
+    # Cron execution guidance (auto-delivery framing via PLATFORM_HINTS["cron"],
+    # [SILENT] suppression + no-send_message via CRON_DELIVERY_INVARIANTS — both
+    # in agent/prompt_builder.py / wired in agent/system_prompt.py) lands in the
+    # system-prompt slot for the cron agent instance (this module sets
+    # platform="cron" on the AIAgent it constructs). That slot is prefix-cached
+    # across a session's turns, so this is the single source of truth for
+    # cron-mode behavior. Previously a duplicate ~150-token "[IMPORTANT: ...]"
+    # block was prepended to the user-message body here on every invocation —
+    # paid per-call (user-message slot isn't cached) and mixed
+    # framework-to-model instructions into the user-message slot.
     if skills is None:
         legacy = job.get("skill")
         skills = [legacy] if legacy else []
@@ -2155,8 +2164,8 @@ def _scan_assembled_cron_prompt(
     Two pattern tiers, selected by what the assembled prompt CONTAINS,
     not just whether skills are attached:
 
-    - When the assembled prompt is essentially the user prompt + the cron
-      hint (no skills, no injected data), the STRICT ``_scan_cron_prompt``
+    - When the assembled prompt is essentially the user prompt alone (no
+      skills, no injected data), the STRICT ``_scan_cron_prompt``
       patterns apply: a bare ``rm -rf /`` in a small directive prompt is a
       smoking gun, not prose.
     - When the assembled prompt includes runtime-loaded content — skill
@@ -3045,9 +3054,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             _VAR_MAP[_var_name].set("")
         if _session_db:
             # Title the cron session from the job (name → short prompt → id) so
-            # sidebars/history show a meaningful label instead of the injected
-            # "[IMPORTANT: …]" hint that is the session's first message. Set here
-            # (not at create time) so the agent's own INSERT keeps model /
+            # sidebars/history show a meaningful, stable label rather than
+            # whatever the session's first message happens to be (its content
+            # varies with the job: task prompt, script output header, etc.,
+            # and multi-turn tool use can push the actual task prompt out of
+            # a naive "first message" preview anyway). Set here (not at create
+            # time) so the agent's own INSERT keeps model /
             # system_prompt; this only UPDATEs the title column. The run-time
             # suffix keeps it unique against the sessions.title index across runs.
             try:

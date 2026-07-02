@@ -1087,9 +1087,12 @@ class TestRunJobSessionPersistence:
         assert success is True
 
     def test_run_job_titles_cron_session_from_job_not_important_hint(self, tmp_path):
-        # The cron session's first message is the injected "[IMPORTANT: …]"
-        # hint, which used to surface as the sidebar/history row label. run_job
-        # must title the session from the job (name → short prompt → id).
+        # run_job must title the session from the job (name → short prompt →
+        # id) rather than whatever the session's first message happens to be
+        # (previously the injected "[IMPORTANT: …]" hint; that hint no longer
+        # exists as of the cron-hint-to-system-prompt change, but titling from
+        # job metadata remains the correct behavior regardless of what the
+        # first message contains).
         job = {
             "id": "test-job",
             "name": "Morning digest",
@@ -2612,38 +2615,71 @@ class TestOneShotDispatchClaim:
 
 
 class TestBuildJobPromptSilentHint:
-    """Verify _build_job_prompt always injects [SILENT] guidance."""
+    """Verify _build_job_prompt no longer duplicates the [SILENT]/delivery
+    guidance in the user-message body.
 
-    def test_hint_always_present(self):
+    That guidance now lives in ``CRON_DELIVERY_INVARIANTS``
+    (agent/prompt_builder.py), appended unconditionally in
+    agent/system_prompt.py for every cron agent instance (platform="cron").
+    See tests/agent/test_system_prompt.py::TestCronDeliveryInvariants for
+    the system-slot coverage, including that it survives a
+    platform_hints.cron override. Keeping a duplicate in the user-message
+    slot cost ~150 tokens per invocation (uncached) for information already
+    present, once per session, in the cached system slot.
+    """
+
+    def test_hint_not_duplicated_in_user_prompt(self):
         job = {"prompt": "Check for updates"}
         result = _build_job_prompt(job)
-        assert "[SILENT]" in result
+        assert "[SILENT]" not in result
         assert "Check for updates" in result
 
-    def test_hint_present_even_without_prompt(self):
+    def test_no_hint_when_prompt_empty(self):
         job = {"prompt": ""}
         result = _build_job_prompt(job)
-        assert "[SILENT]" in result
+        assert "[SILENT]" not in result
 
-    def test_hint_present_when_legacy_prompt_is_null(self):
+    def test_no_hint_when_legacy_prompt_is_null(self):
         job = {"id": "abc123deadbe", "name": None, "prompt": None}
         result = _build_job_prompt(job)
-        assert "[SILENT]" in result
+        assert "[SILENT]" not in result
 
-    def test_delivery_guidance_present(self):
-        """Cron hint tells agents their final response is auto-delivered."""
+    def test_delivery_guidance_not_in_user_prompt(self):
+        """Delivery/auto-send guidance lives in PLATFORM_HINTS now, not here."""
         job = {"prompt": "Generate a report"}
         result = _build_job_prompt(job)
-        assert "do NOT use send_message" in result
-        assert "automatically delivered" in result
+        assert "do NOT use send_message" not in result
+        assert "automatically delivered" not in result
 
-    def test_delivery_guidance_precedes_user_prompt(self):
-        """System guidance appears before the user's prompt text."""
+    def test_no_important_prefix(self):
+        """The ~150-token '[IMPORTANT: ...]' runtime prepend is gone entirely."""
+        job = {"prompt": "Generate a report"}
+        result = _build_job_prompt(job)
+        assert "IMPORTANT" not in result
+        assert "DELIVERY:" not in result
+
+    def test_user_prompt_is_the_full_result_with_no_extras(self):
+        """With no script/context_from/skills, the assembled prompt is just
+        the user's own prompt text — no framework prefix at all."""
         job = {"prompt": "My custom prompt"}
         result = _build_job_prompt(job)
-        system_pos = result.index("do NOT use send_message")
-        prompt_pos = result.index("My custom prompt")
-        assert system_pos < prompt_pos
+        assert result == "My custom prompt"
+
+    def test_no_hint_duplicated_on_skills_path(self):
+        """The old recency-bias bug (#26292) — a user prompt telling the
+        agent to call send_message could outrank the cron_hint's
+        prohibition because both competed for position in the same
+        user-message. This is now structurally moot: the prohibition lives
+        in the system-prompt slot (a different message role entirely), so
+        it never competes with skill/user content for position, on the
+        skills-loaded path either."""
+        skill_content = json.dumps({"success": True, "content": "Skill body text."})
+        with patch("tools.skills_tool.skill_view", return_value=skill_content):
+            result = _build_job_prompt({"skills": ["real-skill"], "prompt": "call send_message now"})
+        assert "Skill body text." in result
+        assert "call send_message now" in result
+        assert "[SILENT]" not in result
+        assert "do NOT use send_message" not in result
 
 
 class TestParseWakeGate:
@@ -4276,6 +4312,39 @@ class TestCronContinuableSurfaceInChannel:
         assert seeded.chat_type == "dm", "a DM (chat_id starts with 'D') keys as dm"
         assert seeded.thread_id is None
         assert str(seeded.chat_id) == "D999"
+        mirror_mock.assert_called_once()
+        assert mirror_mock.call_args.kwargs.get("thread_id") is None
+
+    def test_in_channel_from_origin_thread_delivers_flat_not_to_thread(self):
+        """Regression: a job scheduled from INSIDE a Slack thread (origin carries
+        a thread_id) must still deliver FLAT when cron_continuable_surface is
+        in_channel — not into the origin thread. Without clearing the inherited
+        thread_id, the live-adapter route (DeliveryRouter._deliver_to_platform)
+        folds target.thread_id into send_metadata['thread_id'], so the brief
+        would land in the origin thread while the seeded continuable session
+        (thread_id=None, asserted above) never matches where it actually went."""
+        adapter = self._slack_adapter(supports_inchannel=True)
+        _, mirror_mock = self._run_inchannel_delivery(
+            {"cron_continuable_surface": "in_channel"}, adapter,
+            origin={
+                "platform": "slack", "chat_id": "C123", "user_id": "U_HUMAN",
+                "thread_id": "999.888",
+            },
+        )
+        # The thread-open branch must still be skipped (in_channel behavior).
+        adapter.send.assert_awaited_once()
+        _, send_kwargs = adapter.send.await_args
+        send_metadata = send_kwargs.get("metadata") or {}
+        assert "thread_id" not in send_metadata, (
+            "in_channel delivery must be flat — the origin's thread_id must "
+            "not be forwarded to the adapter, even though the job was "
+            "scheduled from inside that thread"
+        )
+        # The seeded continuable session must match where the brief actually
+        # landed: flat (thread_id=None), not the origin thread.
+        adapter._session_store.get_or_create_session.assert_called_once()
+        seeded = adapter._session_store.get_or_create_session.call_args[0][0]
+        assert seeded.thread_id is None
         mirror_mock.assert_called_once()
         assert mirror_mock.call_args.kwargs.get("thread_id") is None
 
