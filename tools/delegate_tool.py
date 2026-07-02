@@ -1194,7 +1194,7 @@ def _build_child_agent(
         child_thinking_cb = _child_thinking
 
     # Resolve effective credentials: config override > parent inherit
-    effective_model = model or parent_agent.model
+    effective_model = model or _resolve_child_model(role, parent_agent.model)
     effective_provider = override_provider or getattr(parent_agent, "provider", None)
     effective_base_url = override_base_url or parent_agent.base_url
     if not override_base_url:
@@ -3128,6 +3128,42 @@ def _load_config() -> dict:
         return full.get("delegation") or {}
     except Exception:
         return {}
+
+
+def _resolve_child_model(role: str, fallback_model: str) -> str:
+    """Resolve a sub-agent's model from the config role hierarchy.
+
+    Precedence:
+      1. ``models.<role>.model`` (e.g. ``models.orchestrator.model``)
+      2. ``delegation.model`` (global sub-agent override)
+      3. ``fallback_model`` (parent inherit / explicit ``model=`` parameter)
+
+    ``models.orchestrator`` / ``models.workers`` is a FlawHunter v1.3
+    extension point (``ARCHITECTURE_REPORT.md`` section "Sub-Agent
+    Configuration").  hermes-agent does NOT natively read those config
+    keys; this function bridges that gap so profiles that define those
+    blocks can route different sub-agent roles to different models.
+
+    When neither config key is set, returns ``fallback_model`` unchanged.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        full = load_config()
+        role_models = full.get("models") or {}
+        cluster = role_models.get(role)
+        if isinstance(cluster, dict):
+            m = cluster.get("model")
+            if m and isinstance(m, str) and m.strip():
+                return m.strip()
+        # Fall back to delegation.model
+        delegation = full.get("delegation") or {}
+        m = delegation.get("model")
+        if m and isinstance(m, str) and m.strip():
+            return m.strip()
+    except Exception:
+        pass
+    return fallback_model
 
 
 # ---------------------------------------------------------------------------
