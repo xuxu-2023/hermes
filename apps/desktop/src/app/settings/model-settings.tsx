@@ -21,6 +21,7 @@ import type {
   MoaConfigResponse,
   MoaModelSlot,
   ModelOptionProvider,
+  ModelOptionsResponse,
   StaleAuxAssignment
 } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -157,7 +158,10 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
     try {
       const [modelInfo, modelOptions, auxiliaryModels, moaModels, cfg] = await Promise.all([
         getGlobalModelInfo(),
-        getGlobalModelOptions(),
+        getGlobalModelOptions().catch(err => {
+          setError(err instanceof Error ? err.message : String(err))
+          return {} as ModelOptionsResponse
+        }),
         getAuxiliaryModels(),
         getMoaModels().catch(() => null),
         getHermesConfigRecord()
