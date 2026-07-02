@@ -14,6 +14,7 @@ import {
   useState
 } from 'react'
 
+import { localeDirection, useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { $paneStates, ensurePaneRegistered, setPaneHeightOverride, setPaneWidthOverride } from '@/store/panes'
 
@@ -353,6 +354,7 @@ export function Pane({
   resizable = false,
   width
 }: PaneProps) {
+  const { locale } = useI18n()
   const ctx = useContext(PaneShellContext)
   const paneStates = useStore($paneStates)
   const registered = useRef(false)
@@ -363,6 +365,7 @@ export function Pane({
   const slot = ctx?.paneById.get(id)
   const open = Boolean(slot?.open && !disabled)
   const side = slot?.side ?? 'left'
+  const physicalSide = localeDirection(locale) === 'rtl' ? (side === 'left' ? 'right' : 'left') : side
   // Collapsed + hoverReveal: float the pane contents over the main column on
   // hover/focus instead of hiding them. Honors any persisted resize width.
   const overlayActive = !open && hoverReveal && !disabled
@@ -436,7 +439,10 @@ export function Pane({
       const handle = event.currentTarget
       const { pointerId } = event
       const start = axis === 'x' ? event.clientX : event.clientY
-      const dir = axis === 'x' ? (side === 'left' ? 1 : -1) : -1
+      // RTL: mirror the horizontal drag direction so dragging the (physically
+      // mirrored) sash grows/shrinks the pane the intuitive way. The y axis
+      // (bottom-row panes) is direction-agnostic.
+      const dir = axis === 'x' ? (physicalSide === 'left' ? 1 : -1) : -1
       const [min, max] = axis === 'x' ? [lo, hi] : [loH, hiH]
       const apply = axis === 'x' ? setPaneWidthOverride : setPaneHeightOverride
       const restoreCursor = document.body.style.cursor
@@ -466,7 +472,7 @@ export function Pane({
       window.addEventListener('pointercancel', cleanup, true)
       window.addEventListener('blur', cleanup)
     },
-    [canResize, hi, hiH, id, lo, loH, side]
+    [canResize, hi, hiH, id, lo, loH, physicalSide]
   )
 
   if (!ctx) {
@@ -486,8 +492,8 @@ export function Pane({
   // box). group-hover (or data-forced from the keyboard) drives the slide; the
   // enter-delay is the hover-intent gate. No JS pointer math.
   if (overlayActive) {
-    const edge = side === 'left' ? 'left' : 'right'
-    const offscreen = side === 'left' ? '-translate-x-[calc(100%+1rem)]' : 'translate-x-[calc(100%+1rem)]'
+    const edge = physicalSide
+    const offscreen = physicalSide === 'left' ? '-translate-x-[calc(100%+1rem)]' : 'translate-x-[calc(100%+1rem)]'
 
     return (
       <div
@@ -496,6 +502,7 @@ export function Pane({
         data-pane-hover-reveal={forced ? 'open' : 'closed'}
         data-pane-id={id}
         data-pane-open="false"
+        data-pane-physical-side={physicalSide}
         data-pane-side={side}
         ref={paneRef}
         style={{ gridColumn: slot.gridColumn, gridRow: slot.gridRow }}
@@ -540,6 +547,7 @@ export function Pane({
       className={cn('relative min-h-0 min-w-0 overflow-hidden', !open && 'pointer-events-none', className)}
       data-pane-id={id}
       data-pane-open={open ? 'true' : 'false'}
+      data-pane-physical-side={physicalSide}
       data-pane-side={slot.side}
       ref={paneRef}
       style={{ gridColumn: slot.gridColumn, gridRow: slot.gridRow }}
@@ -551,7 +559,9 @@ export function Pane({
           className={cn(
             'group absolute z-20 [-webkit-app-region:no-drag]',
             sash.bar,
-            !isBottomRow && (slot.side === 'left' ? 'right-0 translate-x-1/2' : 'left-0 -translate-x-1/2')
+            // RTL: mirror the column sash to the physical edge. Bottom-row (y
+            // axis) panes use sash.bar's own vertical geometry — no x flip.
+            !isBottomRow && (physicalSide === 'left' ? 'right-0 translate-x-1/2' : 'left-0 -translate-x-1/2')
           )}
           onPointerDown={e => startResize(e, axis)}
           role="separator"

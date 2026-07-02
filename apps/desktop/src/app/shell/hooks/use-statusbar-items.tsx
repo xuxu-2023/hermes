@@ -1,4 +1,5 @@
 import { useStore } from '@nanostores/react'
+import type { ReactNode } from 'react'
 import { useCallback, useMemo } from 'react'
 
 import type { CommandCenterSection } from '@/app/command-center'
@@ -8,7 +9,19 @@ import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
-import { Activity, AlertCircle, Clock, Command, Hash, Loader2, Terminal, Zap, ZapFilled } from '@/lib/icons'
+import {
+  Activity,
+  AlertCircle,
+  ChevronDown,
+  Clock,
+  Command,
+  Hash,
+  Loader2,
+  Terminal,
+  Zap,
+  ZapFilled
+} from '@/lib/icons'
+import { formatModelStatusLabel } from '@/lib/model-status-label'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
 import { cn } from '@/lib/utils'
@@ -17,10 +30,15 @@ import {
   $activeSessionId,
   $busy,
   $connection,
+  $currentFastMode,
+  $currentModel,
+  $currentProvider,
+  $currentReasoningEffort,
   $currentUsage,
   $sessionStartedAt,
   $turnStartedAt,
   $yoloActive,
+  setModelPickerOpen,
   setYoloActive
 } from '@/store/session'
 import { $subagentsBySession, activeSubagentCount, failedSubagentCount } from '@/store/subagents'
@@ -46,6 +64,7 @@ interface StatusbarItemsOptions {
   extraRightItems: readonly StatusbarItem[]
   gatewayState: string
   inferenceStatus: RuntimeReadinessResult | null
+  modelMenuContent?: ReactNode
   openAgents: () => void
   openCommandCenterSection: (section: CommandCenterSection) => void
   freshDraftReady: boolean
@@ -62,6 +81,7 @@ export function useStatusbarItems({
   extraRightItems,
   gatewayState,
   inferenceStatus,
+  modelMenuContent,
   openAgents,
   openCommandCenterSection,
   freshDraftReady,
@@ -75,6 +95,10 @@ export function useStatusbarItems({
   const terminalTakeover = useStore($terminalTakeover)
   const yoloActive = useStore($yoloActive)
   const busy = useStore($busy)
+  const currentFastMode = useStore($currentFastMode)
+  const currentModel = useStore($currentModel)
+  const currentProvider = useStore($currentProvider)
+  const currentReasoningEffort = useStore($currentReasoningEffort)
   const currentUsage = useStore($currentUsage)
   const gatewayRestarting = useStore($gatewayRestarting)
   const sessionStartedAt = useStore($sessionStartedAt)
@@ -396,6 +420,41 @@ export function useStatusbarItems({
         variant: 'action'
       },
       {
+        id: 'model-summary',
+        label: (
+          <span className="inline-flex min-w-0 items-center gap-0.5">
+            <span className="truncate">
+              {formatModelStatusLabel(currentModel, {
+                fastLabel: t.shell.modelMenu.fast,
+                fastMode: currentFastMode,
+                mediumLabel: t.shell.modelMenu.medium,
+                noModelLabel: copy.noModel,
+                reasoningEffort: currentReasoningEffort,
+                reasoningLabels: copy.reasoningShort
+              })}
+            </span>
+            <ChevronDown className="size-2.5 shrink-0 opacity-50" />
+          </span>
+        ),
+        ...(modelMenuContent
+          ? {
+              menuAlign: 'end' as const,
+              menuClassName: 'w-64',
+              menuContent: modelMenuContent,
+              title: currentProvider
+                ? copy.modelTitle(currentProvider, currentModel || copy.modelNone)
+                : copy.switchModel,
+              variant: 'menu' as const
+            }
+          : {
+              onSelect: () => setModelPickerOpen(true),
+              title: currentProvider
+                ? copy.providerModelTitle(currentProvider, currentModel || copy.noModel)
+                : copy.openModelPicker,
+              variant: 'action' as const
+            })
+      },
+      {
         className: `w-7 justify-center px-0${terminalTakeover ? ' bg-accent/55 text-foreground' : ''}`,
         hidden: !chatOpen,
         icon: <Terminal className="size-3.5" />,
@@ -416,10 +475,17 @@ export function useStatusbarItems({
       contextBar,
       contextUsage,
       copy,
+      currentFastMode,
+      currentModel,
+      currentProvider,
+      currentReasoningEffort,
       currentUsage,
+      modelMenuContent,
       requestGateway,
       sessionStartedAt,
       showYoloToggle,
+      t.shell.modelMenu.fast,
+      t.shell.modelMenu.medium,
       terminalTakeover,
       toggleYolo,
       turnStartedAt,

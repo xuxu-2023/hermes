@@ -448,6 +448,7 @@ function SoulEditor({ profileName }: { profileName: string }) {
       ) : (
         <Textarea
           className="min-h-48 font-mono text-xs leading-5"
+          dir="auto"
           onChange={event => setContent(event.target.value)}
           placeholder={isEmpty ? p.emptySoul : undefined}
           value={content}

@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useState,
+} from "react";
 import {
   Eye,
   EyeOff,
@@ -136,9 +142,7 @@ function EnvVarRow({
     return (
       <div className="flex items-center justify-between gap-3 py-1.5 min-w-0 overflow-hidden text-text-secondary hover:text-foreground transition-colors">
         <div className="flex items-center gap-2 min-w-0">
-          <span className="font-mono-ui text-xs">
-            {varKey}
-          </span>
+          <span className="font-mono-ui text-xs">{varKey}</span>
           <span className="text-xs text-text-tertiary truncate hidden sm:block">
             {info.description}
           </span>
@@ -172,9 +176,7 @@ function EnvVarRow({
     return (
       <div className="flex items-center justify-between gap-3 border border-border/50 px-4 py-2.5 min-w-0 overflow-hidden text-text-secondary hover:text-foreground transition-colors">
         <div className="flex items-center gap-3 min-w-0">
-          <Label className="font-mono-ui text-xs">
-            {varKey}
-          </Label>
+          <Label className="font-mono-ui text-xs">{varKey}</Label>
           <span className="text-xs text-text-tertiary truncate hidden sm:block">
             {info.description}
           </span>
@@ -230,11 +232,7 @@ function EnvVarRow({
       {info.tools.length > 0 && (
         <div className="flex flex-wrap gap-1">
           {info.tools.map((tool) => (
-            <Badge
-              key={tool}
-              tone="secondary"
-              className="text-xs py-0 px-1.5"
-            >
+            <Badge key={tool} tone="secondary" className="text-xs py-0 px-1.5">
               {tool}
             </Badge>
           ))}
@@ -625,22 +623,28 @@ export default function EnvPage() {
   // Scroll-to sub-nav in the page header
   const sections = useMemo(() => {
     const items: { id: string; label: string }[] = [
-      { id: "section-oauth", label: "OAuth" },
-      { id: "section-providers", label: "Providers" },
+      { id: "section-oauth", label: t.env.oauthSection ?? "OAuth" },
+      {
+        id: "section-providers",
+        label: t.env.providersSection ?? "Providers",
+      },
     ];
     if (vars) {
       const categories = ["tool", "messaging", "setting"];
       const CATEGORY_LABELS: Record<string, string> = {
-        tool: "Tools",
+        tool: t.env.toolsSection ?? "Tools",
         messaging: t.common.gateway ?? "Gateway",
-        setting: "Settings",
+        setting: t.env.settingsSection ?? "Settings",
       };
       for (const cat of categories) {
         const hasEntries = Object.values(vars).some(
           (info) => info.category === cat && !info.channel_managed,
         );
         if (hasEntries) {
-          items.push({ id: `section-${cat}`, label: CATEGORY_LABELS[cat] ?? cat });
+          items.push({
+            id: `section-${cat}`,
+            label: CATEGORY_LABELS[cat] ?? cat,
+          });
         }
       }
       // Custom keys section is always present (it carries the add-key form).
@@ -655,12 +659,14 @@ export default function EnvPage() {
       return;
     }
     const scrollTo = (id: string) => {
-      document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+      document
+        .getElementById(id)
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
     };
     setAfterTitle(
       <nav
         className="flex shrink-0 flex-nowrap items-center gap-1"
-        aria-label="Jump to section"
+        aria-label={t.env.jumpToSection ?? "Jump to section"}
       >
         {sections.map((s) => (
           <button
@@ -677,7 +683,7 @@ export default function EnvPage() {
     return () => {
       setAfterTitle(null);
     };
-  }, [vars, sections, setAfterTitle]);
+  }, [vars, sections, setAfterTitle, t.env.jumpToSection]);
 
   const handleSave = async (key: string) => {
     const value = edits[key];
@@ -920,9 +926,7 @@ export default function EnvPage() {
           <p className="text-sm text-muted-foreground">
             {t.env.description} <code>~/.hermes/.env</code>
           </p>
-          <p className="text-xs text-text-tertiary">
-            {t.env.changesNote}
-          </p>
+          <p className="text-xs text-text-tertiary">{t.env.changesNote}</p>
         </div>
         <Button
           size="sm"

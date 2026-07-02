@@ -82,6 +82,11 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
   const { t } = useI18n()
   const [mode, setMode] = useRouteEnumParam('tab', SKILLS_MODES, 'skills')
 
+  const categoryLabel = useCallback(
+    (key: string) => t.skills.categoryLabels?.[key] ?? prettyName(key),
+    [t]
+  )
+
   const [query, setQuery] = useState('')
   const [skills, setSkills] = useState<SkillInfo[] | null>(null)
   const [toolsets, setToolsets] = useState<ToolsetInfo[] | null>(null)
@@ -209,7 +214,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                 key={category.key}
                 onClick={() => setActiveCategory(activeCategory === category.key ? null : category.key)}
               >
-                {prettyName(category.key)} <TextTabMeta>{category.count}</TextTabMeta>
+                {categoryLabel(category.key)} <TextTabMeta>{category.count}</TextTabMeta>
               </TextTab>
             ))}
           </>
@@ -256,7 +261,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                 <div className="space-y-1.5" key={category}>
                   {activeCategory === null && (
                     <div className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-                      {prettyName(category)}
+                      {categoryLabel(category)}
                     </div>
                   )}
                   <div>
@@ -266,8 +271,10 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                         key={skill.name}
                       >
                         <div className="min-w-0">
-                          <div className="truncate text-sm font-medium">{skill.name}</div>
-                          <p className="mt-0.5 text-xs text-muted-foreground">
+                          <div className="truncate text-sm font-medium" dir="auto">
+                            {skill.name}
+                          </div>
+                          <p className="mt-0.5 text-xs text-muted-foreground" dir="auto">
                             {asText(skill.description) || t.skills.noDescription}
                           </p>
                         </div>
@@ -302,7 +309,9 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                   return (
                     <div className="px-0 py-2.5" key={toolset.name}>
                       <div className="flex items-center justify-between gap-2">
-                        <div className="truncate text-sm font-medium">{label}</div>
+                        <div className="truncate text-sm font-medium" dir="auto">
+                          {label}
+                        </div>
                         <div className="flex shrink-0 items-center gap-1.5">
                           <button
                             aria-expanded={expanded}
@@ -325,7 +334,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                           />
                         </div>
                       </div>
-                      <p className="mt-1 text-xs text-muted-foreground">
+                      <p className="mt-1 text-xs text-muted-foreground" dir="auto">
                         {asText(toolset.description) || t.skills.noDescription}
                       </p>
                       {tools.length > 0 && (
@@ -333,6 +342,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                           {tools.map(name => (
                             <span
                               className="rounded-md bg-(--ui-bg-quinary) px-1.5 py-0.5 font-mono text-[0.65rem] text-(--ui-text-tertiary)"
+                              dir="auto"
                               key={name}
                             >
                               {name}
