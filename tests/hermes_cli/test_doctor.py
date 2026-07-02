@@ -126,6 +126,135 @@ class TestDoctorEnvFileEncoding:
             doctor_mod.run_doctor(Namespace(fix=False))
 
 
+class TestDoctorSubprocessEncoding:
+    """Regression for #49499 (sibling of #18637, bug 3): `hermes doctor`
+    crashed on Windows Chinese locale (GBK) inside ``subprocess._readerthread``
+    because its text-mode ``subprocess.run(..., text=True)`` calls decoded child
+    output via the system locale instead of UTF-8. #18637 fixed the ``.env``
+    file-read path; it did NOT touch the subprocess-decode path covered here."""
+
+    def test_doctor_subprocess_decodes_utf8_on_gbk_locale(
+        self, monkeypatch, tmp_path
+    ):
+        # Simulate a GBK locale at the subprocess boundary: a text-mode
+        # ``subprocess.run`` that decodes child UTF-8 output raises
+        # UnicodeDecodeError unless the caller pins encoding="utf-8" with
+        # errors="replace" (exactly what the GBK _readerthread crash does).
+        # Bytes-mode calls (no text=True) never decode, so they are unaffected.
+        real_run = doctor_mod.subprocess.run
+
+        def gbk_run(cmd, *args, **kwargs):
+            if kwargs.get("text") and (
+                kwargs.get("encoding") != "utf-8"
+                or kwargs.get("errors") != "replace"
+            ):
+                raise UnicodeDecodeError(
+                    "gbk", b"\xaa", 0, 1, "illegal multibyte sequence"
+                )
+            # Return a benign result so the SSH probe site does not shell out.
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(doctor_mod.subprocess, "run", gbk_run)
+
+        # Drive the SSH connectivity probe (the first text-mode subprocess
+        # site in run_doctor) by selecting the ssh terminal backend.
+        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+        monkeypatch.setenv("TERMINAL_SSH_HOST", "example.invalid")
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", hermes_home)
+
+        # Short-circuit the expensive tool-availability probe so the run
+        # terminates predictably once it has passed the subprocess sites.
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: (_ for _ in ()).throw(SystemExit(0)),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        # If the SSH probe still decodes via the system locale, gbk_run raises
+        # UnicodeDecodeError and this test fails. With UTF-8 pinned, doctor runs
+        # through to its normal SystemExit.
+        with pytest.raises(SystemExit):
+            doctor_mod.run_doctor(Namespace(fix=False))
+
+    def test_doctor_npm_audit_decodes_utf8_on_gbk_locale(
+        self, monkeypatch, tmp_path
+    ):
+        # Sibling of the SSH probe test above: the SECOND text-mode subprocess
+        # site is the ``npm audit --json`` call. The SSH-probe test never
+        # reaches it (npm is not stubbed and PROJECT_ROOT/node_modules does not
+        # exist), so the npm-audit decode site is exercised here in isolation
+        # under the same GBK simulation.
+        #
+        # Unlike the SSH probe, the npm-audit call is wrapped in a broad
+        # ``try/except Exception: pass`` — so a GBK UnicodeDecodeError there does
+        # NOT crash doctor, it is swallowed and the audit result is silently
+        # dropped (the dep-vulnerability check vanishes). Asserting on
+        # SystemExit alone therefore cannot tell the fixed and unfixed code
+        # apart. We assert on the OBSERVABLE outcome instead: with
+        # encoding="utf-8"/errors="replace" pinned, the audit decodes its empty
+        # output, computes zero vulnerabilities, and prints the
+        # "<label> deps (no known vulnerabilities)" line; without the pin, the
+        # decode raises, is swallowed, and that line is absent.
+        def gbk_run(cmd, *args, **kwargs):
+            if kwargs.get("text") and (
+                kwargs.get("encoding") != "utf-8"
+                or kwargs.get("errors") != "replace"
+            ):
+                raise UnicodeDecodeError(
+                    "gbk", b"\xaa", 0, 1, "illegal multibyte sequence"
+                )
+            # Empty stdout -> audit_data = {} -> zero vulnerabilities.
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(doctor_mod.subprocess, "run", gbk_run)
+
+        # Enable ONLY the npm-audit block: report a fake binary for node/npm
+        # and nothing else, so the other doctor probes stay quiet and do not
+        # shell out. Do NOT set TERMINAL_ENV=ssh, so this test isolates the
+        # npm-audit decode site rather than the SSH one.
+        fake_bin = str(tmp_path / "npm")
+
+        def fake_safe_which(cmd):
+            if cmd in ("npm", "node"):
+                return fake_bin
+            return None
+
+        monkeypatch.setattr(doctor_mod, "_safe_which", fake_safe_which)
+
+        # The first npm-audit target is audited from PROJECT_ROOT with
+        # --workspaces=false, gated on ``PROJECT_ROOT/node_modules`` existing.
+        # Point PROJECT_ROOT at tmp_path and create node_modules so the
+        # npm-audit subprocess call actually runs.
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path)
+        (tmp_path / "node_modules").mkdir()
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", hermes_home)
+
+        # Short-circuit the expensive tool-availability probe (which runs after
+        # the npm-audit site) so the run terminates predictably.
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: (_ for _ in ()).throw(SystemExit(0)),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            with pytest.raises(SystemExit):
+                doctor_mod.run_doctor(Namespace(fix=False))
+
+        # The audit decoded successfully and emitted its result line. If the
+        # npm-audit call lost encoding="utf-8"/errors="replace", gbk_run would
+        # raise UnicodeDecodeError, the broad except would swallow it, and this
+        # line would be missing.
+        assert "deps (no known vulnerabilities)" in buf.getvalue()
+
+
 class TestDoctorToolAvailabilityOverrides:
     def test_marks_honcho_available_when_configured(self, monkeypatch):
         monkeypatch.setattr(doctor, "_honcho_is_configured_for_doctor", lambda: True)
