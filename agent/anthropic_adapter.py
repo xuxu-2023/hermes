@@ -1652,25 +1652,43 @@ def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
     result = []
     seen_names: set = set()
     for t in tools:
-        fn = t.get("function", {})
-        name = fn.get("name", "")
+        fn = t.get("function")
+        if not isinstance(fn, dict):
+            fn = {}
+        # Resolve the tool name from the OpenAI ``function`` wrapper, falling
+        # back to a top-level ``name`` for tools that arrive without the wrapper
+        # (some MCP/plugin tools do). A tool with no resolvable name must NOT be
+        # emitted: strict upstreams reached over ``api_mode: anthropic_messages``
+        # (e.g. OpenCode Zen → DeepSeek) reject the *whole* request with
+        # ``tools[].function: missing field name`` (#51381), which then silently
+        # falls through to the fallback provider. Skip it with a warning instead.
+        name = fn.get("name") or t.get("name") or ""
+        if not name:
+            logger.warning(
+                "convert_tools_to_anthropic: skipping tool with no resolvable "
+                "name (would fail strict upstreams): %r",
+                t,
+            )
+            continue
         # Defensive dedup: Anthropic rejects requests with duplicate tool
         # names.  Upstream injection paths already dedup, but this guard
         # converts a hard API failure into a warning.  See: #18478
-        if name and name in seen_names:
+        if name in seen_names:
             logger.warning(
                 "convert_tools_to_anthropic: duplicate tool name '%s' "
                 "— dropping second occurrence",
                 name,
             )
             continue
-        if name:
-            seen_names.add(name)
+        seen_names.add(name)
         anthropic_tool: Dict[str, Any] = {
             "name": name,
-            "description": fn.get("description", ""),
+            "description": fn.get("description") or t.get("description", ""),
             "input_schema": _normalize_tool_input_schema(
-                fn.get("parameters", {"type": "object", "properties": {}})
+                fn.get("parameters")
+                or t.get("parameters")
+                or t.get("input_schema")
+                or {"type": "object", "properties": {}}
             ),
         }
         # Forward cache_control marker when present on the OpenAI-format

@@ -805,6 +805,48 @@ class TestConvertTools:
         }
         assert result[0]["input_schema"]["required"] == ["command"]
 
+    def test_tool_with_top_level_name_is_converted(self):
+        # #51381: some MCP/plugin tools arrive without the OpenAI `function`
+        # wrapper (name/description/parameters at the top level). They must
+        # convert with their real name. The old code read only function.name,
+        # emitting name="" here — which strict upstreams reached over
+        # api_mode=anthropic_messages (OpenCode Zen → DeepSeek) reject as
+        # "tools[].function: missing field name".
+        tools = [
+            {
+                "name": "flat_tool",
+                "description": "A tool without the function wrapper",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"q": {"type": "string"}},
+                    "required": ["q"],
+                },
+            }
+        ]
+        result = convert_tools_to_anthropic(tools)
+        assert len(result) == 1
+        assert result[0]["name"] == "flat_tool"
+        assert result[0]["description"] == "A tool without the function wrapper"
+        assert result[0]["input_schema"]["properties"]["q"]["type"] == "string"
+
+    def test_tool_without_resolvable_name_is_skipped(self):
+        # #51381: never emit a nameless tool — one such entry makes the entire
+        # request fail at a strict upstream. Skip it (with a warning) and keep
+        # the valid tools.
+        tools = [
+            {"function": {"description": "no name", "parameters": {}}},
+            {
+                "type": "function",
+                "function": {
+                    "name": "ok",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+        ]
+        result = convert_tools_to_anthropic(tools)
+        assert [t["name"] for t in result] == ["ok"]
+        assert all(t["name"] for t in result)  # no empty-name tool emitted
+
 
 # ---------------------------------------------------------------------------
 # Message conversion
