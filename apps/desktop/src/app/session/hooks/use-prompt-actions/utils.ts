@@ -217,5 +217,6 @@ export function visibleUserIndexAtOrdinal(messages: readonly ChatMessage[], targ
 
 export interface SubmitTextOptions {
   attachments?: ComposerAttachment[]
+  displayText?: string
   fromQueue?: boolean
 }
