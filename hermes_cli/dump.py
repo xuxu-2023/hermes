@@ -164,7 +164,22 @@ def _configured_platforms() -> list[str]:
         "weixin": "WEIXIN_ACCOUNT_ID",
         "qqbot": "QQ_APP_ID",
     }
-    return [name for name, env in checks.items() if os.getenv(env)]
+    truthy = {"true", "1", "yes"}
+    configured: list[str] = []
+    for name, env in checks.items():
+        val = os.getenv(env)
+        if not val:
+            continue
+        # WHATSAPP_ENABLED is a boolean toggle, not a credential. Mirror the
+        # runtime parser EXACTLY: gateway/config.py enables WhatsApp iff
+        # os.getenv("WHATSAPP_ENABLED", "").lower() in {"true", "1", "yes"} —
+        # note it does NOT .strip(), so a padded value like " true " is
+        # disabled at runtime. Stripping here would over-report it as
+        # configured, so we match the runtime (no .strip()).
+        if name == "whatsapp" and val.lower() not in truthy:
+            continue
+        configured.append(name)
+    return configured
 
 
 def _memory_provider(config: dict) -> str:
