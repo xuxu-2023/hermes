@@ -12531,10 +12531,23 @@ def main():
 
     _secrets_cli.register_cli(secrets_bw)
 
+    secrets_vw = secrets_subparsers.add_parser(
+        "vaultwarden",
+        aliases=["vw"],
+        help="Vaultwarden / Bitwarden Password Manager integration (bw CLI)",
+    )
+
+    from hermes_cli import vaultwarden_cli as _vaultwarden_cli
+
+    _vaultwarden_cli.register_cli(secrets_vw)
+
     def _dispatch_secrets(args):  # noqa: ANN001
         sub = getattr(args, "secrets_command", None)
         bw_sub = getattr(args, "secrets_bw_command", None)
+        vw_sub = getattr(args, "secrets_vw_command", None)
         if sub in ("bitwarden", "bw") and bw_sub is not None:
+            return args.func(args)
+        if sub in ("vaultwarden", "vw") and vw_sub is not None:
             return args.func(args)
         secrets_parser.print_help()
         return 0

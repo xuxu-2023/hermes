@@ -78,6 +78,8 @@ def format_secret_source_suffix(env_var: str) -> str:
         return ""
     if source == "bitwarden":
         return " (from Bitwarden)"
+    if source == "vaultwarden":
+        return " (from Vaultwarden)"
     # Generic fallback — future-proofing for additional secret sources
     # (e.g. 1Password, HashiCorp Vault) without having to update every
     # call site.
@@ -308,52 +310,69 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         return
 
     bw_cfg = (cfg or {}).get("bitwarden") or {}
-    if not bw_cfg.get("enabled"):
-        return
+    if bw_cfg.get("enabled"):
+        try:
+            from agent.secret_sources.bitwarden import apply_bitwarden_secrets
+        except ImportError:
+            pass
+        else:
+            result = apply_bitwarden_secrets(
+                enabled=True,
+                access_token_env=bw_cfg.get("access_token_env", "BWS_ACCESS_TOKEN"),
+                project_id=bw_cfg.get("project_id", ""),
+                override_existing=bool(bw_cfg.get("override_existing", False)),
+                cache_ttl_seconds=float(bw_cfg.get("cache_ttl_seconds", 300)),
+                auto_install=bool(bw_cfg.get("auto_install", True)),
+                server_url=str(bw_cfg.get("server_url", "") or "").strip(),
+                home_path=home_path,
+            )
+            _report_secret_source_result(result, "Bitwarden Secrets Manager", "bitwarden")
 
-    try:
-        from agent.secret_sources.bitwarden import apply_bitwarden_secrets
-    except ImportError:
-        return
+    vw_cfg = (cfg or {}).get("vaultwarden") or {}
+    if vw_cfg.get("enabled"):
+        try:
+            from agent.secret_sources.vaultwarden import apply_vaultwarden_secrets
+        except ImportError:
+            pass
+        else:
+            result = apply_vaultwarden_secrets(
+                enabled=True,
+                session_env=vw_cfg.get("session_env", "BW_SESSION"),
+                item_name=vw_cfg.get("item_name", ""),
+                override_existing=bool(vw_cfg.get("override_existing", False)),
+                cache_ttl_seconds=float(vw_cfg.get("cache_ttl_seconds", 300)),
+                home_path=home_path,
+            )
+            _report_secret_source_result(result, "Vaultwarden", "vaultwarden")
 
-    result = apply_bitwarden_secrets(
-        enabled=True,
-        access_token_env=bw_cfg.get("access_token_env", "BWS_ACCESS_TOKEN"),
-        project_id=bw_cfg.get("project_id", ""),
-        override_existing=bool(bw_cfg.get("override_existing", False)),
-        cache_ttl_seconds=float(bw_cfg.get("cache_ttl_seconds", 300)),
-        auto_install=bool(bw_cfg.get("auto_install", True)),
-        server_url=str(bw_cfg.get("server_url", "") or "").strip(),
-        home_path=home_path,
-    )
 
-    if result.applied:
-        # Re-run the ASCII sanitization pass: BSM values are user-supplied
-        # and might have the same copy-paste corruption as a manually
-        # edited .env (see #6843).
+def _report_secret_source_result(result: object, label: str, source_key: str) -> None:
+    """Print status lines and record secret origins for a FetchResult."""
+    applied = getattr(result, "applied", [])
+    skipped = getattr(result, "skipped", [])
+    error = getattr(result, "error", None)
+    warnings = getattr(result, "warnings", [])
+    if applied:
         _sanitize_loaded_credentials()
-        # Remember where these came from so the setup / `hermes model`
-        # flows can label detected credentials with "(from Bitwarden)" —
-        # otherwise users see "credentials ✓" with no hint that the value
-        # came from BSM rather than .env.
-        for name in result.applied:
-            _SECRET_SOURCES[name] = "bitwarden"
+        for name in applied:
+            _SECRET_SOURCES[name] = source_key
         print(
-            f"  Bitwarden Secrets Manager: applied {len(result.applied)} "
-            f"secret{'s' if len(result.applied) != 1 else ''} "
-            f"({', '.join(sorted(result.applied))})",
+            f"  {label}: applied {len(applied)} "
+            f"secret{'s' if len(applied) != 1 else ''} "
+            f"({', '.join(sorted(applied))})",
             file=sys.stderr,
         )
-    if result.error:
+    if skipped:
         print(
-            f"  Bitwarden Secrets Manager: {result.error}",
+            f"  {label}: skipped {len(skipped)} "
+            f"secret{'s' if len(skipped) != 1 else ''} already set in env "
+            f"({', '.join(sorted(skipped))})",
             file=sys.stderr,
         )
-    for warn in result.warnings:
-        print(
-            f"  Bitwarden Secrets Manager: {warn}",
-            file=sys.stderr,
-        )
+    if error:
+        print(f"  {label}: {error}", file=sys.stderr)
+    for warn in warnings:
+        print(f"  {label}: {warn}", file=sys.stderr)
 
 
 def _load_secrets_config(home_path: Path) -> dict:
