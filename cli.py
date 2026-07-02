@@ -11429,7 +11429,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         """
         import time as _time
 
-        timeout = CLI_CONFIG.get("clarify", {}).get("timeout", 120)
+        timeout = CLI_CONFIG.get("clarify", {}).get("timeout")
+        if timeout is None:
+            timeout = CLI_CONFIG.get("agent", {}).get("clarify_timeout")
+        if timeout is None:
+            timeout = 120
         response_queue = queue.Queue()
         is_open_ended = not choices
 
