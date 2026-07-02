@@ -1979,6 +1979,7 @@ def _create_local_session(task_id: str) -> Dict[str, str]:
         "session_name": session_name,
         "bb_session_id": None,
         "cdp_url": None,
+        "browser_backend": "local",
         "features": {"local": True},
     }
 
@@ -1993,6 +1994,7 @@ def _create_cdp_session(task_id: str, cdp_url: str) -> Dict[str, str]:
         "session_name": session_name,
         "bb_session_id": None,
         "cdp_url": cdp_url,
+        "browser_backend": "cdp_override",
         "features": {"cdp_override": True},
     }
 
@@ -2885,7 +2887,14 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         if is_first_nav and "features" in session_info:
             features = session_info["features"]
             active_features = [k for k, v in features.items() if v]
-            if not features.get("proxies"):
+            # Browserbase-only proxy warning: only apply to Browserbase-backed sessions
+            # that explicitly lack proxies. Other backends (local Chrome, CDP override,
+            # Browser Use, Firecrawl, etc.) are not Browserbase and should not receive
+            # its plan-specific warning.
+            if (
+                session_info.get("browser_backend") == "browserbase"
+                and not features.get("proxies")
+            ):
                 response["stealth_warning"] = (
                     "Running WITHOUT residential proxies. Bot detection may be more aggressive. "
                     "Consider upgrading Browserbase plan for proxy support."
