@@ -535,6 +535,17 @@ def resolve_requested_provider(requested: Optional[str] = None) -> str:
     if isinstance(cfg_provider, str) and cfg_provider.strip():
         return cfg_provider.strip().lower()
 
+    # When model.base_url points to a loopback (e.g. local Ollama, LM Studio,
+    # vLLM) and no named provider is configured, resolve to "custom" so the
+    # local endpoint is used instead of auto-detecting to a cloud provider
+    # like "nous".  Without this, users who explicitly set model.provider=""
+    # together with a localhost base_url get their traffic silently routed to
+    # the cloud because auto-detection picks up stored cloud credentials.
+    # Refs GitHub #45782.
+    cfg_base_url = (model_cfg.get("base_url") or "").strip()
+    if cfg_base_url and _loopback_hostname(base_url_hostname(cfg_base_url)):
+        return "custom"
+
     # Prefer the persisted config selection over any stale shell/.env
     # provider override so chat uses the endpoint the user last saved.
     env_provider = _getenv("HERMES_INFERENCE_PROVIDER", "").strip().lower()
