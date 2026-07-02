@@ -295,6 +295,20 @@ def run_dump(args):
     else:
         backend = config_backend
 
+    # Provider — report the EFFECTIVE provider, not just config.yaml.
+    # config.model.provider wins per runtime_provider.resolve_requested_provider
+    # (explicit > config.model.provider > HERMES_INFERENCE_PROVIDER > auto), but
+    # when config sets no provider an HERMES_INFERENCE_PROVIDER in .env / the shell
+    # is what the agent actually resolves to. run_dump() has already loaded .env,
+    # so os.environ reflects the real override here. Reporting only "(auto)" hides
+    # it from support triage — the same failure the effective-terminal-backend
+    # line above fixes (note the precedence is the opposite direction: config wins
+    # over env here, whereas TERMINAL_ENV overrides config).
+    if provider == "(auto)":
+        env_provider = (os.environ.get("HERMES_INFERENCE_PROVIDER") or "").strip()
+        if env_provider:
+            provider = f"{env_provider}  (HERMES_INFERENCE_PROVIDER, config sets none)"
+
     # OpenAI SDK version
     try:
         import openai
