@@ -230,6 +230,7 @@ def init_agent(
     iteration_budget: "IterationBudget" = None,
     fallback_model: Dict[str, Any] = None,
     credential_pool=None,
+    project_local_state=None,
     checkpoints_enabled: bool = False,
     checkpoint_max_snapshots: int = 20,
     checkpoint_max_total_size_mb: int = 500,
@@ -318,6 +319,16 @@ def init_agent(
     agent.load_soul_identity = load_soul_identity
     agent.pass_session_id = pass_session_id
     agent._credential_pool = credential_pool
+    if project_local_state is None:
+        try:
+            from agent.project_local import resolve_project_local_state
+
+            project_local_state = resolve_project_local_state(
+                os.environ.get("TERMINAL_CWD") or os.getcwd()
+            )
+        except Exception:
+            project_local_state = None
+    agent.project_local_state = project_local_state
     agent.log_prefix_chars = log_prefix_chars
     agent.log_prefix = f"{log_prefix} " if log_prefix else ""
     # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
