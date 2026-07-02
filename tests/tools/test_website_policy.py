@@ -428,7 +428,8 @@ class TestWebToolPolicy:
             pytest.fail(f"unexpected URL checked: {url}")
 
         class FakeFirecrawlClient:
-            def scrape(self, url, formats):
+            def scrape(self, url, formats, timeout):
+                assert timeout == firecrawl_provider.FIRECRAWL_SCRAPE_TIMEOUT_MS
                 return {
                     "markdown": "secret content",
                     "metadata": {
