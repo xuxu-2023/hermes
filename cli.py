@@ -8250,6 +8250,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
 
 
+    def _handle_evolve_cc_command(self, cmd: str):
+        """Handle `/evolve-cc` slash command."""
+        from hermes_cli.evolve_cc import run_evolve_cc_slash
+
+        run_evolve_cc_slash(cmd, confirm_fn=self._prompt_text_input)
+
     def _show_gateway_status(self):
         """Show status of the gateway and connected messaging platforms."""
         from gateway.config import load_gateway_config, Platform
@@ -8701,6 +8707,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     print("  Enable/disable: hermes plugins enable/disable <name>")
             except Exception as e:
                 print(f"Plugin system error: {e}")
+        elif canonical == "evolve-cc":
+            self._handle_evolve_cc_command(cmd_original)
         elif canonical == "rollback":
             self._handle_rollback_command(cmd_original)
         elif canonical == "snapshot":
