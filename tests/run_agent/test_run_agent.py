@@ -2247,6 +2247,45 @@ class TestExecuteToolCalls:
         assert messages[0]["role"] == "tool"
         assert "search result" in messages[0]["content"]
 
+    def test_terminal_large_stdout_is_bounded_before_provider(self, agent):
+        """Regression for #50807: terminal's 50K stdout cap must not be sent inline."""
+        import tools.terminal_tool  # noqa: F401  # registers terminal threshold
+
+        terminal_stdout = (
+            ("x" * 20_000)
+            + "\n\n... [OUTPUT TRUNCATED - 50,000 chars omitted out of 100,000 total] ...\n\n"
+            + ("x" * 30_000)
+        )
+        # Mirror terminal_tool's field order (status fields ahead of output)
+        # so the head-truncated preview keeps exit_code/error visible.
+        terminal_result = json.dumps({
+            "exit_code": 0,
+            "error": None,
+            "output": terminal_stdout,
+        })
+        tc = _mock_tool_call(
+            name="terminal",
+            arguments=json.dumps({
+                "command": "python3 -c \"print('x'*100000)\"",
+                "timeout": 30,
+            }),
+            call_id="huge_stdout_probe",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+
+        with patch("run_agent.handle_function_call", return_value=terminal_result):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        assert len(messages) == 1
+        content = messages[0]["content"]
+        assert len(content.encode("utf-8")) < 8_192
+        assert "Truncated" in content or "<persisted-output>" in content
+        assert "x" * 9_000 not in content
+        # The exit status must survive truncation so the model still knows
+        # whether the command passed (regression guard for the head-cut).
+        assert '"exit_code"' in content
+
     def test_sequential_memory_remove_notifies_provider_with_tool_result(self, agent):
         old_text = "stale preference entry"
         tc = _mock_tool_call(
