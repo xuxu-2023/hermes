@@ -933,6 +933,20 @@ def init_agent(
                             _fb_resolved = True
                             break
                     if not _fb_resolved:
+                        # Check if the API key is actually present in the environment.
+                        # If it is, the resolution failure is likely a network/DNS issue
+                        # rather than a missing credential. This avoids misleading
+                        # "no API key" errors when the provider's endpoint is unreachable
+                        # (e.g., DNS outage, Tailscale down, proxy misconfiguration).
+                        _api_key_present = bool(os.getenv(_env_hint, "").strip())
+                        if _api_key_present:
+                            raise RuntimeError(
+                                f"Provider '{_explicit}' is set in config.yaml and "
+                                f"{_env_hint} is present in the environment, but the "
+                                f"provider could not be reached. Check your network "
+                                f"connection and DNS resolution, or switch to a "
+                                f"different provider with `hermes model`."
+                            )
                         raise RuntimeError(
                             f"Provider '{_explicit}' is set in config.yaml but no API key "
                             f"was found. Set the {_env_hint} environment "
