@@ -219,7 +219,19 @@ class _StubTokenResponse:
 
     def __init__(self, payload):
         self._payload = payload
-        self.text = ""
+        import json
+
+        self.text = json.dumps(payload)
+        self.headers = {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def iter_bytes(self):
+        yield self.text.encode("utf-8")
 
     def json(self):
         return self._payload
@@ -280,7 +292,7 @@ def test_xai_loopback_login_manual_paste_skips_http_server(monkeypatch):
         auth_mod, "_xai_oauth_build_authorize_url", _capture_state
     )
 
-    def _fake_token_post(*_a, **_k):
+    def _fake_token_stream(*_a, **_k):
         return _StubTokenResponse(
             {
                 "access_token": "at",
@@ -291,7 +303,7 @@ def test_xai_loopback_login_manual_paste_skips_http_server(monkeypatch):
             }
         )
 
-    monkeypatch.setattr(auth_mod.httpx, "post", _fake_token_post)
+    monkeypatch.setattr(auth_mod.httpx, "stream", _fake_token_stream)
 
     with contextlib.redirect_stdout(io.StringIO()):
         creds = auth_mod._xai_oauth_loopback_login(manual_paste=True)
@@ -358,7 +370,7 @@ def test_xai_loopback_login_manual_paste_bare_code_succeeds(monkeypatch):
         },
     )
 
-    def _fake_token_post(*_a, **_k):
+    def _fake_token_stream(*_a, **_k):
         return _StubTokenResponse(
             {
                 "access_token": "at",
@@ -369,7 +381,7 @@ def test_xai_loopback_login_manual_paste_bare_code_succeeds(monkeypatch):
             }
         )
 
-    monkeypatch.setattr(auth_mod.httpx, "post", _fake_token_post)
+    monkeypatch.setattr(auth_mod.httpx, "stream", _fake_token_stream)
 
     with contextlib.redirect_stdout(io.StringIO()):
         creds = auth_mod._xai_oauth_loopback_login(manual_paste=True)
@@ -534,7 +546,7 @@ def test_xai_loopback_login_timeout_falls_back_to_manual_paste(monkeypatch):
     )
     monkeypatch.setattr(
         auth_mod.httpx,
-        "post",
+        "stream",
         lambda *_a, **_k: _StubTokenResponse(
             {
                 "access_token": "at-timeout",
