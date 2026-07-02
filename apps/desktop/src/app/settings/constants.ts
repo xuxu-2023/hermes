@@ -557,6 +557,7 @@ export const SECTIONS: DesktopConfigSection[] = [
     keys: [
       'tts.provider',
       'stt.enabled',
+      'stt.echo',
       'stt.provider',
       'voice.auto_tts',
       'tts.edge.voice',
