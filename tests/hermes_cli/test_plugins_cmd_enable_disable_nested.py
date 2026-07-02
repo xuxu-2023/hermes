@@ -338,3 +338,31 @@ class TestEnableToolOverrideConsent:
             cmd_enable("trusted_bundled")
 
         mock_set_flag.assert_not_called()
+
+
+class TestDashboardEnableNested:
+    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    @patch("hermes_cli.plugins_cmd._toggle_plugin_toolset")
+    @patch("hermes_cli.plugins_cmd._save_disabled_set")
+    @patch("hermes_cli.plugins_cmd._save_enabled_set")
+    @patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set())
+    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
+    def test_dashboard_enable_bare_name_writes_key(
+        self, mock_en, mock_dis, mock_save_en, mock_save_dis, mock_toggle,
+        mock_user, mock_bundled, nested_plugin_env,
+    ):
+        from hermes_cli.plugins_cmd import dashboard_set_agent_plugin_enabled
+        mock_user.return_value = nested_plugin_env
+        mock_bundled.return_value = nested_plugin_env / "nonexistent"
+
+        result = dashboard_set_agent_plugin_enabled("nemo_relay", enabled=True)
+
+        assert result == {
+            "ok": True,
+            "name": "observability/nemo_relay",
+            "unchanged": False,
+        }
+        saved = mock_save_en.call_args[0][0]
+        assert "observability/nemo_relay" in saved
+        mock_toggle.assert_called_once_with("observability/nemo_relay", enable=True)
