@@ -227,6 +227,9 @@ export const applyDisplay = (
     pasteCollapseLines: _pasteCollapseLinesFromConfig(cfg),
     pasteCollapseChars: _pasteCollapseCharsFromConfig(cfg),
     sections: resolveSections(d.sections),
+    screenReaderMode: !!d.screen_reader_mode,
+    showCost: !!d.show_cost,
+    showLiveTimers: d.show_live_timers !== false,
     showReasoning: !!d.show_reasoning,
     statusBar: normalizeStatusBar(d.tui_statusbar),
     streaming: d.streaming !== false

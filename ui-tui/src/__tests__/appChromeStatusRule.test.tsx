@@ -96,6 +96,8 @@ const baseProps = {
   liveSessionCount: 0,
   model: 'opus-4.8',
   sessionStartedAt: null,
+  showCost: false,
+  showLiveTimers: true,
   status: 'ready',
   statusColor: DEFAULT_THEME.color.ok,
   t: DEFAULT_THEME,
@@ -409,6 +411,32 @@ describe('StatusRule idle-since read-out', () => {
     })
 
     expect(findComponentByName(element, 'IdleSince')).toBeNull()
+  })
+
+  it('passes no startedAt to the busy ticker when live timers are disabled', () => {
+    const element = StatusRule({
+      ...baseProps,
+      busy: true,
+      showLiveTimers: false,
+      turnStartedAt: Date.now()
+    })
+
+    const ticker = findComponentByName(element, 'FaceTicker')
+
+    expect(ticker).not.toBeNull()
+    expect(ticker!.props.startedAt).toBeNull()
+  })
+
+  it('hides idle and session duration when live timers are disabled', () => {
+    const element = StatusRule({
+      ...baseProps,
+      lastTurnEndedAt: Date.now() - 42_000,
+      sessionStartedAt: Date.now() - 60_000,
+      showLiveTimers: false
+    })
+
+    expect(findComponentByName(element, 'IdleSince')).toBeNull()
+    expect(findComponentByName(element, 'SessionDuration')).toBeNull()
   })
 
   it('is hidden before the first turn completes', () => {

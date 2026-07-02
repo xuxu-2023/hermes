@@ -173,7 +173,10 @@ export interface UiState {
   pasteCollapseChars: number
 
   sections: SectionVisibility
+  screenReaderMode: boolean
   sessionTitle: string
+  showCost: boolean
+  showLiveTimers: boolean
   showReasoning: boolean
   indicatorStyle: IndicatorStyle
   sid: null | string
