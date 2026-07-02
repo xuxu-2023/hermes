@@ -4563,6 +4563,26 @@ class TestProbeGatewayHealth:
         assert alive is False
         assert body is None
 
+    def test_probe_uses_configured_short_timeout(self, monkeypatch):
+        """The HTTP probe must not fall through to the OS TCP timeout."""
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_TIMEOUT", 0.75)
+        timeouts = []
+
+        def mock_urlopen(req, **kwargs):
+            timeouts.append(kwargs.get("timeout"))
+            raise TimeoutError("mock timeout")
+
+        monkeypatch.setattr(ws.urllib.request, "urlopen", mock_urlopen)
+
+        alive, body = ws._probe_gateway_health()
+
+        assert alive is False
+        assert body is None
+        assert timeouts == [0.75, 0.75]
+
     def test_normalizes_url_with_health_suffix(self, monkeypatch):
         """If the user sets the URL to include /health, it's stripped to base."""
         import hermes_cli.web_server as ws
