@@ -3,7 +3,7 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from agent.system_prompt import build_system_prompt_parts
+from agent.system_prompt import build_system_prompt, build_system_prompt_parts
 
 
 def _make_agent(**overrides):
@@ -22,6 +22,8 @@ def _make_agent(**overrides):
         platform="",
         pass_session_id=False,
         session_id="",
+        base_url="",
+        _cached_system_prompt=None,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -99,3 +101,52 @@ class TestCodingContextBlock:
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         agent = _make_agent(valid_tool_names=[], platform="cli")
         assert "coding agent" not in _stable_prompt(agent)
+
+
+class TestZaiPromptSanitization:
+    """Z.ai/Zhipu Coding Plan returns a bogus 429/1305 when the system prompt
+    contains the exact phrase "Hermes Agent" (#47685, #53002). The assembled
+    prompt must be sanitized for Z.ai/Zhipu hosts while staying verbatim for
+    every other provider."""
+
+    @staticmethod
+    def _build(agent):
+        with (
+            patch("run_agent.load_soul_md", return_value="You are Hermes Agent."),
+            patch("run_agent.build_nous_subscription_prompt", return_value=""),
+            patch("run_agent.build_environment_hints", return_value=""),
+            patch("run_agent.build_context_files_prompt", return_value=""),
+        ):
+            return build_system_prompt(agent)
+
+    def test_sanitized_for_zai_coding_plan(self):
+        # api.z.ai/api/coding/paas/v4 — the default zai transport endpoint.
+        agent = _make_agent(base_url="https://api.z.ai/api/coding/paas/v4")
+        prompt = self._build(agent)
+        assert "Hermes Agent" not in prompt
+        assert "Hermes framework" in prompt
+
+    def test_sanitized_for_zai_anthropic_bridge(self):
+        # api.z.ai/api/anthropic — the Anthropic-compatible zai endpoint.
+        agent = _make_agent(base_url="https://api.z.ai/api/anthropic")
+        prompt = self._build(agent)
+        assert "Hermes Agent" not in prompt
+
+    def test_sanitized_for_bigmodel_cn(self):
+        # open.bigmodel.cn — the Zhipu China endpoint.
+        agent = _make_agent(base_url="https://open.bigmodel.cn/api/paas/v4")
+        prompt = self._build(agent)
+        assert "Hermes Agent" not in prompt
+
+    def test_untouched_for_non_zai_provider(self):
+        # Non-zai providers must stay byte-identical (no sanitization).
+        agent = _make_agent(base_url="https://openrouter.ai/api/v1")
+        prompt = self._build(agent)
+        assert prompt.count("Hermes Agent") == 1
+        assert "Hermes framework" not in prompt
+
+    def test_untouched_when_base_url_empty(self):
+        # No provider configured — do not mutate the prompt.
+        agent = _make_agent(base_url="")
+        prompt = self._build(agent)
+        assert "Hermes Agent" in prompt

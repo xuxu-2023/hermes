@@ -490,7 +490,35 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
     for warning in drain_truncation_warnings():
         agent._emit_status(warning)
 
+    # Z.ai/Zhipu Coding Plan returns a bogus HTTP 429 / code 1305 ("temporarily
+    # overloaded") whenever the effective system prompt contains the exact
+    # phrase "Hermes Agent". This is a prompt-level block on Z.ai's side, not
+    # real overload (#47685). The phrase leaks from multiple sources — default
+    # SOUL, ~140 skill files, runtime/help guidance, context files, and the
+    # persisted system_prompt on session resume — so a one-line constant edit
+    # is not enough. Sanitize the fully-assembled prompt, gated to Z.ai/Zhipu
+    # hosts so non-zai providers remain byte-identical.
+    _sanitize_zai_prompt_block(agent, joined)
+
     return joined
+
+
+def _sanitize_zai_prompt_block(agent: Any, joined: str) -> None:
+    """Rewrite the Z.ai prompt-sensitive phrase in-place on the cached prompt.
+
+    Mutates ``agent._cached_system_prompt`` so the sanitized form is what every
+    downstream path (chat/completions, anthropic-compatible, compression
+    summary) reads. Called from the single system-prompt assembly chokepoint so
+    every leak source is covered without per-call-site patches.
+    """
+    try:
+        base_url = (getattr(agent, "base_url", "") or "").lower()
+        if "api.z.ai" in base_url or "bigmodel.cn" in base_url:
+            sanitized = joined.replace("Hermes Agent", "Hermes framework")
+            if sanitized != joined:
+                agent._cached_system_prompt = sanitized
+    except Exception:
+        pass
 
 
 def invalidate_system_prompt(agent: Any) -> None:
