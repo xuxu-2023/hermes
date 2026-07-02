@@ -243,6 +243,24 @@ def test_atomic_replace_other_oserror_propagates(
     assert tmp.exists()
 
 
+def test_atomic_yaml_write_exdev_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end: atomic_yaml_write recovers from EXDEV during write."""
+    target = tmp_path / "config.yaml"
+    target.write_text("placeholder: true\n", encoding="utf-8")
+
+    def fail_replace(src: str, dst: str) -> None:
+        raise OSError(errno.EXDEV, os.strerror(errno.EXDEV), src, None, dst)
+
+    monkeypatch.setattr("utils.os.replace", fail_replace)
+
+    atomic_yaml_write(target, {"display": {"skin": "auto"}})
+
+    data = yaml.safe_load(target.read_text(encoding="utf-8"))
+    assert data == {"display": {"skin": "auto"}}
+
+
 def test_atomic_replace_real_cross_device(tmp_path: Path) -> None:
     shm = Path("/dev/shm")
     if os.name != "posix" or not os.access(shm, os.W_OK):
