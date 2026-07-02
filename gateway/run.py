@@ -12461,44 +12461,45 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # extract_local_files scanned text that still contained MEDIA: tags,
             # producing false-positive bare-path matches with the MEDIA: prefix
             # glued on. This matches the chain order in gateway/platforms/base.py.
-            _, cleaned = adapter.extract_images(cleaned)
-            local_files, _ = adapter.extract_local_files(cleaned)
-            local_files = BasePlatformAdapter.filter_local_delivery_paths(local_files)
+            images, cleaned = adapter.extract_images(cleaned)
+            # Post-stream delivery MUST NOT auto-promote bare local paths from
+            # response text to attachments — that was the root cause of #20834.
+            # Only explicit image tags (extract_images) and MEDIA: directives
+            # (extract_media) produce attachments.
+            local_files = []  # extract_local_files skipped in post-stream
 
             _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
 
             _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
             _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 
-            # Partition out images so they can be sent as a single batch
-            # (e.g. Signal's multi-attachment RPC). When [[as_document]] was
-            # set, image-extension files skip the photo path and route to
-            # send_document below — preserving original bytes.
-            image_paths: list = []
+            # Build image delivery list from two sources:
+            # 1. MEDIA: directives (extract_media) — bare local paths → file:// wrap
+            # 2. Explicit image tags (extract_images) — already HTTPS or file:// URIs
+            image_delivery: list = []
             non_image_media: list = []
             for media_path, is_voice in media_files:
                 ext = Path(media_path).suffix.lower()
                 if (ext in _IMAGE_EXTS
                         and not is_voice
                         and not force_document_attachments):
-                    image_paths.append(media_path)
+                    image_delivery.append((f"file://{_quote(media_path)}", ""))
                 else:
                     non_image_media.append((media_path, is_voice))
 
-            non_image_local: list = []
-            for file_path in local_files:
-                if (Path(file_path).suffix.lower() in _IMAGE_EXTS
-                        and not force_document_attachments):
-                    image_paths.append(file_path)
-                else:
-                    non_image_local.append(file_path)
+            for img_url, img_alt in images:
+                # Deduplicate: skip if this URL is already in image_delivery
+                if not any(img_url in u for u, _ in image_delivery):
+                    image_delivery.append((img_url, img_alt))
 
-            if image_paths:
+            non_image_local: list = []
+            # extract_local_files is intentionally not called post-stream (#20834)
+
+            if image_delivery:
                 try:
-                    images = [(f"file://{_quote(p)}", "") for p in image_paths]
                     await adapter.send_multiple_images(
                         chat_id=event.source.chat_id,
-                        images=images,
+                        images=image_delivery,
                         metadata=_thread_meta,
                     )
                 except Exception as e:

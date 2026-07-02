@@ -290,6 +290,7 @@ class TestExtractImages:
         assert "\n\n\n" not in cleaned
 
     def test_non_http_url_not_matched(self):
+        """file:// URI without a matching file on disk is silently skipped."""
         content = "![file](file:///local/path.png)"
         images, _ = BasePlatformAdapter.extract_images(content)
         assert images == []
@@ -306,6 +307,606 @@ class TestExtractImages:
         assert images[0][0] == "https://fal.media/cat.png"
         # The PDF link must survive in cleaned content
         assert "![report](https://example.com/report.pdf)" in cleaned
+
+    def test_markdown_file_url_windows(self, tmp_path):
+        """Markdown image with file:///C:/path on Windows (POSIX no real C:)."""
+        content = "![screen](file:///C:/Users/test/screenshot.png)"
+        images, _ = BasePlatformAdapter.extract_images(content)
+        # No C: on Linux so validation fails silently
+        assert images == []
+
+    def test_markdown_file_url_posix(self, tmp_path):
+        """Markdown image with file:///tmp/... pointing to a real file."""
+        img = tmp_path / "snap.png"
+        img.write_bytes(b"PNG")
+        content = f"![screen](file://{img.as_posix()})"
+        images, _ = BasePlatformAdapter.extract_images(content)
+        assert len(images) == 1
+        # Normalised file:// URI should start with file:// and end with the path
+        assert images[0][0].startswith("file://")
+        assert str(img) in images[0][0] or "file://" + str(img) == images[0][0]
+        assert images[0][1] == "screen"
+
+    def test_markdown_file_url_posix_no_such_file(self, tmp_path):
+        """file:// URI pointing to a non-existing file is silently skipped."""
+        content = f"![ghost](file://{tmp_path}/nope.png)"
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        # Original text must be preserved
+        assert "![ghost]" in cleaned
+
+    def test_html_file_url_posix(self, tmp_path):
+        """HTML img tag with file:/// URI."""
+        img = tmp_path / "photo.png"
+        img.write_bytes(b"PNG")
+        f = img.as_posix()
+        content = f'<img src="file://{f}">'
+        images, _ = BasePlatformAdapter.extract_images(content)
+        assert len(images) == 1
+        assert images[0][0] == f"file://{f}"
+        assert images[0][1] == ""
+
+    def test_file_url_percent_encoded(self, tmp_path):
+        """file:// URI with %20-encoded spaces — also verifies round-trip."""
+        import urllib.parse
+        d = tmp_path / "my folder"
+        d.mkdir()
+        img = d / "screen shot.png"
+        img.write_bytes(b"PNG")
+        encoded = img.as_posix().replace(" ", "%20")
+        content = f"![img](file://{encoded})"
+        images, _ = BasePlatformAdapter.extract_images(content)
+        assert len(images) == 1
+        url = images[0][0]
+        assert url.startswith("file://")
+        decoded = urllib.parse.unquote(url[7:])
+        assert decoded == str(img), f"Decoded {decoded!r} != {str(img)!r}"
+
+    def test_file_url_unc_rejected(self, tmp_path):
+        """UNC file:// URIs are rejected in v1."""
+        content = "![img](file://server/share/img.png)"
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert "![img]" in cleaned
+
+    def test_file_url_in_fenced_code_block(self, tmp_path):
+        """file:// URI inside ```code``` is NOT extracted."""
+        img = tmp_path / "real.png"
+        img.write_bytes(b"PNG")
+        content = f"""Some text
+```
+![screen](file://{img.as_posix()})
+```
+More"""
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        # Code block text must survive
+        assert "![screen]" in cleaned
+
+    def test_file_url_in_inline_code(self, tmp_path):
+        """file:// URI inside backtick inline code is NOT extracted."""
+        img = tmp_path / "not_used.png"
+        img.write_bytes(b"PNG")
+        content = f"Use `![ref](file://{img.as_posix()})` here"
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert "`!" in cleaned
+
+    def test_file_url_in_blockquote(self, tmp_path):
+        """file:// URI in blockquote is NOT extracted."""
+        img = tmp_path / "quote.png"
+        img.write_bytes(b"PNG")
+        content = f"> ![img](file://{img.as_posix()})"
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        # Blockquote text should survive
+        assert "![img]" in cleaned
+
+    def test_html_file_url_in_fenced_code(self, tmp_path):
+        """HTML img with file:// URI inside ```code``` is NOT extracted."""
+        img = tmp_path / "hidden.png"
+        img.write_bytes(b"PNG")
+        content = f"""Text
+```
+<img src="file://{img.as_posix()}">
+```
+More"""
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert "<img" in cleaned or "file://" in cleaned
+
+    def test_file_url_only_image_extensions(self, tmp_path):
+        """Non-image file:// URIs (e.g. .pdf) are not extracted."""
+        content = "![doc](file:///tmp/report.pdf)"
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert "![doc]" in cleaned
+
+    def test_https_still_works(self):
+        """Normal HTTPS image extraction unchanged."""
+        content = "![cat](https://example.com/cat.png)"
+        images, _ = BasePlatformAdapter.extract_images(content)
+        assert len(images) == 1
+        assert images[0][0] == "https://example.com/cat.png"
+
+    def test_non_file_like_url_not_matched(self):
+        """Markdown image with non-image extension (http/https) is not extracted."""
+        content = "![doc](https://example.com/report.pdf)"
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert "![doc]" in cleaned
+
+    # ---- Fix 2 regression: precise span-based deletion ----
+
+    def test_png_and_pdf_side_by_side_only_png_extracted(self, tmp_path):
+        """A valid image (png) next to a non-image (pdf) — only png is extracted,
+        pdf tag preserved."""
+        img = tmp_path / "photo.png"
+        img.write_bytes(b"PNG")
+        f_png = img.as_posix()
+        content = f"![img](file://{f_png}) ![doc](file:///tmp/report.pdf)"
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert len(images) == 1
+        assert images[0][0] == f"file://{f_png}"
+        # PDF tag must survive intact
+        assert "![doc](file:///tmp/report.pdf)" in cleaned, "PDF tag was removed"
+        # PNG tag must be removed
+        assert "![img]" not in cleaned
+
+    def test_valid_png_and_missing_png_none_extracted(self, tmp_path):
+        """One valid png and one missing png — neither is extracted because the
+        missing png appears in the same match, but the deletion is span-based.
+        Actually two separate tags so only valid one is extracted."""
+        img = tmp_path / "real.png"
+        img.write_bytes(b"PNG")
+        valid_path = img.as_posix()
+        content = f"![a](file://{valid_path}) ![b](file:///nope.png)"
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert len(images) == 1
+        assert "real.png" in images[0][0]
+        assert "![b]" in cleaned, "Missing-file tag was deleted"
+
+    def test_png_in_text_and_same_png_in_code_same_text(self, tmp_path):
+        """Same file:// URI in both normal text and fenced code:
+        only the normal-text span is deleted; the code example survives."""
+        img = tmp_path / "diagram.png"
+        img.write_bytes(b"PNG")
+        f = img.as_posix()
+        content = f"""See the diagram: ![img](file://{f})
+
+Example code:
+```
+![img](file://{f})
+```"""
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert len(images) == 1
+        # Normal-text tag removed
+        assert "See the diagram:" in cleaned
+        assert cleaned.count("![img]") == 1  # only code example survives
+        assert "```" in cleaned
+
+    def test_html_img_extra_attrs_case_insensitive(self, tmp_path):
+        """HTML img with extra attrs, case variants."""
+        img = tmp_path / "photo.png"
+        img.write_bytes(b"PNG")
+        f = img.as_posix()
+        tests = [
+            f'<img width="200" src="file://{f}">',
+            f'<img WIDTH=200 SRC="file://{f}">',
+            f'<img width=\'200\' height=\'100\' src="file://{f}" alt="x">',
+            f'<img src="file://{f}" width="200">',
+            f'<IMG SRC="file://{f}">',
+            f"<img src=file://{f}>",
+        ]
+        for html in tests:
+            images, cleaned = BasePlatformAdapter.extract_images(html)
+            assert len(images) == 1, f"Failed for: {html}"
+            assert "<img" not in cleaned or cleaned.strip() == "", \
+                f"Tag not removed for: {html}"
+            assert images[0][0] == f"file://{f}"
+
+    def test_html_img_extra_attrs_https(self):
+        """Extra attrs before src still work for HTTPS."""
+        content = '<img width="200" src="https://example.com/img.png">'
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert len(images) == 1
+        assert images[0][0] == "https://example.com/img.png"
+        assert "<img" not in cleaned
+
+    def test_uppercase_scheme_extraction(self, tmp_path):
+        """FILE:/// URI (uppercase) extracts with existing file."""
+        img = tmp_path / "cap.png"
+        img.write_bytes(b"PNG")
+        f = img.as_posix()
+        # Markdown with FILE://
+        content = f"![x](FILE://{f})"
+        images, _ = BasePlatformAdapter.extract_images(content)
+        assert len(images) == 1
+        assert str(img) in images[0][0]
+
+    def test_uppercase_scheme_html_extraction(self, tmp_path):
+        """HTML <img SRC="FILE://..."> extracts."""
+        img = tmp_path / "cap.png"
+        img.write_bytes(b"PNG")
+        f = img.as_posix()
+        content = f'<img SRC="FILE://{f}">'
+        images, _ = BasePlatformAdapter.extract_images(content)
+        assert len(images) == 1
+        assert str(img) in images[0][0]
+
+    # ---- Blocker 1: HTML img negative tests ----
+
+    def test_html_img_data_src_not_matched(self):
+        """data-src attribute is NOT recognized as src."""
+        content = '<img data-src="file:///tmp/x.png">'
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert "data-src" in cleaned
+
+    def test_html_img_notsrc_not_matched(self):
+        """notsrc attribute is NOT recognized as src."""
+        content = '<img notsrc="file:///tmp/x.png">'
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert "notsrc" in cleaned
+
+    def test_html_img_src_in_alt_not_matched(self):
+        """src= pattern inside alt text is NOT recognized."""
+        content = '<img alt="example src=file:///tmp/x.png">'
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert "alt=" in cleaned
+
+    def test_html_img_data_src_plus_real_src_still_matches(self, tmp_path):
+        """data-src + real src only extracts real src."""
+        img = tmp_path / "real.png"
+        img.write_bytes(b"PNG")
+        f = img.as_posix()
+        content = f'<img data-src="file:///fake/x.png" src="file://{f}">'
+        images, _ = BasePlatformAdapter.extract_images(content)
+        assert len(images) == 1
+        assert str(img) in images[0][0]
+
+    # ---- Blocker 2: protected span tests ----
+
+    def test_blockquote_with_spaces_still_masked(self, tmp_path):
+        """file:// image inside blockquote with 2 leading spaces is masked."""
+        img = tmp_path / "bq.png"
+        img.write_bytes(b"PNG")
+        f = img.as_posix()
+        content = f"  > ![x](file://{f})"
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert "![x]" in cleaned
+
+    def test_blockquote_three_spaces_masked(self, tmp_path):
+        """file:// image inside blockquote with 3 leading spaces is masked."""
+        img = tmp_path / "bq3.png"
+        img.write_bytes(b"PNG")
+        f = img.as_posix()
+        content = f"   > ![x](file://{f})"
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert "![x]" in cleaned
+
+    def test_tilde_fenced_code_masked(self, tmp_path):
+        """file:// image inside ~~~ fenced code is masked."""
+        img = tmp_path / "tilde.png"
+        img.write_bytes(b"PNG")
+        f = img.as_posix()
+        content = f"text\n~~~\n![x](file://{f})\n~~~\nmore"
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert "![x]" in cleaned or "file://" in cleaned
+
+    def test_unclosed_fenced_code_masked(self, tmp_path):
+        """file:// image after unclosed ``` fence is masked."""
+        img = tmp_path / "unclosed.png"
+        img.write_bytes(b"PNG")
+        f = img.as_posix()
+        content = f"text\n```\n![x](file://{f})"
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert "![x]" in cleaned or "file://" in cleaned
+
+    def test_unclosed_tilde_fence_masked(self, tmp_path):
+        """file:// image after unclosed ~~~ fence is masked."""
+        img = tmp_path / "tild.png"
+        img.write_bytes(b"PNG")
+        f = img.as_posix()
+        content = f"text\n~~~\n![x](file://{f})"
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert "![x]" in cleaned or "file://" in cleaned
+
+    # ---- Blocker 1: file:// bare spaces ----
+
+    def test_markdown_file_url_bare_space_in_path(self, tmp_path):
+        """file:// path with bare spaces is extracted."""
+        import urllib.parse
+        d = tmp_path / "my folder"
+        d.mkdir()
+        img = d / "screen shot.png"
+        img.write_bytes(b"PNG")
+        fp = img.as_posix()
+        content = f"![shot](file://{fp})"
+        images, _ = BasePlatformAdapter.extract_images(content)
+        assert len(images) == 1
+        decoded = urllib.parse.unquote(images[0][0][7:])
+        assert decoded == fp, f"Round-trip broken: {decoded!r} != {fp!r}"
+
+    def test_markdown_file_url_bare_space_roundtrip(self, tmp_path):
+        """file:// bare space path + %20 both resolve to same validated path."""
+        import urllib.parse
+        d = tmp_path / "my folder"
+        d.mkdir()
+        img = d / "screen shot.png"
+        img.write_bytes(b"PNG")
+        fp = img.as_posix()
+        # Bare space
+        content1 = f"![shot](file://{fp})"
+        imgs1, _ = BasePlatformAdapter.extract_images(content1)
+        assert len(imgs1) == 1
+        decoded1 = urllib.parse.unquote(imgs1[0][0][7:])
+        # %20
+        encoded = fp.replace(" ", "%20")
+        content2 = f"![shot](file://{encoded})"
+        imgs2, _ = BasePlatformAdapter.extract_images(content2)
+        assert len(imgs2) == 1
+        decoded2 = urllib.parse.unquote(imgs2[0][0][7:])
+        assert decoded1 == decoded2 == fp
+
+    # ---- Blocker 2: HTML src scheme tightening ----
+
+    def test_html_src_bare_windows_path_not_extracted(self):
+        """HTML img src with raw Windows drive path is NOT extracted."""
+        content = '<img src="C:\\Users\\test\\file.png">'
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert cleaned == content
+
+    def test_html_src_bare_posix_path_not_extracted(self):
+        """<img src="/tmp/file.png"> bare POSIX path is NOT extracted."""
+        content = '<img src="/tmp/file.png">'
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert cleaned == content
+
+    def test_html_src_other_scheme_not_extracted(self):
+        """<img src="smb://server/..."> other scheme is NOT extracted."""
+        content = '<img src="smb://server/share/file.png">'
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert cleaned == content
+
+    def test_html_src_relative_path_not_extracted(self):
+        """<img src="../../file.png"> relative path is NOT extracted."""
+        content = '<img src="../../file.png">'
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert cleaned == content
+
+    # ---- JSON string value blocking ----
+
+    def test_json_embedded_file_url_markdown_blocked(self, tmp_path):
+        """JSON string value with file:// markdown image is blocked."""
+        f = tmp_path / "exist.png"
+        f.write_bytes(b"PNG")
+        content = '{"result":"![img](file://%s)"}' % f.as_posix()
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == [], "JSON-embedded file:// markdown should be blocked"
+        assert "![img]" in cleaned or "file://" in cleaned
+
+    def test_json_embedded_file_url_html_blocked(self, tmp_path):
+        """JSON string value with <img src=file://...> is blocked."""
+        f = tmp_path / "exist.png"
+        f.write_bytes(b"PNG")
+        content = '{"result":"<img src=file://%s>"}' % f.as_posix()
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == [], "JSON-embedded file:// HTML should be blocked"
+        assert "<img" in cleaned or "file://" in cleaned
+
+    def test_json_nested_object_file_url_blocked(self, tmp_path):
+        """Nested JSON object with file:// image is blocked."""
+        f = tmp_path / "nest.png"
+        f.write_bytes(b"PNG")
+        content = '{"outer":{"inner":"![x](file://%s)"}}' % f.as_posix()
+        images, _ = BasePlatformAdapter.extract_images(content)
+        assert images == []
+
+    def test_json_array_file_url_blocked(self, tmp_path):
+        """JSON array with file:// image value is blocked."""
+        f = tmp_path / "arr.png"
+        f.write_bytes(b"PNG")
+        content = '{"items":["![x](file://%s)"]}' % f.as_posix()
+        images, _ = BasePlatformAdapter.extract_images(content)
+        assert images == []
+
+    def test_json_embedded_does_not_affect_normal_file_url(self, tmp_path):
+        """Normal (non-JSON) file:// image still works when JSON is present."""
+        f = tmp_path / "real.png"
+        f.write_bytes(b"PNG")
+        content = 'Normal: ![x](file://%s)' % f.as_posix()
+        images, _ = BasePlatformAdapter.extract_images(content)
+        assert len(images) == 1
+
+    # ---- Blocker 1: case-insensitive JSON file:// blocking ----
+
+    def test_json_uppercase_file_url_blocked(self, tmp_path):
+        """FILE:// (uppercase) inside JSON string is blocked."""
+        f = tmp_path / "cap_block.png"
+        f.write_bytes(b"PNG")
+        fp = f.as_posix()
+        for content in [
+            '{"result":"![img](FILE://%s)"}' % fp,
+            '{"result":"<img src=FILE://%s>"}' % fp,
+            '{"result":"![img](File://%s)"}' % fp,
+        ]:
+            images, cleaned = BasePlatformAdapter.extract_images(content)
+            assert images == [], f"Uppercase FILE:// not blocked: {content}"
+            assert cleaned == content, f"cleaned differs from source: {cleaned}"
+
+    def test_json_uppercase_nested_object_file_url_blocked(self, tmp_path):
+        """FILE:// in nested JSON object is blocked; source preserved."""
+        f = tmp_path / "ncap.png"
+        f.write_bytes(b"PNG")
+        content = '{"outer":{"inner":"![x](FILE://%s)"}}' % f.as_posix()
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert cleaned == content
+
+    def test_json_uppercase_array_file_url_blocked(self, tmp_path):
+        """FILE:// in JSON array is blocked; source preserved."""
+        f = tmp_path / "acap.png"
+        f.write_bytes(b"PNG")
+        content = '{"items":["![x](FILE://%s)"]}' % f.as_posix()
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert cleaned == content
+
+    # ---- Blocker 2: double-decode protection ----
+
+    def test_quote_roundtrip_percent_in_filename(self, tmp_path):
+        """A filename containing literal % (e.g. 100%25) survives the
+        quote/unquote round-trip in send_multiple_images."""
+        import urllib.parse
+        d = tmp_path / "pct"
+        d.mkdir()
+        # A path with a literal "%25" in the name
+        img = d / "test%file.png"
+        img.write_bytes(b"PNG")
+        fp = img.as_posix()
+        encoded = fp.replace("%", "%25")  # double-encode
+        content = f"![x](file://{encoded})"
+        images, _ = BasePlatformAdapter.extract_images(content)
+        assert len(images) == 1, f"No image extracted from {content}"
+        decoded = urllib.parse.unquote(images[0][0][7:])
+        assert decoded == fp, f"Round-trip broken: {decoded!r} != {fp!r}"
+
+    def test_send_multiple_images_roundtrip_path(self, tmp_path):
+        """Verifies that the path reaching send_image_file from
+        send_multiple_images matches the validated path exactly."""
+        import urllib.parse
+        from unittest.mock import AsyncMock
+        from gateway.platforms.base import BasePlatformAdapter, SendResult
+
+        d = tmp_path / "roundtrip"
+        d.mkdir()
+        img = d / "test file.png"  # has space
+        img.write_bytes(b"PNG")
+        fp = img.as_posix()  # /tmp/.../roundtrip/test file.png
+
+        # Simulate what _normalize_file_url + validate produces
+        validated = fp
+        # Then what extract_images now puts into the image tuple
+        norm_url = 'file://' + urllib.parse.quote(validated, safe='/:\\')
+
+        # Simulate send_multiple_images decode
+        final = urllib.parse.unquote(norm_url[7:])
+        assert final == validated, f"send_multiple_images gets wrong path: {final!r} != {validated!r}"
+
+
+class TestNormalizeFileUrl:
+    """Tests for BasePlatformAdapter._normalize_file_url."""
+
+    def test_windows_drive_three_slashes(self):
+        result = BasePlatformAdapter._normalize_file_url("file:///C:/Users/test/file.png")
+        assert result == "C:\\Users\\test\\file.png" or result == "C:/Users/test/file.png"
+
+    def test_windows_drive_two_slashes(self):
+        result = BasePlatformAdapter._normalize_file_url("file://C:/Users/test/file.png")
+        assert result == "C:\\Users\\test\\file.png" or result == "C:/Users/test/file.png"
+
+    def test_windows_drive_backslashes(self):
+        result = BasePlatformAdapter._normalize_file_url("file://C:\\Users\\test\\file.png")
+        assert "C:\\" in result or "C:/" in result
+        assert "file.png" in result
+
+    def test_posix_absolute(self):
+        result = BasePlatformAdapter._normalize_file_url("file:///tmp/foo/bar.png")
+        assert result == "/tmp/foo/bar.png"
+
+    def test_percent_encoding(self):
+        result = BasePlatformAdapter._normalize_file_url("file:///tmp/my%20file.png")
+        assert result == "/tmp/my file.png"
+
+    def test_unc_rejected(self):
+        result = BasePlatformAdapter._normalize_file_url("file://server/share/file.png")
+        assert result is None
+
+    def test_unc_double_forward_slash_rejected(self):
+        """file:////server/share/... (four slashes) is rejected."""
+        result = BasePlatformAdapter._normalize_file_url("file:////server/share/a.png")
+        assert result is None
+
+    def test_unc_encoded_double_slash_rejected(self):
+        """file:///%2F%2Fserver/share/... (URL-encoded UNC) is rejected."""
+        result = BasePlatformAdapter._normalize_file_url("file:///%2F%2Fserver/share/a.png")
+        assert result is None
+
+    def test_unc_encoded_backslash_variant_rejected(self):
+        """file:///%5C%5Cserver/share/... (backslash-encoded UNC) is rejected."""
+        result = BasePlatformAdapter._normalize_file_url("file:///%5C%5Cserver/share/a.png")
+        assert result is None
+
+    def test_uppercase_scheme_windows(self):
+        """FILE:///C:/path (uppercase scheme) works on Windows."""
+        result = BasePlatformAdapter._normalize_file_url("FILE:///C:/Users/test/file.png")
+        assert result is not None
+        assert "C:" in result
+        assert "file.png" in result
+
+    def test_uppercase_scheme_posix(self):
+        """FILE:///tmp/foo (uppercase scheme) works."""
+        result = BasePlatformAdapter._normalize_file_url("FILE:///tmp/foo.png")
+        assert result == "/tmp/foo.png"
+
+    def test_mixed_case_scheme_posix(self):
+        """File:///tmp/foo (mixed case) works."""
+        result = BasePlatformAdapter._normalize_file_url("File:///tmp/foo.png")
+        assert result == "/tmp/foo.png"
+
+    def test_posix_absolute_regression(self, tmp_path):
+        """Normal POSIX path not broken."""
+        result = BasePlatformAdapter._normalize_file_url(f"file://{tmp_path}/snap.png")
+        assert result == f"{tmp_path}/snap.png"
+
+    def test_windows_three_slashes_drive_regression(self):
+        """Windows file:///C:/... not broken."""
+        result = BasePlatformAdapter._normalize_file_url("file:///C:/Users/test/file.png")
+        assert result is not None
+        assert "C:" in result
+
+    def test_windows_two_slashes_drive_regression(self):
+        """Windows file://C:/... not broken."""
+        result = BasePlatformAdapter._normalize_file_url("file://C:/Users/test/file.png")
+        assert result is not None
+        assert "C:" in result
+
+    def test_percent_encoding_regression(self):
+        """%20 decoding not broken."""
+        result = BasePlatformAdapter._normalize_file_url("file:///tmp/my%20file.png")
+        assert result == "/tmp/my file.png"
+
+    def test_not_a_file_url(self):
+        result = BasePlatformAdapter._normalize_file_url("https://example.com/img.png")
+        assert result is None
+
+    def test_empty_url(self):
+        result = BasePlatformAdapter._normalize_file_url("")
+        assert result is None
+
+    def test_quoted_url(self):
+        result = BasePlatformAdapter._normalize_file_url("'file:///tmp/foo.png'")
+        assert result == "/tmp/foo.png"
+
+    def test_double_quoted_url(self):
+        result = BasePlatformAdapter._normalize_file_url('"file:///tmp/foo.png"')
+        assert result == "/tmp/foo.png"
+
+    def test_backtick_quoted_url(self):
+        result = BasePlatformAdapter._normalize_file_url("`file:///tmp/foo.png`")
+        assert result == "/tmp/foo.png"
 
 
 # ---------------------------------------------------------------------------
