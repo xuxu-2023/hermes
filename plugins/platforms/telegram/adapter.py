@@ -5999,6 +5999,26 @@ class TelegramAdapter(BasePlatformAdapter):
                     exc_info=True,
                 )
 
+    async def stop_typing(self, chat_id: str) -> None:
+        """Replace the lingering typing indicator with a no-op action.
+
+        Telegram has no explicit 'stop typing' API — a ``sendChatAction("typing")``
+        persists for ~5 seconds.  Sending a different action (``find_location``)
+        immediately replaces the typing bubble with nothing visible, preventing
+        the indicator from lingering after the response is delivered.
+
+        Fixes #28004.
+        """
+        if self._bot:
+            try:
+                await self._bot.send_chat_action(
+                    chat_id=normalize_telegram_chat_id(chat_id),
+                    action="find_location",
+                )
+            except Exception:
+                # Non-fatal — the indicator will expire on its own in ~5s.
+                pass
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a Telegram chat."""
         if not self._bot:
