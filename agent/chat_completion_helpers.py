@@ -697,7 +697,11 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             messages=_msgs_for_codex,
             tools=tools_for_api,
             reasoning_config=agent.reasoning_config,
-            session_id=getattr(agent, "session_id", None),
+            session_id=getattr(
+                agent,
+                "provider_cache_session_id",
+                getattr(agent, "session_id", None),
+            ),
             max_tokens=agent.max_tokens,
             timeout=agent._resolved_api_call_timeout(),
             request_overrides=agent.request_overrides,
@@ -816,7 +820,11 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             max_tokens_param_fn=agent._max_tokens_param,
             reasoning_config=agent.reasoning_config,
             request_overrides=agent.request_overrides,
-            session_id=getattr(agent, "session_id", None),
+            session_id=getattr(
+                agent,
+                "provider_cache_session_id",
+                getattr(agent, "session_id", None),
+            ),
             provider_profile=_profile,
             ollama_num_ctx=agent._ollama_num_ctx,
             # Context forwarded to profile hooks:
