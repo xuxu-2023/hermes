@@ -1020,7 +1020,58 @@ def _discover_all_plugins() -> list:
         (_plugins_dir(), "user", set()),
     ):
         _scan_level(base, source, skip, "", 0, seen)
+
+    # Entry-point plugins (pip-installed packages exposing the
+    # ``hermes_agent.plugins`` group). The runtime PluginManager scans these
+    # in discover_and_load (step 4), so the CLI must enumerate them too —
+    # otherwise a pip-installed plugin loads at gateway runtime but
+    # `hermes plugins list`/`enable` report it as "not installed or bundled"
+    # and the only way to enable it is hand-editing config.yaml (#53898).
+    # Directory plugins take precedence on key collision (already in `seen`),
+    # mirroring the loader's user/bundled-over-entrypoint ordering.
+    for name, version, description, key in _scan_entry_point_plugins():
+        if key in seen:
+            continue
+        seen[key] = (name, version, description, "pip", None, key)
     return list(seen.values())
+
+
+def _scan_entry_point_plugins() -> list:
+    """Enumerate pip-installed plugins from the ``hermes_agent.plugins``
+    entry-point group, mirroring ``PluginManager._scan_entry_points``.
+
+    Returns a list of ``(name, version, description, key)`` tuples. The
+    directory path is intentionally omitted (entry-point plugins have no
+    plugin directory). Best-effort: any failure yields an empty list.
+    """
+    import importlib.metadata
+
+    from hermes_cli.plugins import ENTRY_POINTS_GROUP
+
+    results: list = []
+    try:
+        eps = importlib.metadata.entry_points()
+        if hasattr(eps, "select"):
+            group_eps = eps.select(group=ENTRY_POINTS_GROUP)
+        elif isinstance(eps, dict):
+            group_eps = eps.get(ENTRY_POINTS_GROUP, [])
+        else:
+            group_eps = [ep for ep in eps if ep.group == ENTRY_POINTS_GROUP]
+
+        for ep in group_eps:
+            version = ""
+            description = ""
+            dist = getattr(ep, "dist", None)
+            if dist is not None:
+                version = getattr(dist, "version", "") or ""
+                try:
+                    description = (dist.metadata.get("Summary") or "").strip()
+                except Exception:
+                    description = ""
+            results.append((ep.name, version, description, ep.name))
+    except Exception:
+        return []
+    return results
 
 
 def _plugin_status(name: str, enabled: set, disabled: set, key: str = "") -> str:
