@@ -356,6 +356,41 @@ def test_is_duplicate_hard_size_bound(monkeypatch: pytest.MonkeyPatch) -> None:
     assert adapter._is_duplicate("id-0") is False  # oldest evicted
 
 
+def test_sidecar_stream_warning_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
+    import plugins.platforms.photon.adapter as ad
+
+    monkeypatch.setattr(ad, "_SIDECAR_STREAM_RESET_THRESHOLD", 4)
+    monkeypatch.setattr(ad, "_SIDECAR_STREAM_RESET_WINDOW_SECONDS", 120.0)
+    adapter = _make_adapter(monkeypatch)
+    line = "[spectrum.stream] stream interrupted; reconnecting"
+
+    assert adapter._record_sidecar_stream_warning(line, now=1000.0) is False
+    assert adapter._record_sidecar_stream_warning(line, now=1010.0) is False
+    assert adapter._record_sidecar_stream_warning(line, now=1020.0) is False
+    assert adapter._record_sidecar_stream_warning(line, now=1030.0) is True
+
+
+def test_sidecar_stream_warning_window_expires(monkeypatch: pytest.MonkeyPatch) -> None:
+    import plugins.platforms.photon.adapter as ad
+
+    monkeypatch.setattr(ad, "_SIDECAR_STREAM_RESET_THRESHOLD", 4)
+    monkeypatch.setattr(ad, "_SIDECAR_STREAM_RESET_WINDOW_SECONDS", 30.0)
+    adapter = _make_adapter(monkeypatch)
+    line = "[spectrum.stream] stream persistently failing ConnectionError"
+
+    assert adapter._record_sidecar_stream_warning(line, now=1000.0) is False
+    assert adapter._record_sidecar_stream_warning(line, now=1010.0) is False
+    assert adapter._record_sidecar_stream_warning(line, now=1020.0) is False
+    # The first warning has aged out, so this is only three within the window.
+    assert adapter._record_sidecar_stream_warning(line, now=1031.0) is False
+
+
+def test_sidecar_stream_warning_ignores_unrelated_lines(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = _make_adapter(monkeypatch)
+    assert adapter._record_sidecar_stream_warning("ordinary sidecar log", now=1000.0) is False
+    assert list(adapter._sidecar_stream_warning_times) == []
+
+
 def test_check_requirements_without_node(monkeypatch: pytest.MonkeyPatch) -> None:
     # If no node binary on PATH the adapter should refuse to start.
     from plugins.platforms.photon import adapter as adapter_mod

@@ -35,6 +35,7 @@ import signal
 import subprocess
 import sys
 import time
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -102,6 +103,19 @@ _PHOTON_RETRYABLE_PATTERNS = (
 # iMessage is a personal channel — suppressing rapid repeats reduces
 # upstream gRPC pressure during Photon overflow events.
 _TYPING_COOLDOWN_SECONDS = 5.0
+
+# The Spectrum SDK normally reconnects its gRPC streams internally. In practice
+# the iMessage stream can sometimes wedge after a burst of "stream interrupted"
+# messages: local /healthz stays green and outbound sends keep working, but no
+# inbound messages are delivered. Restart only the Node sidecar after a short
+# burst of these SDK warnings; the Python adapter's /inbound loop reconnects to
+# the replacement sidecar with the same token, avoiding a full gateway restart.
+_SIDECAR_STREAM_RESET_WINDOW_SECONDS = 120.0
+_SIDECAR_STREAM_RESET_THRESHOLD = 4
+_SIDECAR_STREAM_RESET_PATTERNS = (
+    "[spectrum.stream] stream interrupted; reconnecting",
+    "[spectrum.stream] stream persistently failing",
+)
 
 # Group-chat mention wake words. When ``require_mention`` is enabled, group
 # messages are ignored unless they match one of these patterns — same
@@ -256,6 +270,9 @@ class PhotonAdapter(BasePlatformAdapter):
         self._last_inbound_by_chat: Dict[str, str] = {}
         # Last time we sent a typing indicator per chat, for cooldown gating.
         self._typing_last_sent: Dict[str, float] = {}
+        # Recent upstream stream warnings emitted by spectrum-ts. Used to
+        # self-heal the sidecar when the SDK reconnect loop appears wedged.
+        self._sidecar_stream_warning_times: deque[float] = deque()
 
         # Group-chat mention gating (parity with BlueBubbles). When enabled,
         # group messages are ignored unless they match a wake word; DMs are
@@ -921,29 +938,100 @@ class PhotonAdapter(BasePlatformAdapter):
             return
         stdout = proc.stdout
         loop = asyncio.get_event_loop()
+        restart_reason: Optional[str] = None
         try:
             while True:
                 line = await loop.run_in_executor(None, stdout.readline)
                 if not line:
                     break
-                logger.info("[photon-sidecar] %s", line.decode("utf-8", "replace").rstrip())
+                text = line.decode("utf-8", "replace").rstrip()
+                logger.info("[photon-sidecar] %s", text)
+                if self._record_sidecar_stream_warning(text):
+                    restart_reason = (
+                        "persistent Spectrum stream interruptions "
+                        f"({len(self._sidecar_stream_warning_times)} in "
+                        f"{int(_SIDECAR_STREAM_RESET_WINDOW_SECONDS)}s)"
+                    )
+                    logger.warning(
+                        "[photon] %s — restarting Photon sidecar only",
+                        restart_reason,
+                    )
+                    await self._terminate_sidecar_process(proc)
+                    break
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("[photon-sidecar] supervisor exited: %s", e)
-        if self._inbound_running:
+        if self._inbound_running and self._sidecar_proc is proc:
             exit_code = proc.poll()
-            logger.error(
-                "[photon] sidecar exited unexpectedly (code %s) — triggering reconnect",
-                exit_code,
-            )
+            if restart_reason is None:
+                restart_reason = f"unexpected sidecar exit (code {exit_code})"
+                logger.error(
+                    "[photon] sidecar exited unexpectedly (code %s) — restarting",
+                    exit_code,
+                )
+            self._sidecar_proc = None
+            await self._restart_sidecar_after_failure(restart_reason)
+
+    def _record_sidecar_stream_warning(
+        self, line: str, now: Optional[float] = None,
+    ) -> bool:
+        """Return True when recent Spectrum stream warnings warrant a reset."""
+        if not any(pattern in line for pattern in _SIDECAR_STREAM_RESET_PATTERNS):
+            return False
+        current = time.time() if now is None else now
+        window_start = current - _SIDECAR_STREAM_RESET_WINDOW_SECONDS
+        warnings = self._sidecar_stream_warning_times
+        while warnings and warnings[0] < window_start:
+            warnings.popleft()
+        warnings.append(current)
+        return len(warnings) >= _SIDECAR_STREAM_RESET_THRESHOLD
+
+    async def _terminate_sidecar_process(self, proc: subprocess.Popen) -> None:
+        """Terminate a sidecar process without cancelling this supervisor task."""
+        if proc.poll() is not None:
+            return
+        try:
+            if proc.stdin is not None:
+                try:
+                    proc.stdin.close()
+                except Exception:
+                    pass
+            if sys.platform != "win32":
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)  # windows-footgun: ok
+                except (ProcessLookupError, PermissionError):
+                    proc.terminate()
+            else:
+                proc.terminate()
+            deadline = time.time() + 3.0
+            while proc.poll() is None and time.time() < deadline:
+                await asyncio.sleep(0.1)
+            if proc.poll() is None:
+                proc.kill()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("[photon] failed to terminate sidecar: %s", exc)
+
+    async def _restart_sidecar_after_failure(self, reason: str) -> None:
+        """Start a fresh sidecar after a crash or upstream-stream self-heal."""
+        self._sidecar_stream_warning_times.clear()
+        await asyncio.sleep(1.0)
+        if not self._inbound_running:
+            return
+        try:
+            await self._start_sidecar()
+            logger.info("[photon] sidecar restarted after %s", reason)
+        except Exception as exc:
+            logger.exception("[photon] failed to restart sidecar after %s", reason)
             self._set_fatal_error(
                 "SIDECAR_CRASHED",
-                f"Photon sidecar exited unexpectedly (code {exit_code})",
+                f"Photon sidecar failed after {reason}: {exc}",
                 retryable=True,
             )
             try:
                 await self._notify_fatal_error()
-            except Exception as exc:  # pragma: no cover - defensive
-                logger.warning("[photon] fatal-error notification failed: %s", exc)
+            except Exception as notify_exc:  # pragma: no cover - defensive
+                logger.warning(
+                    "[photon] fatal-error notification failed: %s", notify_exc
+                )
 
     async def _stop_sidecar(self) -> None:
         proc = self._sidecar_proc
