@@ -50,6 +50,42 @@ class TestGetDisabledSkills:
         from hermes_cli.skills_config import get_disabled_skills
         assert get_disabled_skills({"skills": {"disabled": []}}) == set()
 
+    # --- issue #13026: null/scalar robustness (fails without the fix) ---
+
+    def test_null_skills_section_returns_empty(self):
+        # ``skills:`` with no value parses to None; the old
+        # ``config.get("skills", {})`` returned None and crashed with
+        # AttributeError on ``.get("disabled")``.
+        from hermes_cli.skills_config import get_disabled_skills
+        assert get_disabled_skills({"skills": None}) == set()
+
+    def test_non_dict_skills_section_returns_empty(self):
+        from hermes_cli.skills_config import get_disabled_skills
+        assert get_disabled_skills({"skills": "oops"}) == set()
+
+    def test_scalar_disabled_is_single_skill_not_chars(self):
+        # The core bug: ``set("my-skill")`` splits a scalar string into
+        # individual characters. It must be treated as one skill name.
+        from hermes_cli.skills_config import get_disabled_skills
+        assert get_disabled_skills({"skills": {"disabled": "my-skill"}}) == {"my-skill"}
+
+    def test_scalar_platform_disabled_is_single_skill(self):
+        from hermes_cli.skills_config import get_disabled_skills
+        config = {"skills": {"platform_disabled": {"telegram": "only-skill"}}}
+        assert get_disabled_skills(config, platform="telegram") == {"only-skill"}
+
+    def test_scalar_disabled_unions_with_platform(self):
+        # Preserves current-main union semantics (issue #46201) while
+        # tolerating scalar values on both sides.
+        from hermes_cli.skills_config import get_disabled_skills
+        config = {"skills": {"disabled": "glob", "platform_disabled": {"cli": "plat"}}}
+        assert get_disabled_skills(config, platform="cli") == {"glob", "plat"}
+
+    def test_null_platform_disabled_map_falls_back_to_global(self):
+        from hermes_cli.skills_config import get_disabled_skills
+        config = {"skills": {"disabled": ["a"], "platform_disabled": None}}
+        assert get_disabled_skills(config, platform="telegram") == {"a"}
+
 
 # ---------------------------------------------------------------------------
 # save_disabled_skills

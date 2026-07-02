@@ -32,14 +32,35 @@ def get_disabled_skills(config: dict, platform: Optional[str] = None) -> Set[str
     platform list adds to the global list rather than replacing it. This
     mirrors ``agent.skill_utils.get_disabled_skill_names``.
     """
-    skills_cfg = config.get("skills", {})
-    global_disabled = set(skills_cfg.get("disabled", []))
+    skills_cfg = config.get("skills") or {}
+    if not isinstance(skills_cfg, dict):
+        return set()
+    global_disabled = _normalize_string_set(skills_cfg.get("disabled"))
     if platform is None:
         return global_disabled
     platform_disabled = cfg_get(skills_cfg, "platform_disabled", platform)
     if platform_disabled is None:
         return global_disabled
-    return global_disabled | set(platform_disabled)
+    return global_disabled | _normalize_string_set(platform_disabled)
+
+
+def _normalize_string_set(values) -> Set[str]:
+    """Normalize a skill-name config value into a cleaned set of strings.
+
+    Mirrors ``agent.skill_utils._normalize_string_set`` so the CLI config
+    helpers tolerate the same malformed-but-plausible YAML shapes the
+    runtime skill loader already handles gracefully:
+
+    * ``None``    -> ``set()``
+    * ``"foo"``   -> ``{"foo"}``   (scalar string, NOT split into chars)
+    * ``["foo"]`` -> ``{"foo"}``
+    * ``[]``      -> ``set()``
+    """
+    if values is None:
+        return set()
+    if isinstance(values, str):
+        values = [values]
+    return {str(v).strip() for v in values if str(v).strip()}
 
 
 def save_disabled_skills(config: dict, disabled: Set[str], platform: Optional[str] = None):
