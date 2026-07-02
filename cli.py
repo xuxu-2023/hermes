@@ -9475,8 +9475,45 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         with no live agent — important for the TUI, where /usage runs in a slash-worker
         subprocess that resumes the session WITHOUT building an agent (self.agent is None),
         which would otherwise early-return before any credits showed.
+
+        When no live agent is available, falls back to persisted session data from
+        state.db so the user still sees token counts and model info.
         """
         if not self.agent:
+            # Fall back to persisted session data from state.db
+            if self._session_db and getattr(self, "session_id", None):
+                try:
+                    persisted = self._session_db.get_session(self.session_id) or {}
+                except Exception:
+                    persisted = {}
+                if persisted and (persisted.get("input_tokens") or persisted.get("output_tokens") or persisted.get("api_call_count")):
+                    model = persisted.get("model", "") or ""
+                    input_tok = persisted.get("input_tokens", 0) or 0
+                    output_tok = persisted.get("output_tokens", 0) or 0
+                    cache_read = persisted.get("cache_read_tokens", 0) or 0
+                    cache_write = persisted.get("cache_write_tokens", 0) or 0
+                    reasoning = persisted.get("reasoning_tokens", 0) or 0
+                    api_calls = persisted.get("api_call_count", 0) or 0
+                    total = input_tok + output_tok
+
+                    print("  📊 Session Token Usage (persisted)")
+                    print(f"  {'─' * 40}")
+                    if model:
+                        print(f"  Model:                     {model}")
+                    print(f"  Input tokens:              {input_tok:>10,}")
+                    if cache_read:
+                        print(f"  Cache read tokens:         {cache_read:>10,}")
+                    if cache_write:
+                        print(f"  Cache write tokens:        {cache_write:>10,}")
+                    print(f"  Output tokens:             {output_tok:>10,}")
+                    if reasoning:
+                        print(f"  ↳ Reasoning (subset):      {reasoning:>10,}")
+                    print(f"  Total tokens:              {total:>10,}")
+                    print(f"  API calls:                 {api_calls:>10,}")
+                    print(f"  {'─' * 40}")
+                    print(f"  (Detailed breakdown available with a live agent session)")
+                    self._print_nous_credits_block()
+                    return
             if not self._print_nous_credits_block():
                 print("(._.) No active agent -- send a message first.")
             return
