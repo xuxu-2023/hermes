@@ -251,10 +251,64 @@ class WebhookAdapter(BasePlatformAdapter):
         — fallback-model notifications, context-pressure warnings, etc. —
         do not consume the entry and silently downgrade the final response
         to the ``log`` deliver type.  TTL cleanup happens on POST.
+
+        Multi-delivery: ``deliver`` may be a comma-separated list of
+        platforms (e.g. ``"feishu,photon"``).  Each target is delivered
+        independently; failures in one target don't block others.
         """
         delivery = self._delivery_info.get(chat_id, {})
-        deliver_type = delivery.get("deliver", "log")
+        deliver_raw = delivery.get("deliver", "log")
 
+        # Multi-target: comma-separated values (e.g. "feishu,photon")
+        # are split and each delivered independently via _deliver_multi.
+        deliver_targets = [t.strip() for t in deliver_raw.split(",") if t.strip()]
+        if len(deliver_targets) > 1:
+            return await self._deliver_multi(deliver_targets, content, delivery, chat_id)
+
+        # Single-target: fall through to the original delivery path.
+        return await self._deliver_single(deliver_raw, content, delivery, chat_id)
+
+    async def _deliver_multi(
+        self,
+        targets: List[str],
+        content: str,
+        delivery: dict,
+        chat_id: str,
+    ) -> SendResult:
+        """Deliver to multiple platform targets (comma-separated fan-out).
+
+        Each target uses its platform's home channel (deliver_extra is
+        stripped) since different platforms have different chat_ids.
+        Failures in one target don't block others — we report partial
+        success as long as at least one delivery succeeds.
+        """
+        results = []
+        for target in targets:
+            # Strip deliver_extra so each platform resolves its own home channel
+            # (feishu uses oc_xxx, photon uses +86xxx, etc.)
+            single_delivery = {"deliver": target, "payload": delivery.get("payload")}
+            result = await self._deliver_single(target, content, single_delivery, chat_id)
+            results.append((target, result))
+        # Success if at least one delivery succeeded; collect errors from failures
+        any_success = any(r.success for _, r in results)
+        errors = [f"{t}: {r.error}" for t, r in results if not r.success and r.error]
+        return SendResult(
+            success=any_success,
+            error="; ".join(errors) if errors else None,
+        )
+
+    async def _deliver_single(
+        self,
+        deliver_type: str,
+        content: str,
+        delivery: dict,
+        chat_id: str,
+    ) -> SendResult:
+        """Deliver to a single platform target.
+
+        Extracted from send() to enable both single-target and multi-target
+        delivery paths to share the same routing logic.
+        """
         if deliver_type == "log":
             logger.info("[webhook] Response for %s: %s", chat_id, content[:200])
             return SendResult(success=True)
@@ -904,23 +958,23 @@ class WebhookAdapter(BasePlatformAdapter):
         that the agent-mode ``send()`` flow uses.  All target types that
         work in agent mode work here — Telegram, Discord, Slack, GitHub
         PR comments, etc.
+
+        Multi-delivery: ``deliver`` may be a comma-separated list of
+        platforms (e.g. ``"feishu,photon"``).
+
+        Reuses the same _deliver_multi/_deliver_single logic as agent-mode
+        send() -- no duplicated routing code.
         """
-        deliver_type = delivery.get("deliver", "log")
+        deliver_raw = delivery.get("deliver", "log")
 
-        if deliver_type == "log":
-            # Shouldn't reach here — startup validation rejects deliver_only
-            # with deliver=log — but guard defensively.
-            logger.info("[webhook] direct-deliver log-only: %s", content[:200])
-            return SendResult(success=True)
+        # Multi-target: comma-separated values (e.g. "feishu,photon")
+        # are split and each delivered independently via _deliver_multi.
+        deliver_targets = [t.strip() for t in deliver_raw.split(",") if t.strip()]
+        if len(deliver_targets) > 1:
+            return await self._deliver_multi(deliver_targets, content, delivery, "")
 
-        if deliver_type == "github_comment":
-            return await self._deliver_github_comment(content, delivery)
-
-        # Fall through to the cross-platform dispatcher, which validates the
-        # target name and routes via the gateway runner.
-        return await self._deliver_cross_platform(
-            deliver_type, content, delivery
-        )
+        # Single-target: fall through to the original delivery path.
+        return await self._deliver_single(deliver_raw, content, delivery, "")
 
     async def _deliver_github_comment(
         self, content: str, delivery: dict
