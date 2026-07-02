@@ -527,23 +527,24 @@ def _submit_fal_request(model: str, arguments: Dict[str, Any]):
 # ---------------------------------------------------------------------------
 # Model resolution + payload construction
 # ---------------------------------------------------------------------------
-def _resolve_fal_model() -> tuple:
+def _resolve_fal_model(model_override: Optional[str] = None) -> tuple:
     """Resolve the active FAL model from config.yaml (primary) or default.
 
     Returns (model_id, metadata_dict). Falls back to DEFAULT_MODEL if the
     configured model is unknown (logged as a warning).
     """
-    model_id = ""
-    try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
-        img_cfg = cfg.get("image_gen") if isinstance(cfg, dict) else None
-        if isinstance(img_cfg, dict):
-            raw = img_cfg.get("model")
-            if isinstance(raw, str):
-                model_id = raw.strip()
-    except Exception as exc:
-        logger.debug("Could not load image_gen.model from config: %s", exc)
+    model_id = (model_override or "").strip()
+    if not model_id:
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+            img_cfg = cfg.get("image_gen") if isinstance(cfg, dict) else None
+            if isinstance(img_cfg, dict):
+                raw = img_cfg.get("model")
+                if isinstance(raw, str):
+                    model_id = raw.strip()
+        except Exception as exc:
+            logger.debug("Could not load image_gen.model from config: %s", exc)
 
     # Env var escape hatch (undocumented; backward-compat for tests/scripts).
     if not model_id:
@@ -838,6 +839,7 @@ def _postprocess_image_generate_result(raw: str, task_id: str | None = None) -> 
 def image_generate_tool(
     prompt: str,
     aspect_ratio: str = DEFAULT_ASPECT_RATIO,
+    model: Optional[str] = None,
     num_inference_steps: Optional[int] = None,
     guidance_scale: Optional[float] = None,
     num_images: Optional[int] = None,
@@ -853,15 +855,16 @@ def image_generate_tool(
     image-to-image / edit endpoint; otherwise it's plain text-to-image.
 
     The agent-facing schema exposes ``prompt``, ``aspect_ratio``, ``image_url``
-    and ``reference_image_urls``; the remaining kwargs are overrides for direct
-    Python callers and are filtered per-model via the ``supports`` /
+    ``reference_image_urls``, and optional one-call ``provider``/``model``
+    routing fields; the remaining kwargs are overrides for direct Python
+    callers and are filtered per-model via the ``supports`` /
     ``edit_supports`` whitelist (unsupported overrides are silently dropped so
     legacy callers don't break when switching models).
 
     Returns a JSON string with ``{"success": bool, "image": url | None,
     "modality": "text" | "image", "error": str, "error_type": str}``.
     """
-    model_id, meta = _resolve_fal_model()
+    model_id, meta = _resolve_fal_model(model_override=model)
 
     # Collect any source images (primary + references) into one ordered list.
     source_images: list = []
@@ -1178,7 +1181,8 @@ IMAGE_GENERATE_SCHEMA = {
         "model supports it. Pass `image_url` to edit that image; add "
         "`reference_image_urls` for style/composition references; omit both "
         "for text-to-image. The underlying backend (FAL, OpenAI, xAI, etc.) "
-        "and model are user-configured and not selectable by the agent. "
+        "and model are user-configured by default; optional `provider` and "
+        "`model` fields can override them for a single call. "
         "Returns the result in the `image` field — either a URL or an absolute "
         "file path. To show it to the user, reference that path/URL in your "
         "response using the file-delivery convention for the current platform "
@@ -1203,6 +1207,21 @@ IMAGE_GENERATE_SCHEMA = {
                 "enum": list(VALID_ASPECT_RATIOS),
                 "description": "The aspect ratio of the generated image. 'landscape' is 16:9 wide, 'portrait' is 16:9 tall, 'square' is 1:1.",
                 "default": DEFAULT_ASPECT_RATIO,
+            },
+            "provider": {
+                "type": "string",
+                "description": (
+                    "Optional one-call image backend override (for example: "
+                    "openai, openai-codex, fal, krea). If omitted, uses "
+                    "image_gen.provider from config.yaml."
+                ),
+            },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Optional one-call image model override. If omitted, uses "
+                    "image_gen.model or the provider default."
+                ),
             },
             "image_url": {
                 "type": "string",
@@ -1276,6 +1295,8 @@ def _dispatch_to_plugin_provider(
     aspect_ratio: str,
     image_url: Optional[str] = None,
     reference_image_urls: Optional[list] = None,
+    provider_override: Optional[str] = None,
+    model_override: Optional[str] = None,
 ):
     """Route the call to a plugin-registered provider when one is selected.
 
@@ -1292,12 +1313,12 @@ def _dispatch_to_plugin_provider(
     they are forwarded to the provider's ``generate()`` so the backend can
     route to its edit endpoint.
     """
-    configured = _read_configured_image_provider()
+    configured = (provider_override or "").strip() or _read_configured_image_provider()
     if not configured:
         return None
 
     # Also read configured model so we can pass it to the plugin
-    configured_model = _read_configured_image_model()
+    configured_model = (model_override or "").strip() or _read_configured_image_model()
 
     try:
         # Import locally so plugin discovery isn't triggered just by
@@ -1517,6 +1538,8 @@ def _handle_image_generate(args, **kw):
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
     image_url = args.get("image_url")
     reference_image_urls = args.get("reference_image_urls")
+    provider_override = (args.get("provider") or "").strip() or None
+    model_override = (args.get("model") or "").strip() or None
     task_id = kw.get("task_id")
 
     # Route to a plugin-registered provider if one is active (and it's
@@ -1526,6 +1549,8 @@ def _handle_image_generate(args, **kw):
         prompt, aspect_ratio,
         image_url=image_url,
         reference_image_urls=reference_image_urls,
+        provider_override=provider_override,
+        model_override=model_override,
     )
     if dispatched is not None:
         return _postprocess_image_generate_result(dispatched, task_id=task_id)
@@ -1546,6 +1571,7 @@ def _handle_image_generate(args, **kw):
     raw = image_generate_tool(
         prompt=prompt,
         aspect_ratio=aspect_ratio,
+        model=model_override,
         image_url=image_url,
         reference_image_urls=reference_image_urls,
     )

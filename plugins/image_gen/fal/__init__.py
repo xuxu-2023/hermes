@@ -138,6 +138,7 @@ class FalImageGenProvider(ImageGenProvider):
         passthrough = {
             key: kwargs[key]
             for key in (
+                "model",
                 "num_inference_steps",
                 "guidance_scale",
                 "num_images",
@@ -194,7 +195,10 @@ class FalImageGenProvider(ImageGenProvider):
         # internally, so query it after the fact for the response shape.
         if "model" not in response:
             try:
-                model_id, _meta = _it._resolve_fal_model()
+                if kwargs.get("model") is not None:
+                    model_id, _meta = _it._resolve_fal_model(kwargs.get("model"))
+                else:
+                    model_id, _meta = _it._resolve_fal_model()
                 response["model"] = model_id
             except Exception:  # noqa: BLE001
                 pass

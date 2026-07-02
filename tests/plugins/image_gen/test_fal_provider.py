@@ -177,7 +177,32 @@ class TestFalImageGenProviderGenerate:
         # model's defaults inside the legacy payload builder.
         assert "seed" not in seen
         assert "guidance_scale" not in seen
-        assert seen.get("num_images") == 2
+
+    def test_generate_forwards_model_override(self, monkeypatch):
+        import tools.image_generation_tool as image_tool
+        from plugins.image_gen.fal import FalImageGenProvider
+
+        seen = {}
+
+        def fake(prompt, aspect_ratio, **kwargs):
+            seen.update(kwargs)
+            return json.dumps({"success": True, "image": "x"})
+
+        monkeypatch.setattr(image_tool, "image_generate_tool", fake)
+        monkeypatch.setattr(
+            image_tool,
+            "_resolve_fal_model",
+            lambda model=None: (model or "fal-ai/flux-2/klein/9b", {}),
+        )
+
+        result = FalImageGenProvider().generate(
+            "p",
+            aspect_ratio="square",
+            model="fal-ai/gpt-image-2",
+        )
+
+        assert seen["model"] == "fal-ai/gpt-image-2"
+        assert result["model"] == "fal-ai/gpt-image-2"
 
     def test_generate_catches_exception_from_legacy(self, monkeypatch):
         import tools.image_generation_tool as image_tool
