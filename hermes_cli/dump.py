@@ -268,6 +268,23 @@ def run_dump(args):
         config = {}
 
     model, provider = _get_model_and_provider(config)
+    # The dump shows config.yaml model.default, but the CLI runtime resolves
+    # HERMES_INFERENCE_MODEL (env) OVER config — see oneshot.py:
+    #   effective_model = explicit_arg or env_model or cfg_model.
+    # run_dump() has already loaded .env above, so os.environ reflects the real
+    # override here.  Surface it so the diagnostic matches what the agent
+    # actually runs (same shape as the terminal-backend block below).
+    env_model = (os.environ.get("HERMES_INFERENCE_MODEL") or "").strip()
+    if env_model and env_model != str(model).strip():
+        if model == "(not set)":
+            # config configures no model — env isn't "overriding" a value, it IS
+            # the effective model (the env-only setup).  Mirror the provider line.
+            model = f"{env_model}  (HERMES_INFERENCE_MODEL, config sets none)"
+        else:
+            model = (
+                f"{env_model}  (HERMES_INFERENCE_MODEL overrides config.yaml "
+                f"model.default={model})"
+            )
 
     # Profile
     try:
