@@ -125,10 +125,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("resume", "Resume a previously-named session", "Session",
                args_hint="[name]"),
 
-    # Configuration
-    CommandDef("sessions", "Browse and resume previous sessions", "Session"),
-
-    # Configuration
+    # Session
+    CommandDef("sessions", "Browse and resume previous sessions", "Session",
+               cli_only=True),
     CommandDef("config", "Show current configuration", "Configuration",
                cli_only=True),
     CommandDef("model", "Switch model (persists by default)", "Configuration",
