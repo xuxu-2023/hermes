@@ -310,6 +310,7 @@ class TestCmdUpdateBranchFallback:
             "ui-tui",
             "--workspace",
             "web",
+            "--include-workspace-root",
         ]
         assert npm_calls[:2] == [
             (root_flags, PROJECT_ROOT),
