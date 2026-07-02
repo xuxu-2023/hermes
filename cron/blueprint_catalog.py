@@ -476,6 +476,59 @@ CATALOG: List[AutomationBlueprint] = [
         ],
         tags=("daily", "curiosity"),
     ),
+    AutomationBlueprint(
+        key="dream",
+        title="Dream — weekly memory hygiene and learning",
+        description=(
+            "A weekly job that does two things in order: (1) hygiene — "
+            "consolidates and compresses memory stores to keep them lean "
+            "and high-signal; (2) learning — uses the headroom freed by "
+            "hygiene to save new behavioral patterns from recent sessions. "
+            "Both passes run every week unless stores are in emergency "
+            "state (>80%%) after hygiene. Recommended: restrict "
+            "enabled_toolsets to 'session_search' and 'memory'."
+        ),
+        category="maintenance",
+        schedule_template="{minute} {hour} * * 0",
+        prompt_template=(
+            "You are running a weekly Dream pass — memory hygiene AND learning.\n\n"
+            "CONTEXT: Hermes memory stores have hard size limits. Run hygiene first "
+            "to free space, then use the headroom for learning. Both happen every "
+            "week unless stores are in emergency state after hygiene.\n\n"
+            "Step 1 — Check current state (ALWAYS FIRST)\n"
+            "Call memory(action=\"read\", target=\"memory\") and memory(action=\"read\", target=\"user\"). "
+            "Record both current sizes and percentages.\n\n"
+            "Step 2 — Review recent sessions\n"
+            "Call session_search(sort=\"newest\", limit=10) to browse titles and previews. "
+            "For 3-5 substantive sessions call session_search(session_id=\"...\") to read them. "
+            "Note: recurring corrections, preferred workflows, user facts, repeated questions "
+            "answered the same way.\n\n"
+            "Step 3 — Hygiene pass (ALWAYS, runs before learning)\n"
+            "Use memory(operations=[...]) to consolidate:\n"
+            "- Merge entries covering the same topic into one shorter entry\n"
+            "- Remove entries that are superseded, no longer true, or too session-specific\n"
+            "- Rewrite verbose entries as terse rules under 80 chars each\n"
+            "- If either store > 80%%: aggressive compression — target below 60%% before proceeding\n"
+            "Record sizes after hygiene.\n\n"
+            "Step 4 — Learning pass (runs after hygiene)\n"
+            "Based on sizes after Step 3:\n"
+            "- Either store still > 80%%: skip learning this week\n"
+            "- Either store 60-80%%: add up to 1 new entry per store (2 total max)\n"
+            "- Both stores < 60%%: add up to 3 new entries total across both stores\n\n"
+            "Addition rules:\n"
+            "- Only add if the pattern appeared in >= 2 recent sessions and is not already captured\n"
+            "- Prefer behavioral rules ('Always X when Y') over one-off facts\n"
+            "- Each entry under 80 chars\n"
+            "- Hygiene removes and learning adds can be combined in one atomic batch\n\n"
+            "Step 5 — End with [SILENT]\n"
+            "Internal maintenance only — no delivery needed."
+        ),
+        slots=[
+            _TIME("03:00"),
+            _DELIVER,
+        ],
+        tags=("memory", "maintenance", "learning"),
+    ),
 ]
 
 _CATALOG_BY_KEY = {r.key: r for r in CATALOG}
