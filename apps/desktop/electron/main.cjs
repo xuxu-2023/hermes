@@ -117,7 +117,8 @@ const {
   encryptDesktopSecret: encryptDesktopSecretStrict,
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
-  resolveTimeoutMs
+  resolveTimeoutMs,
+  validateHermesMemoryFileWrite
 } = require('./hardening.cjs')
 
 let nodePty = null
@@ -6987,6 +6988,8 @@ ipcMain.handle('hermes:fs:writeText', async (_event, filePath, content) => {
   if (!directoryExists(path.dirname(resolved))) {
     throw new Error('Parent directory does not exist')
   }
+
+  validateHermesMemoryFileWrite(resolved, text, { hermesHome: HERMES_HOME })
 
   await fs.promises.writeFile(resolved, text, 'utf8')
 
