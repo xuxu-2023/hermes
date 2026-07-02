@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 
+import { translateNow } from '@/i18n'
 import type { UsageStats } from '@/types/hermes'
 
 export function formatK(value: number): string {
@@ -59,7 +60,7 @@ export function usageContextLabel(usage: UsageStats): string {
     return `${formatK(usage.context_used ?? 0)}/${formatK(usage.context_max)}`
   }
 
-  return usage.total > 0 ? `${formatK(usage.total)} tok` : ''
+  return usage.total > 0 ? translateNow('shell.statusbar.tokensShort', formatK(usage.total)) : ''
 }
 
 export function contextBarLabel(usage: UsageStats): string {

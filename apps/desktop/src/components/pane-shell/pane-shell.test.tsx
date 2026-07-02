@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { I18nProvider, type Locale } from '@/i18n'
 import { $paneStates, setPaneOpen, setPaneWidthOverride } from '@/store/panes'
 
 import { Pane, PaneMain, PaneShell } from './pane-shell'
@@ -13,6 +14,14 @@ function gridContainer(rendered: ReturnType<typeof render>): HTMLElement {
   }
 
   return root
+}
+
+function renderPaneShell(ui: Parameters<typeof render>[0], initialLocale: Locale = 'en') {
+  return render(
+    <I18nProvider configClient={null} initialLocale={initialLocale}>
+      {ui}
+    </I18nProvider>
+  )
 }
 
 function getColumnTemplate(container: HTMLElement): string[] {
@@ -49,7 +58,7 @@ describe('PaneShell composition', () => {
   })
 
   it('builds a 2-column grid for one left pane + main', () => {
-    const rendered = render(
+    const rendered = renderPaneShell(
       <PaneShell>
         <Pane id="files" side="left" width="240px">
           files
@@ -64,7 +73,7 @@ describe('PaneShell composition', () => {
   })
 
   it('orders panes left-to-right by side, preserving source order within a side', () => {
-    const rendered = render(
+    const rendered = renderPaneShell(
       <PaneShell>
         <Pane id="files" side="left" width="240px">
           files
@@ -88,7 +97,7 @@ describe('PaneShell composition', () => {
   })
 
   it('collapses a closed pane to 0px', () => {
-    const rendered = render(
+    const rendered = renderPaneShell(
       <PaneShell>
         <Pane defaultOpen={false} id="files" side="left" width="240px">
           files
@@ -105,7 +114,7 @@ describe('PaneShell composition', () => {
   it('reads open state from the panes store', () => {
     setPaneOpen('files', false)
 
-    const rendered = render(
+    const rendered = renderPaneShell(
       <PaneShell>
         <Pane id="files" side="left" width="240px">
           files
@@ -120,7 +129,7 @@ describe('PaneShell composition', () => {
   it('disabled forces the track to 0px even when the store says open', () => {
     setPaneOpen('files', true)
 
-    const rendered = render(
+    const rendered = renderPaneShell(
       <PaneShell>
         <Pane disabled={true} id="files" side="left" width="240px">
           files
@@ -135,7 +144,7 @@ describe('PaneShell composition', () => {
   it('disabled does NOT mutate the store-persisted open state', () => {
     setPaneOpen('files', true)
 
-    render(
+    renderPaneShell(
       <PaneShell>
         <Pane disabled={true} id="files" side="left" width="240px">
           files
@@ -151,9 +160,9 @@ describe('PaneShell composition', () => {
     setPaneOpen('files', true)
     setPaneWidthOverride('files', 320)
 
-    const rendered = render(
+    const rendered = renderPaneShell(
       <PaneShell>
-        <Pane id="files" side="left" width="240px">
+        <Pane id="files" resizable side="left" width="240px">
           files
         </Pane>
         <PaneMain>main</PaneMain>
@@ -164,7 +173,7 @@ describe('PaneShell composition', () => {
   })
 
   it('preserves CSS-string widths verbatim (clamp, var, etc.)', () => {
-    const rendered = render(
+    const rendered = renderPaneShell(
       <PaneShell>
         <Pane id="inspector" side="right" width="clamp(13.5rem,21vw,20rem)">
           inspector
@@ -179,7 +188,7 @@ describe('PaneShell composition', () => {
   })
 
   it('coerces numeric widths to px', () => {
-    const rendered = render(
+    const rendered = renderPaneShell(
       <PaneShell>
         <Pane id="files" side="left" width={224}>
           files
@@ -192,7 +201,7 @@ describe('PaneShell composition', () => {
   })
 
   it('emits per-pane width as a CSS variable', () => {
-    const rendered = render(
+    const rendered = renderPaneShell(
       <PaneShell>
         <Pane id="files" side="left" width="240px">
           files
@@ -207,7 +216,7 @@ describe('PaneShell composition', () => {
   })
 
   it('places a Pane in the correct grid column via inline style', () => {
-    const rendered = render(
+    const rendered = renderPaneShell(
       <PaneShell>
         <Pane id="files" side="left" width="240px">
           <span data-testid="files-content">files</span>
@@ -231,7 +240,7 @@ describe('PaneShell composition', () => {
   })
 
   it('marks closed panes aria-hidden', () => {
-    const rendered = render(
+    const rendered = renderPaneShell(
       <PaneShell>
         <Pane defaultOpen={false} id="files" side="left" width="240px">
           <span data-testid="files-content">files</span>
@@ -247,7 +256,7 @@ describe('PaneShell composition', () => {
   })
 
   it('passes through arbitrary non-Pane children for self-placement', () => {
-    const rendered = render(
+    const rendered = renderPaneShell(
       <PaneShell>
         <Pane id="files" side="left" width="240px">
           files
@@ -263,7 +272,7 @@ describe('PaneShell composition', () => {
   })
 
   it('shows a resize handle only when resizable', () => {
-    const rendered = render(
+    const rendered = renderPaneShell(
       <PaneShell>
         <Pane id="files" side="left" width="240px">
           files
@@ -280,7 +289,7 @@ describe('PaneShell composition', () => {
   })
 
   it('dragging a left-pane separator stores a wider width override', () => {
-    const rendered = render(
+    const rendered = renderPaneShell(
       <PaneShell>
         <Pane id="files" maxWidth={360} minWidth={200} resizable side="left" width="240px">
           <span data-testid="files-content">files</span>
@@ -306,7 +315,7 @@ describe('PaneShell composition', () => {
   })
 
   it('dragging a right-pane separator clamps to max width', () => {
-    const rendered = render(
+    const rendered = renderPaneShell(
       <PaneShell>
         <PaneMain>main</PaneMain>
         <Pane id="preview" maxWidth={340} minWidth={220} resizable side="right" width="320px">
@@ -329,5 +338,36 @@ describe('PaneShell composition', () => {
     fireEvent.pointerUp(window, { clientX: 760 })
 
     expect($paneStates.get().preview?.widthOverride).toBe(340)
+  })
+
+  it('mirrors resize geometry under RTL locale', () => {
+    const rendered = renderPaneShell(
+      <PaneShell>
+        <Pane id="files" maxWidth={360} minWidth={200} resizable side="left" width="240px">
+          <span data-testid="files-content">files</span>
+        </Pane>
+        <PaneMain>main</PaneMain>
+      </PaneShell>,
+      'ar'
+    )
+
+    const paneCell = rendered.getByTestId('files-content').parentElement
+
+    if (!(paneCell instanceof HTMLElement)) {
+      throw new Error('Expected pane cell element')
+    }
+
+    expect(paneCell.getAttribute('data-pane-physical-side')).toBe('right')
+
+    mockWidth(paneCell, 240)
+    const separator = rendered.getByLabelText('Resize files')
+
+    expect(separator.className).toContain('left-0')
+
+    fireEvent.pointerDown(separator, { clientX: 240, pointerId: 1 })
+    fireEvent.pointerMove(window, { clientX: 200 })
+    fireEvent.pointerUp(window, { clientX: 200 })
+
+    expect($paneStates.get().files?.widthOverride).toBe(280)
   })
 })

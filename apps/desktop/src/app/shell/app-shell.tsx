@@ -7,6 +7,7 @@ import { PaneShell } from '@/components/pane-shell'
 import { FloatingPet } from '@/components/pet/floating-pet'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { useMediaQuery } from '@/hooks/use-media-query'
+import { localeDirection, useI18n } from '@/i18n'
 import {
   $fileBrowserOpen,
   $panesFlipped,
@@ -24,7 +25,7 @@ import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '../layout-constants'
 import { useWindowControlsOverlayWidth } from './hooks/use-window-controls-overlay-width'
 import { KeybindPanel } from './keybind-panel'
 import { StatusbarControls, type StatusbarItem } from './statusbar-controls'
-import { TITLEBAR_HEIGHT, titlebarControlsPosition } from './titlebar'
+import { paneToolsSideForLayout, TITLEBAR_HEIGHT, titlebarControlsPosition } from './titlebar'
 import { TitlebarControls, type TitlebarTool } from './titlebar-controls'
 
 interface AppShellProps {
@@ -109,14 +110,21 @@ export function AppShell({
 
   // The inset clears the top-left titlebar buttons when nothing covers the
   // window's left edge. Default layout: the sessions sidebar sits there.
-  // Flipped layout: the file browser does instead. Both force-collapse to a
-  // hover-reveal overlay (0px track) below the collapse breakpoint, so the edge
-  // is uncovered there regardless of their stored open state. A standalone
-  // session window renders no sidebar at all, so its edge is always uncovered.
-  const collapsibleLeftPaneOpen = panesFlipped ? fileBrowserOpen : sidebarOpen
+  // Flipped layout: the file browser does instead. RTL locales mirror the
+  // pane layout, so which pane reaches the physical left edge flips once
+  // more. Both force-collapse to a hover-reveal overlay (0px track) below
+  // the collapse breakpoint, so the edge is uncovered there regardless of
+  // their stored open state. A standalone session window renders no sidebar
+  // at all, so its edge is always uncovered.
+  const { locale } = useI18n()
+  const rtl = localeDirection(locale) === 'rtl'
+  const startPaneOpen = panesFlipped ? fileBrowserOpen : sidebarOpen
+  const endPaneOpen = panesFlipped ? sidebarOpen : fileBrowserOpen
+  const collapsibleLeftPaneOpen = rtl ? endPaneOpen : startPaneOpen
   // The terminal + preview rails never force-collapse, so when they're the
-  // leftmost open pane (flipped layout) they cover the edge even when narrow.
-  const persistentLeftPaneOpen = panesFlipped && (terminalPaneOpen || previewPaneOpen)
+  // leftmost open pane (flipped layout in LTR, unflipped in RTL) they cover
+  // the edge even when narrow.
+  const persistentLeftPaneOpen = (rtl ? !panesFlipped : panesFlipped) && (terminalPaneOpen || previewPaneOpen)
 
   const leftEdgePaneOpen =
     !isSecondaryWindow() && ((!narrowViewport && collapsibleLeftPaneOpen) || persistentLeftPaneOpen)
@@ -135,18 +143,37 @@ export function AppShell({
   // flush against each other. Modeled as N gaps (N - 1 inner + 1 trailing)
   // to keep the formula generic for any pane-tool count.
   const SYSTEM_TOOL_COUNT = 4
+  const LEFT_BUILTIN_TOOL_COUNT = 2
   const paneToolCount = titlebarTools?.filter(tool => !tool.hidden).length ?? 0
+  const leftToolCount = LEFT_BUILTIN_TOOL_COUNT + (leftTitlebarTools?.filter(tool => !tool.hidden).length ?? 0)
   const systemToolsWidth = `calc(${SYSTEM_TOOL_COUNT} * (var(--titlebar-control-size) + 0.25rem))`
+  const leftToolsWidth = `calc(${leftToolCount} * (var(--titlebar-control-size) + 0.25rem))`
+  const paneToolsWidth = `calc(${paneToolCount} * (var(--titlebar-control-size) + 0.25rem))`
 
   const fileBrowserWidth =
     fileBrowserWidthOverride !== undefined ? `${fileBrowserWidthOverride}px` : FILE_BROWSER_DEFAULT_WIDTH
+
+  const fileBrowserTrackOpen = fileBrowserOpen && !narrowViewport
 
   // Where the pane-tool cluster's right edge sits, measured from the inner
   // titlebar padding (--titlebar-tools-right). Two anchors:
   //   - file-browser closed → flush against static cluster's left edge
   //   - file-browser open   → flush against the file-browser pane's left edge
   //                           (= preview pane's right edge)
-  const previewToolbarGap = fileBrowserOpen ? fileBrowserWidth : systemToolsWidth
+  const paneToolsSide = paneToolsSideForLayout(rtl, panesFlipped)
+
+  const previewToolbarGap = fileBrowserTrackOpen
+    ? fileBrowserWidth
+    : paneToolsSide === 'left'
+      ? leftToolsWidth
+      : systemToolsWidth
+
+  const paneToolbarInset =
+    paneToolsSide === 'left' && !fileBrowserTrackOpen
+      ? `calc(${titlebarControls.left}px + ${previewToolbarGap})`
+      : paneToolsSide === 'right'
+        ? `calc(${titlebarToolsRight} + ${previewToolbarGap})`
+        : previewToolbarGap
 
   // Used by the drag region to know where the rightmost interactive element
   // ends. When pane tools are present, that's `gap + paneCount * controlSize
@@ -154,9 +181,19 @@ export function AppShell({
   // paneCount * (size + gap-x-1)`). Otherwise the static cluster's footprint
   // is enough.
   const titlebarToolsWidth =
-    paneToolCount > 0
+    paneToolCount > 0 && paneToolsSide === 'right'
       ? `calc(${previewToolbarGap} + ${paneToolCount} * (var(--titlebar-control-size) + 0.25rem))`
       : systemToolsWidth
+
+  const titlebarDragLeft =
+    paneToolCount > 0 && paneToolsSide === 'left'
+      ? `calc(${paneToolbarInset} + ${paneToolsWidth} + 0.75rem)`
+      : `calc(${titlebarControls.left}px + ${leftToolsWidth} + 0.75rem)`
+
+  const titlebarDragRight =
+    paneToolCount > 0 && paneToolsSide === 'right'
+      ? `calc(${paneToolbarInset} + ${paneToolsWidth} + 0.75rem)`
+      : `calc(${titlebarToolsRight} + ${systemToolsWidth} + 0.75rem)`
 
   return (
     <SidebarProvider
@@ -177,16 +214,25 @@ export function AppShell({
           // Drops the right rail below the titlebar band when the OS/host paints
           // window controls over it (Windows/WSLg); 0px elsewhere.
           '--right-rail-top-inset': rightRailTopInset,
+          // RTL-aware OS window-drag region bounds (consumed below) — mirror the
+          // pane-tools side so the drag strip never overlaps the tool cluster.
+          '--titlebar-drag-left': titlebarDragLeft,
+          '--titlebar-drag-right': titlebarDragRight,
           // Anchor for the pane-tool cluster's right edge in TitlebarControls.
           // Sourced from the layout store rather than the PaneShell-emitted
           // --pane-*-width vars because the titlebar is a sibling of PaneShell
           // and CSS variables resolve at the consumer's scope.
-          '--shell-preview-toolbar-gap': previewToolbarGap
+          '--shell-pane-toolbar-inset': paneToolbarInset
         } as CSSProperties
       }
     >
       {!hideTitlebarControls && (
-        <TitlebarControls leftTools={leftTitlebarTools} onOpenSettings={onOpenSettings} tools={titlebarTools} />
+        <TitlebarControls
+          leftTools={leftTitlebarTools}
+          onOpenSettings={onOpenSettings}
+          paneToolsSide={paneToolsSide}
+          tools={titlebarTools}
+        />
       )}
 
       {nativeOverlayWidth > 0 && (
@@ -204,7 +250,7 @@ export function AppShell({
           />
           <div
             aria-hidden="true"
-            className="pointer-events-none absolute top-0 z-1 h-(--titlebar-height) left-[calc(var(--titlebar-controls-left)+(var(--titlebar-control-size)*2)+0.75rem)] right-[calc(var(--titlebar-tools-right)+var(--titlebar-tools-width)+0.75rem)] [-webkit-app-region:drag]"
+            className="pointer-events-none absolute top-0 z-1 h-(--titlebar-height) left-(--titlebar-drag-left) right-(--titlebar-drag-right) [-webkit-app-region:drag]"
           />
 
           {children}

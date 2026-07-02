@@ -379,8 +379,11 @@ function PlatformDetail({
             <PlatformAvatar platformId={platform.id} platformName={platform.name} />
             <div className="min-w-0 flex-1">
               <h3 className="text-[0.9375rem] font-semibold tracking-tight">{platform.name}</h3>
-              <p className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-                {platform.description}
+              <p
+                className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)"
+                dir="auto"
+              >
+                {m.platformIntro[platform.id] || platform.description}
               </p>
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 <StatePill tone={stateTone(platform)}>{stateLabel(platform.state, m)}</StatePill>
@@ -402,7 +405,10 @@ function PlatformDetail({
 
           <section>
             <SectionTitle>{m.getCredentials}</SectionTitle>
-            <p className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+            <p
+              className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)"
+              dir="auto"
+            >
               {introCopy(platform, m)}
             </p>
             {platform.docs_url && (
@@ -614,7 +620,7 @@ function MessagingField({
           )}
         </div>
       }
-      description={copy.help}
+      description={copy.help ? <span dir="auto">{copy.help}</span> : undefined}
       title={
         <span className="flex flex-wrap items-center gap-2">
           <label htmlFor={fieldId}>{copy.label}</label>
