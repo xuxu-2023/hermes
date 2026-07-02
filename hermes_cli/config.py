@@ -3339,6 +3339,22 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "NEURALWATT_API_KEY": {
+        "description": "Neuralwatt API key",
+        "prompt": "Neuralwatt API key",
+        "url": "https://portal.neuralwatt.com/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "NEURALWATT_BASE_URL": {
+        "description": "Neuralwatt base URL override",
+        "prompt": "Neuralwatt base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "MINIMAX_API_KEY": {
         "description": "MiniMax API key (international)",
         "prompt": "MiniMax API key",
