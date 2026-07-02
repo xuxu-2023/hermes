@@ -804,6 +804,12 @@ def _make_run_env(env: dict) -> dict:
     for _marker in _ACTIVE_VENV_MARKER_VARS:
         run_env.pop(_marker, None)
 
+    # Sanitize PYTHONHOME/PYTHONPATH — they can cause the subprocess to load
+    # the wrong Python interpreter (e.g. uv's Python instead of conda's), which
+    # breaks tools like conda that rely on finding their own stdlib packages.
+    run_env.pop("PYTHONHOME", None)
+    run_env.pop("PYTHONPATH", None)
+
     return run_env
 
 
