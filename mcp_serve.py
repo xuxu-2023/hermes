@@ -40,6 +40,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
+_MCP_MAX_CONTENT_CHARS = int(os.environ.get("HERMES_MCP_MAX_CONTENT_CHARS", "2000"))
+_MCP_PREVIEW_CHARS = int(os.environ.get("HERMES_MCP_PREVIEW_CHARS", "500"))
+
 logger = logging.getLogger("hermes.mcp_serve")
 
 # ---------------------------------------------------------------------------
@@ -448,7 +451,7 @@ class EventBridge:
                     session_key=session_key,
                     data={
                         "role": msg.get("role", ""),
-                        "content": content[:500],
+                        "content": content[:_MCP_PREVIEW_CHARS] if _MCP_PREVIEW_CHARS > 0 else content,
                         "timestamp": str(msg.get("timestamp", "")),
                         "message_id": str(msg.get("id", "")),
                     },
@@ -619,7 +622,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
                     filtered.append({
                         "id": str(msg.get("id", "")),
                         "role": role,
-                        "content": content[:2000],
+                        "content": content[:_MCP_MAX_CONTENT_CHARS] if _MCP_MAX_CONTENT_CHARS > 0 else content,
                         "timestamp": msg.get("timestamp", ""),
                     })
 
