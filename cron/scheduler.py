@@ -2438,9 +2438,10 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
     agent = None
 
-    # Mark this as a cron session so the approval system can apply cron_mode.
-    # This env var is process-wide and persists for the lifetime of the
-    # scheduler process — every job this process runs is a cron job.
+    # Legacy process marker plus a per-job ContextVar marker below.  Approval
+    # gates require the per-job marker when a live gateway/session context is
+    # present, so inherited scheduler env cannot make interactive sessions look
+    # like cron jobs.
     os.environ["HERMES_CRON_SESSION"] = "1"
 
     # Use ContextVars for per-job session/delivery state so parallel jobs
@@ -2473,6 +2474,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         chat_id="",
         chat_name="",
     )
+    _VAR_MAP["HERMES_CRON_JOB_ID"].set(str(job_id))
     _cron_delivery_vars = (
         "HERMES_CRON_AUTO_DELIVER_PLATFORM",
         "HERMES_CRON_AUTO_DELIVER_CHAT_ID",
@@ -3039,6 +3041,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             _terminal_cwd_lock.release_read()
         # Clean up ContextVar session/delivery state for this job.
         clear_session_vars(_ctx_tokens)
+        _VAR_MAP["HERMES_CRON_JOB_ID"].set("")
         for _var_name in _cron_delivery_vars:
             _VAR_MAP[_var_name].set("")
         if _session_db:
