@@ -21,6 +21,7 @@ import type { SlashCommand } from '../types.js'
 
 const TUI_SESSION_MODEL_RE = new RegExp(`(?:^|\\s)${TUI_SESSION_MODEL_FLAG}(?:\\s|$)`)
 const TUI_SESSION_STRIP_RE = new RegExp(`\\s*${TUI_SESSION_MODEL_FLAG}\\b\\s*`, 'g')
+const MODEL_SESSION_FLAG_RE = /(?:^|\s)--session(?:\s|$)/
 
 const stripTuiSessionFlag = (trimmed: string) => trimmed.replace(TUI_SESSION_STRIP_RE, ' ').replace(/\s+/g, ' ').trim()
 
@@ -32,11 +33,15 @@ const modelValueForConfigSet = (arg: string) => {
   }
 
   if (TUI_SESSION_MODEL_RE.test(trimmed)) {
-    return stripTuiSessionFlag(trimmed)
+    const withoutTuiFlag = stripTuiSessionFlag(trimmed)
+
+    return MODEL_SESSION_FLAG_RE.test(withoutTuiFlag) ? withoutTuiFlag : `${withoutTuiFlag} --session`.trim()
   }
 
   return trimmed
 }
+
+const opensSessionModelPicker = (arg: string) => arg.trim() === '--session'
 
 export const sessionCommands: SlashCommand[] = [
   {
@@ -69,8 +74,8 @@ export const sessionCommands: SlashCommand[] = [
         return
       }
 
-      if (!arg.trim()) {
-        return patchOverlayState({ modelPicker: true })
+      if (!arg.trim() || opensSessionModelPicker(arg)) {
+        return patchOverlayState({ modelPicker: true, modelPickerSessionOnly: opensSessionModelPicker(arg) })
       }
 
       const switchModel = (confirmExpensiveModel = false) =>

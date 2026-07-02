@@ -179,8 +179,9 @@ export function FloatingOverlays({
       {overlay.modelPicker && (
         <FloatBox color={theme.color.border}>
           <ModelPicker
+            allowPersistGlobal={!overlay.modelPickerSessionOnly}
             gw={gw}
-            onCancel={() => patchOverlayState({ modelPicker: false })}
+            onCancel={() => patchOverlayState({ modelPicker: false, modelPickerSessionOnly: false })}
             onSelect={onModelSelect}
             sessionId={sid}
             t={theme}

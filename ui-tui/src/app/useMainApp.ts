@@ -939,7 +939,7 @@ export function useMainApp(gw: GatewayClient) {
   )
 
   const onModelSelect = useCallback((value: string) => {
-    patchOverlayState({ modelPicker: false })
+    patchOverlayState({ modelPicker: false, modelPickerSessionOnly: false })
     slashRef.current(`/model ${value}`)
   }, [])
 

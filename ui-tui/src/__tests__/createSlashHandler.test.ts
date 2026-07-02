@@ -200,8 +200,18 @@ describe('createSlashHandler', () => {
       confirm_expensive_model: false,
       key: 'model',
       session_id: 'sid-abc',
-      value: 'anthropic/claude-sonnet-4.6 --provider openrouter'
+      value: 'anthropic/claude-sonnet-4.6 --provider openrouter --session'
     })
+  })
+
+  it('opens a session-only model picker for /model --session', () => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/model --session')).toBe(true)
+    expect(getOverlayState().modelPicker).toBe(true)
+    expect(getOverlayState().modelPickerSessionOnly).toBe(true)
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
   })
 
   it('does not duplicate --global for explicit persistent model switches', () => {
