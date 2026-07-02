@@ -4375,12 +4375,12 @@ def clear_model_endpoint_credentials(
     if not isinstance(model_cfg, dict):
         return model_cfg
     if clear_api_key:
-        model_cfg.pop("api_key", None)
-        model_cfg.pop("api", None)
+        model_cfg["api_key"] = ""
+        model_cfg["api"] = ""
     if clear_api_mode:
-        model_cfg.pop("api_mode", None)
+        model_cfg["api_mode"] = ""
     if clear_base_url:
-        model_cfg.pop("base_url", None)
+        model_cfg["base_url"] = ""
     return model_cfg
 
 
