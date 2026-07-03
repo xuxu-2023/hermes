@@ -666,6 +666,31 @@ def test_env_loader_calls_bsm_when_enabled(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def test_disk_cache_not_written_when_ttl_zero(monkeypatch, tmp_path):
+    """cache_ttl_seconds=0 disables both disk reads and disk writes."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("")
+    payload = _fake_bws_payload([{"key": "K1", "value": "v1"}])
+
+    call_count = {"n": 0}
+    def fake_run(*a, **kw):
+        call_count["n"] += 1
+        return mock.Mock(returncode=0, stdout=payload, stderr="")
+    monkeypatch.setattr(bw.subprocess, "run", fake_run)
+    bw._reset_cache_for_tests(home)
+
+    secrets, _ = bw.fetch_bitwarden_secrets(
+        access_token="0.t", project_id="proj-1", binary=fake_binary,
+        cache_ttl_seconds=0, home_path=home,
+    )
+
+    assert secrets == {"K1": "v1"}
+    assert call_count["n"] == 1
+    assert not bw._disk_cache_path(home).exists()
+
+
 def test_disk_cache_written_after_first_fetch(monkeypatch, tmp_path):
     """First fetch hits bws AND writes a 0600 file under hermes_home/cache/."""
     home = tmp_path / ".hermes"
