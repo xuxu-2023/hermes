@@ -438,6 +438,33 @@ def test_stream_upload_large_file_under_cap_succeeds(forced_files_client, monkey
     assert file_path.read_bytes() == payload
 
 
+def test_directory_listing_shows_broken_symlink_placeholder(forced_files_client):
+    """Dangling symlinks should appear in listings with broken_link: true."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+
+    valid = root / "valid.txt"
+    valid.write_text("hello")
+
+    broken = root / "broken_link"
+    nonexistent = root / "nonexistent_target"
+    broken.symlink_to(str(nonexistent))
+
+    resp = client.get("/api/files", params={"path": str(root)})
+    assert resp.status_code == 200
+    entries = resp.json()["entries"]
+    names = [e["name"] for e in entries]
+    assert "valid.txt" in names
+    assert "broken_link" in names
+
+    broken_entry = next(e for e in entries if e["name"] == "broken_link")
+    assert broken_entry["broken_link"] is True
+    assert broken_entry["size"] is None
+    assert broken_entry["mtime"] is None
+    assert broken_entry["mime_type"] is None
+    assert broken_entry["is_directory"] is False
+
+
 def test_stream_upload_cleans_temp_on_cancellation(forced_files_client):
     """A client disconnect mid-stream (asyncio.CancelledError) must not leak a temp file.
 
