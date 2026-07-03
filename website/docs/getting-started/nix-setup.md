@@ -416,22 +416,29 @@ The file is only copied if `auth.json` doesn't already exist (unless `authFileFo
 
 ## Documents
 
-The `documents` option installs files into the agent's working directory (the `workingDirectory`, which the agent reads as its workspace). Hermes looks for specific filenames by convention:
+The `documents` option installs files to explicit paths under `stateDir`. Each key is treated as a destination path relative to `${services.hermes-agent.stateDir}` (default `/var/lib/hermes`).
 
-- **`USER.md`** — context about the user the agent is interacting with.
-- Any other files you place here are visible to the agent as workspace files.
-
-The agent identity file is separate: Hermes loads its primary `SOUL.md` from `$HERMES_HOME/SOUL.md`, which in the NixOS module is `${services.hermes-agent.stateDir}/.hermes/SOUL.md`. Putting `SOUL.md` in `documents` only creates a workspace file and will not replace the main persona file.
+- Use `.hermes/...` for files Hermes reads from `$HERMES_HOME`.
+- Use `workspace/...` for project context files that belong in `workingDirectory`.
+- Any other key lands exactly where you name it under `stateDir`.
 
 ```nix
 {
   services.hermes-agent.documents = {
-    "USER.md" = ./documents/USER.md;  # path reference, copied from Nix store
+    ".hermes/SOUL.md" = "You are a helpful AI assistant.";
+    ".hermes/memories/USER.md" = ./documents/USER.md;
+    "workspace/AGENTS.md" = ./documents/AGENTS.md;
   };
 }
 ```
 
-Values can be inline strings or path references. Files are installed on every `nixos-rebuild switch`.
+This keeps the target path explicit:
+
+- `.hermes/SOUL.md` -> `${services.hermes-agent.stateDir}/.hermes/SOUL.md`
+- `.hermes/memories/USER.md` -> `${services.hermes-agent.stateDir}/.hermes/memories/USER.md`
+- `workspace/AGENTS.md` -> `${services.hermes-agent.stateDir}/workspace/AGENTS.md`
+
+Values can be inline strings or path references. Nested parent directories are created automatically, and files are installed on every `nixos-rebuild switch`.
 
 ---
 
@@ -857,7 +864,7 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `documents` | `attrsOf (either str path)` | `{}` | Workspace files. Keys are filenames, values are inline strings or paths. Installed into `workingDirectory` on activation |
+| `documents` | `attrsOf (either str path)` | `{}` | Documents to install under `stateDir`. Keys are destination paths relative to `stateDir`; nested parent directories are created on activation |
 
 ### MCP Servers
 
