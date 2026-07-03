@@ -1690,6 +1690,157 @@ class TestBuildAnthropicKwargs:
         )
         assert kwargs["max_tokens"] == 64_000
 
+    # ------------------------------------------------------------------
+    # OAuth-only hardening: system-prompt sanitizer + tool_choice encoding
+    # ------------------------------------------------------------------
+
+    def test_oauth_system_text_sanitizer_rewrites_extended_literals(self):
+        """The OAuth system-prompt sanitizer must rewrite each literal in
+        ``_OAUTH_SYSTEM_TEXT_REPLACEMENTS`` — including the five hardening
+        literals (``session_search``, ``skill_manage``, ``HEARTBEAT_OK``,
+        ``MEDIA:``, bare ``Hermes``) added on top of the original 4-pass.
+        """
+        text = (
+            "Hermes Agent uses session_search and skill_manage. "
+            "When idle, return HEARTBEAT_OK. "
+            "Deliver attachments via MEDIA:/abs/path. "
+            "Hermes is built by Nous Research on the hermes-agent repo."
+        )
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[
+                {"role": "system", "content": text},
+                {"role": "user", "content": "Hi"},
+            ],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+        )
+        # system is a list of text blocks under OAuth (Claude Code prefix block
+        # is injected first); concatenate every text block to assert on.
+        body = "\n".join(
+            b["text"] for b in kwargs["system"]
+            if isinstance(b, dict) and b.get("type") == "text"
+        )
+        for trigger in (
+            "Hermes Agent",
+            "Hermes agent",
+            "hermes-agent",
+            "Nous Research",
+            "session_search",
+            "skill_manage",
+            "HEARTBEAT_OK",
+            "MEDIA:",
+        ):
+            assert trigger not in body, f"sanitizer missed {trigger!r}"
+        # Bare "Hermes" must also be rewritten (last-pass guard).
+        assert "Hermes" not in body
+        # Replacements landed.
+        assert "Claude Code" in body
+        assert "session lookup" in body
+        assert "skill editor" in body
+        assert "NO_ACTION_NEEDED" in body
+        assert "FILE:" in body
+
+    def test_non_oauth_path_leaves_system_text_untouched(self):
+        """Sanitizer must NOT fire when is_oauth=False — API-key callers and
+        third-party Anthropic-compatible providers see the prompt verbatim.
+        """
+        text = (
+            "Hermes Agent. session_search. skill_manage. "
+            "HEARTBEAT_OK. MEDIA:/x. Hermes."
+        )
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[
+                {"role": "system", "content": text},
+                {"role": "user", "content": "Hi"},
+            ],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=False,
+        )
+        # Under non-OAuth, system stays a plain string.
+        assert kwargs["system"] == text
+
+    def test_oauth_concrete_tool_choice_gets_wire_name_encoding(self):
+        """When tool_choice names a specific tool on the OAuth path, the name
+        must go through the same ``_to_oauth_wire_name`` transform applied to
+        the tools list — otherwise Anthropic 400s with
+        ``tool_choice not in tools``.
+        """
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[
+                {"type": "function", "function": {"name": "read_file", "description": "x", "parameters": {"type": "object", "properties": {}}}}
+            ],
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+            tool_choice="read_file",
+        )
+        # Bare name → mcp__read_file on the wire.
+        assert kwargs["tool_choice"] == {"type": "tool", "name": "mcp__read_file"}
+        # And matches the encoded name in tools (this is the invariant).
+        assert kwargs["tools"][0]["name"] == "mcp__read_file"
+
+    def test_oauth_concrete_tool_choice_promotes_single_mcp_underscore(self):
+        """A single-underscore native MCP tool name passed as ``tool_choice``
+        must be promoted to the double-underscore wire form, matching what
+        upstream PR #47723 does for the tools list.
+        """
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[
+                {"type": "function", "function": {"name": "mcp_linear_get_issue", "description": "x", "parameters": {"type": "object", "properties": {}}}}
+            ],
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+            tool_choice="mcp_linear_get_issue",
+        )
+        assert kwargs["tool_choice"] == {
+            "type": "tool",
+            "name": "mcp__linear_get_issue",
+        }
+        assert kwargs["tools"][0]["name"] == "mcp__linear_get_issue"
+
+    def test_oauth_concrete_tool_choice_idempotent_when_already_encoded(self):
+        """Double-underscore-encoded names passed as ``tool_choice`` must not
+        be double-prefixed."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[
+                {"type": "function", "function": {"name": "mcp__read_file", "description": "x", "parameters": {"type": "object", "properties": {}}}}
+            ],
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+            tool_choice="mcp__read_file",
+        )
+        assert kwargs["tool_choice"] == {"type": "tool", "name": "mcp__read_file"}
+
+    def test_non_oauth_concrete_tool_choice_is_raw(self):
+        """Non-OAuth callers (API key, third-party Anthropic-compatible) must
+        get the raw ``tool_choice`` name — the wire encoding is OAuth-only."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[
+                {"type": "function", "function": {"name": "read_file", "description": "x", "parameters": {"type": "object", "properties": {}}}}
+            ],
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=False,
+            tool_choice="read_file",
+        )
+        assert kwargs["tool_choice"] == {"type": "tool", "name": "read_file"}
+        assert kwargs["tools"][0]["name"] == "read_file"
 
 # ---------------------------------------------------------------------------
 # Model output limit lookup
