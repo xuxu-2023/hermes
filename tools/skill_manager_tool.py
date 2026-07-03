@@ -1278,12 +1278,16 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
     )
 
 
-def apply_skill_pending(payload: Dict[str, Any]) -> str:
+def apply_skill_pending(payload: Dict[str, Any], *, origin: str = None) -> str:
     """Replay a staged skill write, bypassing the gate. Returns the tool result
     JSON string. Called by the /skills approve handler.
     """
-    token = _skill_gate_bypass.set(True)
+    gate_token = _skill_gate_bypass.set(True)
+    origin_token = None
     try:
+        if origin:
+            from tools.skill_provenance import set_current_write_origin
+            origin_token = set_current_write_origin(origin)
         return skill_manage(
             action=payload.get("action", ""),
             name=payload.get("name", ""),
@@ -1297,7 +1301,10 @@ def apply_skill_pending(payload: Dict[str, Any]) -> str:
             absorbed_into=payload.get("absorbed_into"),
         )
     finally:
-        _skill_gate_bypass.reset(token)
+        if origin_token is not None:
+            from tools.skill_provenance import reset_current_write_origin
+            reset_current_write_origin(origin_token)
+        _skill_gate_bypass.reset(gate_token)
 
 
 def skill_manage(
