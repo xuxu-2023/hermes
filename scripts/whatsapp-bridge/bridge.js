@@ -166,6 +166,9 @@ function splitLongMessage(message, maxLength = MAX_MESSAGE_LENGTH) {
 
 function trackSentMessageId(sent) {
   rememberSentId(sent?.key?.id);
+  if (sent?.key?.id) {
+    rememberMessage(sent);
+  }
 }
 
 function normalizeWhatsAppId(value) {
@@ -230,6 +233,50 @@ const recentlySentIds = createOutboundIdTracker(512);
 
 function rememberSentId(id) {
   recentlySentIds.remember(id);
+}
+
+// Full WAMessage cache used for native WhatsApp reactions. Baileys needs the
+// original message's key (incl. group `participant`) to attach a reaction, so
+// we remember inbound + sent messages as they flow through. Bounded by size and
+// TTL. Exported so the bridge's node:test harness can exercise it directly.
+export const messageStore = new Map();
+const MAX_STORED_MESSAGES = parseInt(process.env.WHATSAPP_MESSAGE_STORE_MAX || '5000', 10);
+const MESSAGE_STORE_TTL_MS = parseInt(process.env.WHATSAPP_MESSAGE_STORE_TTL_MS || String(24 * 60 * 60 * 1000), 10);
+
+function messageStoreKey(chatId, messageId) {
+  if (!chatId || !messageId) return '';
+  return `${normalizeWhatsAppId(chatId)}|${messageId}`;
+}
+
+function pruneMessageStore(now = Date.now()) {
+  for (const [key, value] of messageStore.entries()) {
+    if (now - value.seenAt > MESSAGE_STORE_TTL_MS) {
+      messageStore.delete(key);
+    }
+  }
+  while (messageStore.size > MAX_STORED_MESSAGES) {
+    messageStore.delete(messageStore.keys().next().value);
+  }
+}
+
+export function rememberMessage(msg, now = Date.now()) {
+  const chatId = normalizeWhatsAppId(msg?.key?.remoteJid || '');
+  const messageId = msg?.key?.id || '';
+  const key = messageStoreKey(chatId, messageId);
+  if (!key) return;
+  messageStore.set(key, { message: msg, seenAt: now });
+  pruneMessageStore(now);
+}
+
+export function resolveStoredMessage(chatId, messageId) {
+  const key = messageStoreKey(chatId, messageId);
+  const entry = messageStore.get(key);
+  if (!entry) return undefined;
+  if (Date.now() - entry.seenAt > MESSAGE_STORE_TTL_MS) {
+    messageStore.delete(key);
+    return undefined;
+  }
+  return entry.message;
 }
 
 let sock = null;
@@ -539,6 +586,7 @@ async function startSocket() {
       };
 
       messageQueue.push(event);
+      rememberMessage(msg);
       if (messageQueue.length > MAX_QUEUE_SIZE) {
         messageQueue.shift();
       }
@@ -649,6 +697,27 @@ app.post('/edit', async (req, res) => {
     }
 
     res.json({ success: true, messageIds });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// React to a normal WhatsApp message cached by the bridge.
+// Pass an empty `emoji` ("") to retract a previously-sent reaction.
+app.post('/react', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+  }
+  const { chatId, messageId, emoji } = req.body;
+  if (!chatId || !messageId || emoji === undefined) {
+    return res.status(400).json({ error: 'chatId, messageId, and emoji are required' });
+  }
+  const target = resolveStoredMessage(chatId, messageId);
+  if (!target) return res.status(404).json({ error: 'Referenced message not found in bridge cache' });
+  try {
+    const sent = await sock.sendMessage(chatId, { react: { text: emoji, key: target.key } });
+    trackSentMessageId(sent);
+    res.json({ success: true, messageId: sent?.key?.id });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -800,14 +869,17 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Start
-if (PAIR_ONLY) {
+// Start when executed directly. Keep imports side-effect-light so the bridge's
+// node:test harness can import the message-store helpers without binding a port.
+const isMain = process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+
+if (isMain && PAIR_ONLY) {
   // Pair-only mode: just connect, show QR, save creds, exit. No HTTP server.
   console.log('📱 WhatsApp pairing mode');
   console.log(`📁 Session: ${SESSION_DIR}`);
   console.log();
   startSocket();
-} else {
+} else if (isMain) {
   app.listen(PORT, '127.0.0.1', () => {
     console.log(`🌉 WhatsApp bridge listening on port ${PORT} (mode: ${WHATSAPP_MODE})`);
     console.log(`📁 Session stored in: ${SESSION_DIR}`);
