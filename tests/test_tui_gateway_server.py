@@ -8077,6 +8077,37 @@ def test_close_sessions_for_transport_closes_flagged_repoints_rest(monkeypatch):
         server._sessions.clear()
 
 
+def test_close_sessions_for_transport_skips_session_rebound_during_disconnect(monkeypatch):
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
+    old_transport = object()
+    new_transport = object()
+    server._sessions.clear()
+    server._sessions["a"] = {"transport": old_transport, "close_on_disconnect": False}
+    try:
+        result = []
+
+        def _run_close():
+            result.append(
+                server._close_sessions_for_transport(
+                    old_transport, end_reason="ws_disconnect"
+                )
+            )
+
+        with server._session_resume_lock:
+            worker = threading.Thread(target=_run_close)
+            worker.start()
+            time.sleep(0.05)
+            with server._sessions_lock:
+                server._sessions["a"]["transport"] = new_transport
+        worker.join(timeout=2)
+
+        assert worker.is_alive() is False
+        assert result == [(0, 0)]
+        assert server._sessions["a"]["transport"] is new_transport
+    finally:
+        server._sessions.clear()
+
+
 def test_session_create_records_close_on_disconnect_flag(monkeypatch):
     monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
     server._sessions.clear()

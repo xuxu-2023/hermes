@@ -717,24 +717,38 @@ def _close_sessions_for_transport(
     independent reap loop in ``handle_ws``.
 
     Returns ``(reaped, detached)`` counts for disconnect-path observability."""
-    with _sessions_lock:
-        owned = [(sid, s) for sid, s in _sessions.items() if s.get("transport") is transport]
     reaped = 0
     detached = 0
-    for sid, session in owned:
-        if session.get("close_on_disconnect"):
-            _close_session_by_id(sid, end_reason=end_reason)
-            reaped += 1
-        else:
-            # Point detached sessions at the drop sentinel (NOT real stdio) so
-            # _ws_session_is_orphaned recognizes them and the grace-reap can
-            # actually fire; a standalone `hermes --tui` keeps real _stdio.
-            session["transport"] = _detached_ws_transport
-            detached += 1
-            try:
-                _schedule_ws_orphan_reap(sid)
-            except Exception:
-                pass
+    # Serialize against session.resume/session.close so a reconnect that
+    # re-binds a live transport cannot be immediately overwritten by the
+    # disconnecting socket's stale teardown pass.
+    with _session_resume_lock:
+        with _sessions_lock:
+            owned = [
+                sid for sid, session in _sessions.items()
+                if session.get("transport") is transport
+            ]
+        for sid in owned:
+            with _sessions_lock:
+                session = _sessions.get(sid)
+                if not session or session.get("transport") is not transport:
+                    continue
+                close_on_disconnect = bool(session.get("close_on_disconnect"))
+                if not close_on_disconnect:
+                    # Point detached sessions at the drop sentinel (NOT real
+                    # stdio) so _ws_session_is_orphaned recognizes them and the
+                    # grace-reap can actually fire; a standalone `hermes --tui`
+                    # keeps real _stdio.
+                    session["transport"] = _detached_ws_transport
+            if close_on_disconnect:
+                if _close_session_by_id(sid, end_reason=end_reason):
+                    reaped += 1
+            else:
+                detached += 1
+                try:
+                    _schedule_ws_orphan_reap(sid)
+                except Exception:
+                    pass
     return reaped, detached
 
 
