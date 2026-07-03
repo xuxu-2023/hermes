@@ -1559,6 +1559,9 @@ class TestToolUseEnforcementGuidance:
     def test_enforcement_models_includes_deepseek(self):
         assert "deepseek" in TOOL_USE_ENFORCEMENT_MODELS
 
+    def test_enforcement_models_includes_minimax(self):
+        assert "minimax" in TOOL_USE_ENFORCEMENT_MODELS
+
     def test_enforcement_models_is_tuple(self):
         assert isinstance(TOOL_USE_ENFORCEMENT_MODELS, tuple)
 
@@ -1644,5 +1647,4 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 
