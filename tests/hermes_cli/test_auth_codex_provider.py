@@ -215,6 +215,124 @@ def test_resolve_codex_runtime_credentials_pool_fallback_no_usable_entry(tmp_pat
     assert exc.value.code == "codex_auth_missing"
 
 
+def test_resolve_codex_runtime_credentials_pool_all_rate_limited(tmp_path, monkeypatch):
+    """Singleton missing + every pool entry in 429 cooldown raises rate-limit."""
+    from hermes_cli.auth import CODEX_RATE_LIMITED_CODE, is_rate_limited_auth_error
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    future_reset = time.time() + 3 * 3600 + 15 * 60
+    auth_store = {
+        "version": 1,
+        "providers": {},
+        "credential_pool": {
+            "openai-codex": [
+                {
+                    "source": "device_code",
+                    "access_token": "rate-limited-token",
+                    "last_status": "exhausted",
+                    "last_error_code": 429,
+                    "last_error_reason": "usage_limit_reached",
+                    "last_error_reset_at": future_reset,
+                },
+                {
+                    "source": "manual:device_code",
+                    "access_token": "also-rate-limited",
+                    "last_status": "exhausted",
+                    "last_error_code": 429,
+                    "last_error_reason": "usage_limit_reached",
+                    "last_error_reset_at": future_reset + 60,
+                },
+            ],
+        },
+    }
+    (hermes_home / "auth.json").write_text(json.dumps(auth_store))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    with pytest.raises(AuthError) as exc:
+        resolve_codex_runtime_credentials()
+    err = exc.value
+    assert err.code == CODEX_RATE_LIMITED_CODE
+    assert err.relogin_required is False
+    assert is_rate_limited_auth_error(err) is True
+
+    rendered = str(err)
+    assert "No Codex credentials stored" not in rendered
+    assert "quota" in rendered.lower()
+    assert "Credentials are still valid" in rendered
+    assert "3h" in rendered
+
+
+def test_resolve_codex_runtime_credentials_pool_401_remains_auth_error(
+    tmp_path, monkeypatch
+):
+    """401 cooldowns represent credential failures and must not be reclassified."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    future_reset = time.time() + 600
+    auth_store = {
+        "version": 1,
+        "providers": {},
+        "credential_pool": {
+            "openai-codex": [
+                {
+                    "source": "device_code",
+                    "access_token": "revoked-token",
+                    "last_status": "exhausted",
+                    "last_error_code": 401,
+                    "last_error_reason": "token_invalidated",
+                    "last_error_reset_at": future_reset,
+                },
+            ],
+        },
+    }
+    (hermes_home / "auth.json").write_text(json.dumps(auth_store))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    with pytest.raises(AuthError) as exc:
+        resolve_codex_runtime_credentials()
+    assert exc.value.code == "codex_auth_missing"
+    assert exc.value.relogin_required is True
+
+
+def test_resolve_codex_runtime_credentials_pool_mixed_429_401_requires_auth(
+    tmp_path, monkeypatch
+):
+    """A mixed pool is not an all-credentials quota cap; keep auth remediation."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    future_reset = time.time() + 600
+    auth_store = {
+        "version": 1,
+        "providers": {},
+        "credential_pool": {
+            "openai-codex": [
+                {
+                    "source": "device_code",
+                    "access_token": "rate-limited-token",
+                    "last_status": "exhausted",
+                    "last_error_code": 429,
+                    "last_error_reset_at": future_reset,
+                },
+                {
+                    "source": "manual:device_code",
+                    "access_token": "revoked-token",
+                    "last_status": "exhausted",
+                    "last_error_code": 401,
+                    "last_error_reset_at": future_reset,
+                },
+            ],
+        },
+    }
+    (hermes_home / "auth.json").write_text(json.dumps(auth_store))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    with pytest.raises(AuthError) as exc:
+        resolve_codex_runtime_credentials()
+    assert exc.value.code == "codex_auth_missing"
+    assert exc.value.relogin_required is True
+
+
 def test_resolve_provider_explicit_codex_does_not_fallback(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)

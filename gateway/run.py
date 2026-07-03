@@ -1774,19 +1774,21 @@ def _resolve_runtime_agent_kwargs() -> dict:
         format_runtime_provider_error,
         _get_model_config,
     )
-    from hermes_cli.auth import AuthError, is_rate_limited_auth_error
+    from hermes_cli.auth import AuthError
 
     try:
         runtime = resolve_runtime_provider()
     except AuthError as auth_exc:
-        # Distinguish a transient rate-limit/quota cap (credentials are fine,
-        # re-auth cannot help) from a genuine auth failure (expired/revoked
-        # token). Both fall through to the fallback chain, but the log message
-        # must not mislabel a quota exhaustion as an auth failure (#32790).
-        if is_rate_limited_auth_error(auth_exc):
-            logger.warning("Primary provider rate-limited (429): %s — trying fallback", auth_exc)
-        else:
+        # AuthError covers both real credential problems and transient upstream
+        # failures such as quota/rate-limit caps. Only the former should tell
+        # operators that authentication failed; re-auth cannot fix a usage cap.
+        if getattr(auth_exc, "relogin_required", False):
             logger.warning("Primary provider auth failed: %s — trying fallback", auth_exc)
+        else:
+            logger.warning(
+                "Primary provider unavailable (transient/rate-limit): %s — trying fallback",
+                auth_exc,
+            )
         fb_config = _try_resolve_fallback_provider()
         if fb_config is not None:
             return fb_config
