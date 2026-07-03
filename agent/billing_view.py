@@ -15,6 +15,7 @@ We keep them as :class:`decimal.Decimal` end-to-end and only format for display.
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
@@ -64,14 +65,48 @@ def format_money(value: Optional[Decimal]) -> str:
 # =============================================================================
 
 
+# resolvedVia → the human answer to "why THIS card?". Keys are the server's card
+# resolution rungs (NAS card-on-file ladder); absent/unknown rungs render no label
+# so the display degrades cleanly on servers that don't send resolvedVia yet.
+_CARD_PROVENANCE_LABELS = {
+    "subPin": "the card on your subscription",
+    "customerDefault": "your default card saved on the portal",
+    "autoRefill": "your auto-reload card",
+}
+
+
 @dataclass(frozen=True)
 class CardInfo:
     brand: str
     last4: str
+    # NAS card-on-file fields (post card-resolver): which ladder rung found the
+    # card, and whether it is known-failing (auto-reload payment failures).
+    # Both default off so pre-resolver payloads parse unchanged.
+    resolved_via: Optional[str] = None
+    needs_repair: bool = False
 
     @property
     def masked(self) -> str:
+        # A Link payment method has no card number (last4 = "") — render the
+        # brand alone, not "Link ····".
+        if not self.last4:
+            return self.brand
         return f"{self.brand} ····{self.last4}"
+
+    @property
+    def provenance(self) -> Optional[str]:
+        """Human label for why this card was picked, or None (unknown rung /
+        server too old to say)."""
+        if self.resolved_via is None:
+            return None
+        return _CARD_PROVENANCE_LABELS.get(self.resolved_via)
+
+    @property
+    def display(self) -> str:
+        """The one-line card display: ``Visa ····4242 — the card on your
+        subscription`` (or just the masked card when provenance is unknown)."""
+        label = self.provenance
+        return f"{self.masked} — {label}" if label else self.masked
 
 
 @dataclass(frozen=True)
@@ -133,9 +168,19 @@ def _parse_card(raw: Any) -> Optional[CardInfo]:
         return None
     brand = raw.get("brand")
     last4 = raw.get("last4")
-    if isinstance(brand, str) and isinstance(last4, str):
-        return CardInfo(brand=brand, last4=last4)
-    return None
+    if not (isinstance(brand, str) and isinstance(last4, str)):
+        return None
+    # Post-resolver fields — all optional so both payload generations parse.
+    resolved_via = raw.get("resolvedVia")
+    if not isinstance(resolved_via, str):
+        resolved_via = None
+    chargeability = raw.get("chargeability")
+    needs_repair = (
+        isinstance(chargeability, dict) and chargeability.get("kind") == "needs_repair"
+    )
+    return CardInfo(
+        brand=brand, last4=last4, resolved_via=resolved_via, needs_repair=needs_repair
+    )
 
 
 def _parse_monthly_cap(raw: Any) -> Optional[MonthlyCap]:
@@ -202,7 +247,15 @@ def build_billing_state(*, timeout: float = 15.0) -> BillingState:
     Returns ``BillingState(logged_in=False)`` when not logged in. On a portal/HTTP
     failure, returns ``logged_in=False`` with ``error`` set so the surface can show
     a clear message rather than crashing.
+
+    Dev override: ``HERMES_DEV_BILLING_FIXTURE`` short-circuits to a fixture so the
+    card-on-file / admin / scope states are testable offline (mirrors
+    ``HERMES_DEV_CREDITS_FIXTURE`` for the usage model).
     """
+    fixture = _dev_fixture_billing_state()
+    if fixture is not None:
+        return fixture
+
     try:
         from hermes_cli.nous_billing import (
             BillingAuthError,
@@ -241,6 +294,78 @@ def build_billing_state(*, timeout: float = 15.0) -> BillingState:
 def _fallback_portal_url(base: str) -> str:
     """Standard billing deep-link when the server omits ``portalUrl``."""
     return f"{base.rstrip('/')}/billing?topup=open"
+
+
+# =============================================================================
+# Dev fixtures (throwaway scaffolding — env-var driven, no live portal)
+# =============================================================================
+
+
+def _dev_fixture_billing_state() -> Optional[BillingState]:
+    """Map ``HERMES_DEV_BILLING_FIXTURE`` to a :class:`BillingState` for offline UX.
+
+    Recognized names::
+
+        nocard           logged in · billing on · admin · NO card on file
+        card             card on file · auto-reload off
+        card-autoreload  card on file · auto-reload on
+        notadmin         logged in · MEMBER role (billing actions disabled)
+        billing-off      logged in · admin · per-org kill-switch OFF
+        logged-out       not logged in
+
+    Returns ``None`` when the env var is unset (the real portal path runs).
+    Mirrors ``HERMES_DEV_CREDITS_FIXTURE``; the usage *bar* still comes from
+    ``HERMES_DEV_CREDITS_FIXTURE`` (set both to pair a bar with a billing state).
+    """
+    name = (os.getenv("HERMES_DEV_BILLING_FIXTURE") or "").strip().lower()
+    if not name:
+        return None
+
+    # Shared fixture portal host (matches subscription_view._DEV_FIXTURE_PORTAL —
+    # prod host, not staging; the ?topup=open suffix is the /topup deep-link).
+    portal = "https://portal.nousresearch.com/billing?topup=open"
+    common: dict[str, Any] = dict(
+        org_id="org_acme",
+        org_slug="acme",
+        org_name="Acme Inc",
+        role="OWNER",
+        balance_usd=Decimal("3.40"),
+        cli_billing_enabled=True,
+        charge_presets=(Decimal("10"), Decimal("25"), Decimal("50")),
+        min_usd=Decimal("5"),
+        max_usd=Decimal("500"),
+        portal_url=portal,
+    )
+    card = CardInfo(brand="Visa", last4="4242")
+    autoreload_on = AutoReload(enabled=True, threshold_usd=Decimal("5"), reload_to_usd=Decimal("25"))
+
+    if name in ("logged-out", "logged_out", "loggedout"):
+        return BillingState(logged_in=False)
+    if name == "nocard":
+        return BillingState(logged_in=True, card=None, **common)
+    if name == "card":
+        return BillingState(logged_in=True, card=card, **common)
+    if name in ("card-sub", "card_sub"):
+        # Post-resolver: the card came from the subscription (provenance label).
+        _sub_card = CardInfo(brand="Visa", last4="4242", resolved_via="subPin")
+        return BillingState(logged_in=True, card=_sub_card, **common)
+    if name in ("card-repair", "card_repair"):
+        # Post-resolver: auto-reload card with failing payments (warn, don't block).
+        _bad_card = CardInfo(
+            brand="Mastercard", last4="9911", resolved_via="autoRefill", needs_repair=True
+        )
+        return BillingState(logged_in=True, card=_bad_card, auto_reload=autoreload_on, **common)
+    if name in ("card-autoreload", "card_autoreload", "autoreload"):
+        return BillingState(logged_in=True, card=card, auto_reload=autoreload_on, **common)
+    if name in ("notadmin", "not-admin", "member"):
+        opts = {**common, "role": "MEMBER"}
+        return BillingState(logged_in=True, card=card, **opts)
+    if name in ("billing-off", "billing_off", "off"):
+        opts = {**common, "cli_billing_enabled": False}
+        return BillingState(logged_in=True, card=None, **opts)
+
+    # Unknown name → logged-out so the misconfiguration is visible.
+    return BillingState(logged_in=False, error=f"unknown HERMES_DEV_BILLING_FIXTURE: {name}")
 
 
 # =============================================================================

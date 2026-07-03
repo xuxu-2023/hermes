@@ -6,7 +6,7 @@ import type {
   BillingStateResponse
 } from '../../../gatewayTypes.js'
 import { openExternalUrl } from '../../../lib/openExternalUrl.js'
-import type { BillingOverlayCtx } from '../../interfaces.js'
+import type { BillingChargeOutcome, BillingOverlayCtx } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import type { SlashCommand, SlashRunCtx } from '../types.js'
 
@@ -21,10 +21,13 @@ const renderBillingError = (
   sys: Sys,
   ctx: SlashRunCtx,
   env: {
+    actor?: string
+    code?: string
     error?: string
     message?: string
     payload?: BillingErrorPayload
     portal_url?: string | null
+    recovery?: string
     retry_after?: number | null
   }
 ): void => {
@@ -32,20 +35,58 @@ const renderBillingError = (
 
   switch (env.error) {
     case 'insufficient_scope':
-      armStepUp(sys, ctx)
+      // Reached by non-charge mutations (e.g. auto-reload config) that need
+      // terminal billing enabled. The resumable step-up lives on the buy/charge
+      // path; point the user there rather than leaking the raw scope name.
+      sys('This needs terminal billing enabled. Start a top-up to enable it, then retry.')
+
+      break
+    case 'remote_spending_revoked': {
+      // CF-4: this terminal's spend was revoked. Kill the spend UI NOW (don't
+      // wait for the token refresh ~15 min away) and tell the user who did it.
+      patchOverlayState({ billing: null })
+
+      const who =
+        env.actor === 'admin'
+          ? 'An admin turned off terminal billing for this terminal.'
+          : 'You turned off terminal billing for this terminal.'
+
+      sys(`${who} Reconnect to restore — run /portal to re-authorize this terminal.`)
 
       return
+    }
+
+    case 'session_revoked':
+      // Stronger than a spend-revoke: the whole session is gone → full re-login.
+      patchOverlayState({ billing: null })
+      sys('Your session was logged out. Run /portal to log in again.')
+
+      return
+
+    case 'cli_billing_disabled':
+
+    case 'remote_spending_disabled':
+      // Account-wide switch is OFF (dual-emitted error/code). An admin must flip
+      // it on the portal; this is NOT a per-terminal revoke.
+      sys('Terminal billing is off for this account — an admin must enable it on the portal.')
+
+      break
+
+    case 'role_required':
+      sys('Adding funds needs an org admin/owner. Ask an admin, or manage on the portal.')
+
+      break
+
+    case 'idempotency_conflict':
+      sys('🔴 That charge key was already used for a different amount. Start a fresh top-up.')
+
+      break
 
     case 'no_payment_method':
       sys(
         '💳 No saved card for terminal charges yet. Set one up on the portal ' +
           "(one-time credit buys don't save a reusable card)."
       )
-
-      break
-
-    case 'cli_billing_disabled':
-      sys('🔴 Terminal billing is turned off for this org — an admin must enable it on the portal.')
 
       break
     case 'monthly_cap_exceeded': {
@@ -60,7 +101,10 @@ const renderBillingError = (
       break
     }
 
-    case 'rate_limited': {
+    case 'rate_limited':
+    case 'temporarily_unavailable': {
+      // 429 throttle OR 503 gate-fail-closed: NOT a payment failure, NOT a
+      // revoke. Back off and tell the user to retry.
       const mins = env.retry_after ? ` (try again in ~${Math.max(1, Math.round(env.retry_after / 60))} min)` : ''
       sys(`🟡 Too many charges right now${mins}. This isn't a payment failure.`)
 
@@ -76,70 +120,45 @@ const renderBillingError = (
   }
 }
 
-/** 403 insufficient_scope → arm a ConfirmReq that runs the lazy step-up. */
-const armStepUp = (sys: Sys, ctx: SlashRunCtx): void => {
-  sys('💳 Terminal billing needs an extra permission (billing:manage).')
-  patchOverlayState({
-    confirm: {
-      cancelLabel: 'Not now',
-      confirmLabel: 'Re-authorize',
-      detail: 'An org admin/owner must tick "Allow terminal billing" in the portal.',
-      onConfirm: () => {
-        // session_id lets the gateway route the billing.step_up.verification
-        // event (the verification link) back to this session — the device flow
-        // runs headless in the gateway, so the link can't be printed there.
-        ctx.gateway
-          .rpc<BillingMutationResponse>('billing.step_up', { session_id: ctx.sid ?? undefined })
-          .then(
-            ctx.guarded<BillingMutationResponse>(r => {
-              if (r.ok && r.granted) {
-                // Step-up only grants the billing:manage TOKEN scope — the ORG
-                // kill-switch (cli_billing_enabled) is a separate gate. Re-fetch
-                // /state so we don't over-promise "enabled" when a charge would
-                // still hit cli_billing_disabled.
-                sys('✅ Billing permission granted.')
-                ctx.gateway
-                  .rpc<BillingStateResponse>('billing.state', {})
-                  .then(
-                    ctx.guarded<BillingStateResponse>(s => {
-                      if (s.cli_billing_enabled) {
-                        sys('Run /billing again to continue.')
-                      } else {
-                        sys(
-                          '🟡 Permission granted, but terminal billing is still turned off ' +
-                            'for this org. Enable it in the portal, then run /billing again.'
-                        )
-
-                        if (s.portal_url) {
-                          sys(`Portal: ${s.portal_url}`)
-                        }
-                      }
-                    })
-                  )
-                  .catch(() => {
-                    sys('Run /billing again to continue.')
-                  })
-              } else {
-                sys('🟡 Terminal billing was not granted (an admin must tick the box).')
-              }
-            })
-          )
-          .catch(() => {
-            // The device flow can outlive the RPC's 120s timeout while the user
-            // is still authorizing in the browser. A reject here is NOT a hard
-            // failure — the grant (if it lands) is persisted gateway-side; tell
-            // the user to re-run /billing rather than reporting an error.
-            sys('🟡 Still waiting on approval — finish in the browser, then run /billing again.')
-          })
-      },
-      title: 'Grant terminal billing access?'
-    }
-  })
-}
+/**
+ * Run the Remote-Spending device flow and resolve whether the grant landed.
+ *
+ * The browser opens via the gateway's out-of-band `billing.step_up.verification`
+ * event (handled globally in createGatewayEventHandler), so this just kicks the
+ * blocking `billing.step_up` RPC and awaits its result. A reject (the device
+ * flow can outlive the RPC's timeout while the user is still authorizing) is
+ * treated as "not yet granted" — non-fatal; the grant persists gateway-side.
+ *
+ * NOTE: never surface the raw `billing:manage` scope — the user-facing concept
+ * is "Remote Spending".
+ */
+const requestRemoteSpending = (ctx: SlashRunCtx): Promise<boolean> =>
+  ctx.gateway
+    .rpc<BillingMutationResponse>('billing.step_up', { session_id: ctx.sid ?? undefined })
+    .then(r => !!(r && r.ok && r.granted))
+    .catch(() => false)
 
 /** Poll a charge to a terminal state (settled/failed/timeout). Non-blocking. */
 const pollCharge = (sys: Sys, ctx: SlashRunCtx, chargeId: string, portalUrl?: string | null): void => {
   const start = Date.now()
+
+  // The 5-min cap, honored on EVERY non-terminal path (pending AND throttled)
+  // so a sustained 429/503 can't keep the poll alive forever.
+  const timedOut = (): boolean => {
+    if (Date.now() - start < POLL_CAP_MS) {
+      return false
+    }
+
+    sys(
+      '🟡 Still processing after 5 minutes — this is a timeout, not a failure. ' + 'Check /topup or the portal shortly.'
+    )
+
+    if (portalUrl) {
+      sys(`Portal: ${portalUrl}`)
+    }
+
+    return true
+  }
 
   const tick = (): void => {
     if (ctx.stale()) {
@@ -152,9 +171,23 @@ const pollCharge = (sys: Sys, ctx: SlashRunCtx, chargeId: string, portalUrl?: st
         ctx.guarded<BillingChargeStatusResponse>(r => {
           if (!r.ok) {
             // 429/503 while polling = retry-after, NOT a failure. Back off + continue.
-            if (r.error === 'rate_limited') {
+            if (r.error === 'rate_limited' || r.error === 'temporarily_unavailable') {
+              if (timedOut()) {
+                return
+              }
+
               const wait = (r.retry_after ?? 5) * 1000
               setTimeout(tick, Math.min(wait, 30000))
+
+              return
+            }
+
+            // CF-7 rule 4: a post-revoke 403 (or session loss) while polling means
+            // the prior charge's outcome is AMBIGUOUS — it may have settled. Do not
+            // call it failed; surface the revoke + tell the user to verify balance.
+            if (r.error === 'remote_spending_revoked' || r.error === 'session_revoked') {
+              renderBillingError(sys, ctx, r)
+              sys('🟡 Your last charge’s outcome is unconfirmed — check your balance/history before retrying.')
 
               return
             }
@@ -177,16 +210,7 @@ const pollCharge = (sys: Sys, ctx: SlashRunCtx, chargeId: string, portalUrl?: st
           }
 
           // pending → keep polling until the 5-min cap, then call it a timeout.
-          if (Date.now() - start >= POLL_CAP_MS) {
-            sys(
-              '🟡 Still processing after 5 minutes — this is a timeout, not a failure. ' +
-                'Check /billing or the portal shortly.'
-            )
-
-            if (portalUrl) {
-              sys(`Portal: ${portalUrl}`)
-            }
-
+          if (timedOut()) {
             return
           }
 
@@ -280,34 +304,60 @@ const buildOverlayCtx = (ctx: SlashRunCtx, sys: Sys, s: BillingStateResponse): B
 
         return false
       }),
-  charge: (amount: string) => {
+  charge: (amount: string, idempotencyKey?: string): Promise<BillingChargeOutcome> => {
     sys('💳 Charge submitted — confirming settlement…')
-    ctx.gateway
-      .rpc<BillingChargeResponse>('billing.charge', { amount_usd: amount })
-      .then(
-        ctx.guarded<BillingChargeResponse>(r => {
-          if (r.ok && r.charge_id) {
-            pollCharge(sys, ctx, r.charge_id, s.portal_url)
-          } else {
-            renderBillingError(sys, ctx, r)
-          }
-        })
-      )
-      .catch(ctx.guardedErr)
+
+    return ctx.gateway
+      .rpc<BillingChargeResponse>('billing.charge', {
+        amount_usd: amount,
+        ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {})
+      })
+      .then((r): BillingChargeOutcome => {
+        if (!r) {
+          return 'error'
+        }
+
+        if (r.ok && r.charge_id) {
+          pollCharge(sys, ctx, r.charge_id, s.portal_url)
+
+          return 'submitted'
+        }
+
+        // insufficient_scope → the overlay routes to the resumable step-up
+        // (no error line here; the stepup screen owns that UX).
+        if (r.error === 'insufficient_scope') {
+          return 'needs_remote_spending'
+        }
+
+        renderBillingError(sys, ctx, r)
+
+        return 'error'
+      })
+      .catch((e): BillingChargeOutcome => {
+        ctx.guardedErr(e)
+
+        return 'error'
+      })
   },
+  requestRemoteSpending: () => requestRemoteSpending(ctx),
   openPortal: (url: string) => {
     openExternalUrl(url)
     sys(`Opening portal: ${url}`)
   },
+  refreshState: () =>
+    ctx.gateway
+      .rpc<BillingStateResponse>('billing.state', {})
+      .then(r => (r?.ok ? r : null))
+      .catch(() => null),
   sys,
   validate: (raw: string) => validateAmount(raw, s)
 })
 
-export const billingCommands: SlashCommand[] = [
+export const topupCommands: SlashCommand[] = [
   {
-    help: 'Manage Nous terminal billing — buy credits, auto-reload, limits',
-    name: 'billing',
-    // ZERO sub-commands (plan §0.4): any arg is ignored. Bare `/billing`
+    help: 'Show your balance and manage billing — add funds, auto-reload, limits',
+    name: 'topup',
+    // ZERO sub-commands (plan §0.4): any arg is ignored. Bare `/topup`
     // fetches state and opens the interactive overlay (CLI/TUI parity).
     run: (_arg, ctx) => {
       const sys: Sys = ctx.transcript.sys
@@ -317,7 +367,7 @@ export const billingCommands: SlashCommand[] = [
         .then(
           ctx.guarded<BillingStateResponse>(s => {
             if (!s.logged_in) {
-              sys('💳 Not logged into Nous Portal — run /portal to log in, then /billing.')
+              sys('💳 Not logged into Nous Portal — run /portal to log in, then /topup.')
 
               return
             }
