@@ -1098,6 +1098,46 @@ def drop_thinking_only_and_merge_users(
 
 
 
+def _live_state_diverges_from_primary(agent) -> bool:
+    """True when the agent's LIVE auth state shows the specific *degradation*
+    signature that a failed fallback / mid-turn credential rebuild leaves
+    behind — namely a native-Anthropic session whose OAuth flag got flipped off
+    or whose resolved key was lost. That state produces unsanitised
+    ``Bearer None`` requests which Anthropic rejects with a misleading 400.
+
+    Used by restore_primary_runtime to self-heal a session left degraded
+    WITHOUT ``_fallback_activated`` set.
+
+    Deliberately NARROW: it only looks at the OAuth flag and the Anthropic key,
+    NOT at provider / api_mode / base_url. Those can legitimately differ from
+    the init snapshot when host code intentionally reconfigures the agent
+    mid-life (e.g. switching to a local Ollama endpoint), and treating that as
+    "degradation" would wrongly clobber the deliberate change. Restoration here
+    is reserved for the genuine credential-degradation fingerprint. Conservative:
+    returns False when there is no primary snapshot or the primary was not an
+    OAuth Anthropic session.
+    """
+    rt = getattr(agent, "_primary_runtime", None)
+    if not rt:
+        return False
+    # Only meaningful for a native-Anthropic OAuth primary — that's the only
+    # configuration where the degraded "Bearer None / unsanitised prompt" 400
+    # arises, and the only one we know how to safely restore from here.
+    if rt.get("api_mode") != "anthropic_messages" or not rt.get("is_anthropic_oauth"):
+        return False
+    # If the live provider was intentionally moved off Anthropic, this isn't the
+    # degradation we heal — leave it alone.
+    if (getattr(agent, "provider", None) or "") != (rt.get("provider") or ""):
+        return False
+    # Degradation fingerprint: OAuth flag flipped off, or the resolved key lost.
+    if not bool(getattr(agent, "_is_anthropic_oauth", False)):
+        return True
+    live_key = getattr(agent, "_anthropic_api_key", None)
+    if rt.get("anthropic_api_key") and not live_key:
+        return True
+    return False
+
+
 def restore_primary_runtime(agent) -> bool:
     """Restore the primary runtime at the start of a new turn.
 
@@ -1118,9 +1158,30 @@ def restore_primary_runtime(agent) -> bool:
         # entirely, stranding the index and silently blocking all future
         # fallback attempts for the session.  Fixes #20465.
         agent._fallback_index = 0
-        return False
+        # Self-heal a session that was left DEGRADED without the fallback flag
+        # set.  A fallback attempt that FAILS to activate (chain exhausted or
+        # provider not configured — e.g. a configured fallback with no
+        # credentials), or a mid-turn credential rebuild, can mutate the live
+        # agent (provider / api_mode / api_key / _is_anthropic_oauth) away from
+        # the primary snapshot while _fallback_activated stays False.  The old
+        # code bailed here, stranding the agent in the degraded state for every
+        # later turn (the gateway caches agents across messages) — observed as
+        # requests going to api.anthropic.com/chat/completions with
+        # ``Bearer None`` and an unsanitised system prompt, which Anthropic 400s
+        # as "third-party / extra usage".  If the live state diverges from the
+        # primary snapshot, restore it; otherwise nothing to do.
+        if not _live_state_diverges_from_primary(agent):
+            return False
+        logger.warning(
+            "Session left in a degraded provider state without the fallback "
+            "flag (live=%s/%s vs primary=%s/%s) — restoring primary runtime.",
+            getattr(agent, "provider", "?"), getattr(agent, "api_mode", "?"),
+            (agent._primary_runtime or {}).get("provider", "?"),
+            (agent._primary_runtime or {}).get("api_mode", "?"),
+        )
+        # fall through to the restore body below
 
-    if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
+    elif getattr(agent, "_rate_limited_until", 0) > time.monotonic():
         return False  # primary still in rate-limit cooldown, stay on fallback
 
     rt = agent._primary_runtime

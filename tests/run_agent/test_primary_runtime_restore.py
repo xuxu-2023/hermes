@@ -699,3 +699,124 @@ class TestRateLimitCooldown:
 
         # second call should not have extended the cooldown
         assert second_cooldown == first_cooldown
+
+
+# =============================================================================
+# Self-heal: degraded session WITHOUT _fallback_activated set
+# =============================================================================
+
+class TestDegradedStateSelfHeal:
+    """A session can be left degraded (provider/api_mode/oauth diverged from the
+    primary snapshot) while _fallback_activated is still False — e.g. a fallback
+    attempt that failed to activate (dead/credential-less fallback), or a
+    mid-turn credential rebuild. The old restore gate bailed on
+    `not _fallback_activated`, stranding the agent in the degraded state for
+    every later turn (the gateway caches agents across messages). Restoration
+    must self-heal based on divergence, not only the flag.
+    """
+
+    def test_provider_change_alone_is_not_degradation(self):
+        # A deliberate provider/base_url reconfiguration (e.g. host code
+        # switching to a local Ollama endpoint) must NOT be treated as
+        # degradation — otherwise self-heal would clobber the intended change.
+        from agent.agent_runtime_helpers import _live_state_diverges_from_primary
+        agent = _make_agent(provider="anthropic", base_url="https://api.anthropic.com")
+        agent.api_mode = "anthropic_messages"
+        agent._is_anthropic_oauth = True
+        agent._anthropic_api_key = "***"
+        agent._primary_runtime.update({
+            "api_mode": "anthropic_messages",
+            "is_anthropic_oauth": True,
+            "anthropic_api_key": "***",
+            "anthropic_base_url": "https://api.anthropic.com",
+            "provider": "anthropic",
+            "base_url": "https://api.anthropic.com",
+        })
+        assert _live_state_diverges_from_primary(agent) is False
+        # Intentional move off Anthropic — not the degradation we heal.
+        agent.provider = "custom"
+        agent.base_url = "http://host.docker.internal:11434/v1"
+        assert _live_state_diverges_from_primary(agent) is False
+
+    def test_diverges_detects_anthropic_oauth_flip(self):
+        from agent.agent_runtime_helpers import _live_state_diverges_from_primary
+        agent = _make_agent(provider="anthropic", base_url="https://api.anthropic.com")
+        agent.api_mode = "anthropic_messages"
+        agent._is_anthropic_oauth = True
+        agent._anthropic_api_key = "***"
+        # Re-snapshot primary to reflect this anthropic_messages OAuth baseline.
+        agent._primary_runtime.update({
+            "api_mode": "anthropic_messages",
+            "is_anthropic_oauth": True,
+            "anthropic_api_key": "***",
+            "anthropic_base_url": "https://api.anthropic.com",
+        })
+        agent._primary_runtime["provider"] = "anthropic"
+        agent._primary_runtime["base_url"] = "https://api.anthropic.com"
+        assert _live_state_diverges_from_primary(agent) is False
+        # Degrade: oauth flipped off (the "Bearer None / unsanitised prompt" trap)
+        agent._is_anthropic_oauth = False
+        assert _live_state_diverges_from_primary(agent) is True
+
+    def test_diverges_detects_lost_anthropic_key(self):
+        from agent.agent_runtime_helpers import _live_state_diverges_from_primary
+        agent = _make_agent(provider="anthropic", base_url="https://api.anthropic.com")
+        agent.api_mode = "anthropic_messages"
+        agent._is_anthropic_oauth = True
+        agent._anthropic_api_key = "***"
+        agent._primary_runtime.update({
+            "api_mode": "anthropic_messages",
+            "is_anthropic_oauth": True,
+            "anthropic_api_key": "***",
+            "anthropic_base_url": "https://api.anthropic.com",
+            "provider": "anthropic",
+            "base_url": "https://api.anthropic.com",
+        })
+        assert _live_state_diverges_from_primary(agent) is False
+        # Degrade: the resolved key was lost mid-turn.
+        agent._anthropic_api_key = None
+        assert _live_state_diverges_from_primary(agent) is True
+
+    def test_non_anthropic_primary_is_never_divergent(self):
+        # Only a native-Anthropic OAuth primary is eligible for this self-heal.
+        from agent.agent_runtime_helpers import _live_state_diverges_from_primary
+        agent = _make_agent()  # custom/openai-wire primary, not anthropic_messages
+        agent.provider = "openai-codex"
+        assert _live_state_diverges_from_primary(agent) is False
+
+    def test_no_primary_snapshot_is_not_divergent(self):
+        from agent.agent_runtime_helpers import _live_state_diverges_from_primary
+        agent = _make_agent()
+        agent._primary_runtime = None
+        assert _live_state_diverges_from_primary(agent) is False
+
+    def test_restore_self_heals_degraded_oauth_without_flag(self):
+        from agent.agent_runtime_helpers import restore_primary_runtime
+        agent = _make_agent(provider="anthropic", base_url="https://api.anthropic.com")
+        agent.api_mode = "anthropic_messages"
+        agent._is_anthropic_oauth = True
+        agent._anthropic_api_key = "oat-tok"
+        agent._anthropic_base_url = "https://api.anthropic.com"
+        # Capture a clean OAuth primary snapshot.
+        agent._primary_runtime.update({
+            "api_mode": "anthropic_messages",
+            "is_anthropic_oauth": True,
+            "anthropic_api_key": "oat-tok",
+            "anthropic_base_url": "https://api.anthropic.com",
+            "provider": "anthropic",
+            "base_url": "https://api.anthropic.com",
+        })
+        agent._fallback_activated = False
+        agent._rate_limited_until = 0
+        # Degrade the way a failed fallback / credential rebuild does: oauth off.
+        agent._is_anthropic_oauth = False
+        restored = restore_primary_runtime(agent)
+        assert restored is True
+        assert agent._is_anthropic_oauth is True
+
+    def test_clean_session_no_op(self):
+        from agent.agent_runtime_helpers import restore_primary_runtime
+        agent = _make_agent()
+        agent._fallback_activated = False
+        # Live state already matches primary → nothing to restore.
+        assert restore_primary_runtime(agent) is False
