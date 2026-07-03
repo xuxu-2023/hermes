@@ -1445,6 +1445,19 @@ def build_skills_system_prompt(
     if not skills_dir.exists() and not external_dirs:
         return ""
 
+    # Read the descriptions config flag early so it can be part of the cache
+    # key — otherwise a long-lived process that already cached the prompt
+    # would ignore runtime changes to skills.include_descriptions_in_prompt.
+    _include_desc = False
+    try:
+        from hermes_cli.config import load_config
+        _cfg = load_config()
+        _include_desc = bool(
+            _cfg.get("skills", {}).get("include_descriptions_in_prompt", False)
+        )
+    except Exception:
+        pass
+
     # ── Layer 1: in-process LRU cache ─────────────────────────────────
     # Include the resolved platform so per-platform disabled-skill lists
     # produce distinct cache entries (gateway serves multiple platforms).
@@ -1463,6 +1476,7 @@ def build_skills_system_prompt(
         _platform_hint,
         tuple(sorted(disabled)),
         tuple(sorted(compact_categories or ())),
+        _include_desc,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1622,6 +1636,7 @@ def build_skills_system_prompt(
         result = ""
     else:
         index_lines = []
+        _total_skills = 0
         for category in sorted(skills_by_category.keys()):
             # Deduplicate and sort skills within each category
             seen = set()
@@ -1638,10 +1653,31 @@ def build_skills_system_prompt(
                 if name in seen:
                     continue
                 seen.add(name)
-                if desc:
+                _total_skills += 1
+                if _include_desc and desc:
                     index_lines.append(f"    - {name}: {desc}")
                 else:
                     index_lines.append(f"    - {name}")
+
+        if not _include_desc:
+            logger.debug(
+                "Skills catalog: names-only mode (%d skills, descriptions omitted "
+                "to reduce prompt token usage). Set skills.include_descriptions_in_prompt: true "
+                "to re-enable.",
+                _total_skills,
+            )
+
+        # Prompt budget guard: warn if the skills section grows too large.
+        # A rough heuristic: 1 token per 4 chars.  4000 tokens ≈ 16KB.
+        _section_text = "\n".join(index_lines)
+        _est_tokens = len(_section_text) // 4
+        if _est_tokens > 4000:
+            logger.warning(
+                "Skills catalog prompt section is ~%d tokens (%d skills). "
+                "This may consume significant context budget. Consider "
+                "disabling unused skills or splitting into optional-skills.",
+                _est_tokens, _total_skills,
+            )
 
         result = (
             "## Skills (mandatory)\n"

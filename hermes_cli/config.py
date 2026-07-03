@@ -2217,6 +2217,11 @@ DEFAULT_CONFIG = {
         "inline_shell": False,
         # Timeout (seconds) for each !`cmd` snippet when inline_shell is on.
         "inline_shell_timeout": 10,
+        # Include per-skill descriptions in the system prompt index.
+        # Off by default (names-only) to reduce prompt token usage.
+        # Enable if your provider supports longer prompts and you want
+        # the agent to see skill descriptions for better matching.
+        "include_descriptions_in_prompt": False,
         # Run the keyword/pattern security scanner on skills the agent
         # writes via skill_manage (create/edit/patch).  Off by default
         # because the agent can already execute the same code paths via
