@@ -36,6 +36,13 @@ export function useElapsedSeconds(active = true, timerKey?: string): number {
   const [elapsed, setElapsed] = useState(() => Math.max(0, Math.floor((Date.now() - start.current) / 1000)))
 
   if (lastKey.current !== timerKey) {
+    // Clean up the previous key's registry entry when switching to a new
+    // key (new turn → new message).  The module-level Map only keeps
+    // entries for active messages so it doesn't accumulate across turns.
+    if (lastKey.current !== undefined) {
+      startedAtByKey.delete(lastKey.current)
+    }
+
     start.current = startedAt(timerKey)
     lastKey.current = timerKey
   }
