@@ -177,10 +177,15 @@ RUN npm install --prefer-offline --no-audit && \
 # avoids the cross-platform failures that kept [matrix] out of [all]
 # while still making Matrix work in the published container. Fixes #30399.
 #
+# The Exa search backend ([exa] extra) is baked in because the Docker
+# image disables lazy installs (HERMES_DISABLE_LAZY_INSTALLS=1) and the
+# install tree is read-only, so exa-py cannot be installed at first use.
+# Fixes #49445.
+#
 # The editable link is created after the source copy below.
 COPY pyproject.toml uv.lock ./
 RUN touch ./README.md
-RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix
+RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix --extra exa
 
 # ---------- Frontend build (cached independently from Python source) ----------
 # Copy only the frontend source trees first so that Python-only changes don't
