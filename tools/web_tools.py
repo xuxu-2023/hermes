@@ -140,33 +140,36 @@ def _get_backend() -> str:
     """Determine which web backend to use (shared fallback).
 
     Reads ``web.backend`` from config.yaml (set by ``hermes tools``).
-    Falls back to whichever API key is present for users who configured
-    keys manually without running setup.
+    Falls back to walking ALL registered providers by legacy preference
+    order, then arbitrary registered providers, checking each via
+    ``is_backend_available()``.
     """
-    configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"}:
-        return configured
-
-    # Fallback for manual / legacy config — pick the highest-priority
-    # available backend. Explicit user credentials (TAVILY_API_KEY etc.)
-    # beat the managed-tool-gateway probe so a deliberate setup is not
-    # pre-empted by a Nous OAuth token whose subscription tier may not
-    # actually grant web-search access (the gateway then fails at runtime
-    # with "no subscription" and the tool returns an error to the agent
-    # without falling back). Free-tier backends trail the paid ones.
-    backend_candidates = (
-        ("tavily", _has_env("TAVILY_API_KEY")),
-        ("exa", _has_env("EXA_API_KEY")),
-        ("parallel", _has_env("PARALLEL_API_KEY")),
-        ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL")),
-        ("firecrawl", _is_tool_gateway_ready()),
-        ("searxng", _has_env("SEARXNG_URL")),
-        ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")),
-        ("ddgs", _ddgs_package_importable()),
+    from agent.web_search_registry import (
+        get_provider as _registry_get,
+        list_providers as _registry_list,
+        _LEGACY_PREFERENCE,
     )
-    for backend, available in backend_candidates:
-        if available:
+
+    configured = (_load_web_config().get("backend") or "").lower().strip()
+
+    # Accept any registered provider name (not just hardcoded whitelist)
+    if configured:
+        provider = _registry_get(configured)
+        if provider is not None:
+            return configured
+        # Also accept legacy names that may not be registered yet (backward compat)
+        if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"}:
+            return configured
+
+    # Fallback: walk legacy preference first
+    for backend in _LEGACY_PREFERENCE:
+        if _is_backend_available(backend):
             return backend
+
+    # Second fallback: walk ALL registered providers (discovers custom plugin providers)
+    for provider in _registry_list():
+        if _is_backend_available(provider.name):
+            return provider.name
 
     return "firecrawl"  # default (backward compat)
 
@@ -210,7 +213,26 @@ def _get_capability_backend(capability: str) -> str:
 
 
 def _is_backend_available(backend: str) -> bool:
-    """Return True when the selected backend is currently usable."""
+    """Return True when the selected backend is currently usable.
+
+    Looks up the provider in the web_search_registry and calls its
+    ``is_available()`` method.  Falls back to legacy env-var checks
+    for providers that are not registered (backward compat for users
+    without the plugin system loaded).
+    """
+    from agent.web_search_registry import get_provider as _registry_get_provider
+
+    provider = _registry_get_provider(backend)
+    if provider is not None:
+        try:
+            avail = provider.is_available()
+            if avail:
+                return True
+        except Exception:
+            pass  # fall through to legacy check
+
+    # Legacy fallback — handles unregistered providers, or registered
+    # providers whose is_available() returned False (test monkeypatch path)
     if backend == "exa":
         return _has_env("EXA_API_KEY")
     if backend == "parallel":
@@ -859,12 +881,24 @@ async def web_extract_tool(
         return tool_error(error_msg)
 
 
-# Convenience function to check Firecrawl credentials
+# Convenience function to check web search credentials
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai"}:
-        return _is_backend_available(configured)
+    if configured:
+        if _is_backend_available(configured):
+            return True
+
+    # Check all registered providers first (discovers plugin-based backends)
+    try:
+        from agent.web_search_registry import list_providers as _registry_list
+        for provider in _registry_list():
+            if _is_backend_available(provider.name):
+                return True
+    except Exception:
+        pass  # registry not available, fall through to legacy check
+
+    # Legacy fallback — hardcoded backends for users without plugin system loaded
     return any(
         _is_backend_available(backend)
         for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai")
