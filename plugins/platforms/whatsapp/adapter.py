@@ -1210,13 +1210,40 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # Determine chat type
             is_group = data.get("isGroup", False)
             chat_type = "group" if is_group else "dm"
-            
+
+            # Broadcast-list DMs arrive with chatId like
+            # ``1778109128@broadcast`` and the human sender in ``senderId``
+            # (or, on some bridge payloads, only in ``from``). Replies to the
+            # broadcast JID are not deliverable, so route the session through
+            # the sender while retaining the broadcast JID as an alias for
+            # channel-directory/session lookup.
+            #
+            # The sender fallback (``senderId`` then ``from``) MUST match the
+            # gate in ``_should_process_message`` (whatsapp_common.py), which
+            # admits a broadcast-list DM when EITHER field supplies a
+            # non-broadcast sender. If routing read only ``senderId`` it would
+            # keep the undeliverable ``@broadcast`` JID (and a null user_id)
+            # for an input the gate explicitly accepted.
+            raw_chat_id = str(data.get("chatId") or "")
+            sender_id = str(data.get("senderId") or data.get("from") or "")
+            source_chat_id = raw_chat_id
+            source_chat_id_alt = None
+            if (
+                not is_group
+                and raw_chat_id.endswith("@broadcast")
+                and sender_id
+                and not sender_id.endswith("@broadcast")
+            ):
+                source_chat_id = sender_id
+                source_chat_id_alt = raw_chat_id
+
             # Build source
             source = self.build_source(
-                chat_id=data.get("chatId", ""),
+                chat_id=source_chat_id,
+                chat_id_alt=source_chat_id_alt,
                 chat_name=data.get("chatName"),
                 chat_type=chat_type,
-                user_id=data.get("senderId"),
+                user_id=data.get("senderId") or data.get("from"),
                 user_name=data.get("senderName"),
             )
             
