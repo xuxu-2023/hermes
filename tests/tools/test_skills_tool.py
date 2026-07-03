@@ -339,6 +339,7 @@ class TestSkillsList:
         result = json.loads(raw)
         assert result["count"] == 1
         assert result["skills"][0]["name"] == "skill-a"
+        assert result["category_counts"] == {"devops": 1, "mlops": 1}
 
     def test_category_filter_finds_symlinked_category(self, tmp_path):
         external_root = tmp_path / "repo"

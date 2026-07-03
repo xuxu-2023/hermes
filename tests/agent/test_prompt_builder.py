@@ -23,6 +23,7 @@ from agent.prompt_builder import (
     _get_context_file_max_chars,
     _CONTEXT_FILE_DYNAMIC_CEILING,
     DEFAULT_AGENT_IDENTITY,
+    LARGE_SKILL_INDEX_THRESHOLD,
     drain_truncation_warnings,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
@@ -453,6 +454,29 @@ class TestBuildSkillsSystemPrompt:
         assert "social-media [names only]" in result
         # Disclosure note explains the demotion and how to load.
         assert "skill_view" in result
+
+    def test_large_skill_catalog_uses_category_index_only(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_root = tmp_path / "skills"
+        for idx in range(LARGE_SKILL_INDEX_THRESHOLD + 1):
+            category = "devops" if idx % 2 else "creative"
+            d = skills_root / category / f"skill-{idx:02d}"
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                "---\n"
+                f"name: skill-{idx:02d}\n"
+                f"description: Detailed description {idx:02d}\n"
+                "---\n"
+            )
+
+        result = build_skills_system_prompt()
+
+        assert "Large skill catalog mode" in result
+        assert "skills_list(category='<category>')" in result
+        assert "  creative:" in result
+        assert "  devops:" in result
+        assert "skill-00" not in result
+        assert "Detailed description 00" not in result
 
     def test_compact_categories_demote_nested_and_miss_cache_separately(
         self, monkeypatch, tmp_path
@@ -1644,5 +1668,3 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
-
