@@ -43,7 +43,7 @@ import sqlite3
 from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Callable, Dict, Optional, Any, List, Union
 
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
@@ -976,6 +976,7 @@ from agent.replay_cleanup import (  # noqa: E402
 
 _AUTO_CONTINUE_NOTE_PREFIX = "[System note: Your previous turn"
 _AUTO_CONTINUE_FALLBACK_PREFIX = "[System note: A new message"
+_PROVIDER_RATE_LIMIT_AUTO_CONTINUE_PREFIX = "[System note: The model provider rate limit has reset"
 
 
 def _is_auto_continue_noise(content: Any) -> bool:
@@ -986,6 +987,76 @@ def _is_auto_continue_noise(content: Any) -> bool:
     return (
         content.startswith(_AUTO_CONTINUE_NOTE_PREFIX)
         or content.startswith(_AUTO_CONTINUE_FALLBACK_PREFIX)
+        or content.startswith(_PROVIDER_RATE_LIMIT_AUTO_CONTINUE_PREFIX)
+    )
+
+
+def _coerce_provider_rate_limit_reset_at(
+    value: Any,
+    *,
+    now: Optional[float] = None,
+) -> Optional[float]:
+    """Return a future unix timestamp from provider reset metadata.
+
+    ``agent.extract_api_error_context`` already normalizes ``Retry-After`` and
+    common provider bodies to ``reset_at``.  Gateway only needs enough coercion
+    to schedule an in-process continuation; if the value is missing, malformed,
+    or already stale, fall back to the existing visible retry hint instead of
+    inventing durable session state.
+    """
+    if value is None or value == "":
+        return None
+    now = time.time() if now is None else float(now)
+    reset_at: Optional[float] = None
+    if isinstance(value, datetime):
+        reset_at = value.timestamp()
+    elif isinstance(value, (int, float)):
+        reset_at = float(value)
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            reset_at = float(text)
+        except ValueError:
+            try:
+                normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+                parsed = datetime.fromisoformat(normalized)
+                if parsed.tzinfo is not None:
+                    parsed = parsed.astimezone(timezone.utc)
+                reset_at = parsed.timestamp()
+            except ValueError:
+                return None
+    if reset_at is None or reset_at <= now:
+        return None
+    return reset_at
+
+
+def _provider_rate_limit_reset_at(agent_result: dict) -> Optional[float]:
+    """Extract a schedulable provider-limit reset time from an agent result."""
+    if not isinstance(agent_result, dict):
+        return None
+    if agent_result.get("failure_reason") != "rate_limit":
+        return None
+    context = agent_result.get("error_context")
+    if not isinstance(context, dict):
+        return None
+    return _coerce_provider_rate_limit_reset_at(context.get("reset_at"))
+
+
+def _format_provider_rate_limit_resume_notice(reset_at: float) -> str:
+    reset_text = datetime.fromtimestamp(reset_at).strftime("%H:%M")
+    return (
+        "⏱️ The model provider is rate-limiting requests. "
+        f"I’ll automatically resume this request around {reset_text}."
+    )
+
+
+def _provider_rate_limit_resume_message() -> str:
+    return (
+        f"{_PROVIDER_RATE_LIMIT_AUTO_CONTINUE_PREFIX}. "
+        "Continue the user's previous request from the conversation history now. "
+        "Do not ask for new instructions, and do not replay this system note.]"
     )
 
 
@@ -2814,6 +2885,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._pending_native_image_paths_by_session: Dict[str, List[str]] = {}
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
         self._session_run_generation: Dict[str, int] = {}
+        # In-process provider-limit continuations.  This is deliberately not
+        # persisted: restart recovery is handled by resume_pending; provider
+        # reset waiting should not expand the SessionEntry schema.
+        self._provider_rate_limit_resume_tasks: Dict[str, asyncio.Task] = {}
         # Startup restore gate: while restart-interrupted sessions are being
         # auto-resumed, real inbound messages are queued instead of competing
         # with the synthetic resume turns for the same session.  The queued
@@ -6400,6 +6475,112 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 scheduled,
             )
         return scheduled
+
+    def _schedule_provider_rate_limit_resume(
+        self,
+        *,
+        session_key: str,
+        source: SessionSource,
+        reset_at: float,
+        run_generation: int,
+    ) -> bool:
+        """Schedule an in-memory continuation for a provider rate-limit reset."""
+        reset_epoch = _coerce_provider_rate_limit_reset_at(reset_at)
+        if reset_epoch is None or not session_key or source is None:
+            return False
+
+        tasks = getattr(self, "_provider_rate_limit_resume_tasks", None)
+        if tasks is None:
+            tasks = {}
+            self._provider_rate_limit_resume_tasks = tasks
+        existing = tasks.get(session_key)
+        if existing is not None and not existing.done():
+            logger.info(
+                "Provider rate-limit continuation already scheduled for %s; keeping existing task",
+                session_key,
+            )
+            return False
+
+        task = asyncio.create_task(
+            self._run_provider_rate_limit_resume_after_delay(
+                session_key=session_key,
+                source=source,
+                reset_at=reset_epoch,
+                run_generation=run_generation,
+            )
+        )
+        tasks[session_key] = task
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        logger.info(
+            "Scheduled provider rate-limit continuation for %s in %.1fs",
+            session_key,
+            max(0.0, reset_epoch - time.time()),
+        )
+        return True
+
+    async def _run_provider_rate_limit_resume_after_delay(
+        self,
+        *,
+        session_key: str,
+        source: SessionSource,
+        reset_at: float,
+        run_generation: int,
+    ) -> None:
+        """Wake after provider reset and route a synthetic continuation turn."""
+        try:
+            delay = max(0.0, reset_at - time.time())
+            if delay:
+                await asyncio.sleep(delay)
+
+            if not self._is_session_run_current(session_key, run_generation):
+                logger.info(
+                    "Skipping provider rate-limit continuation for %s: newer turn exists",
+                    session_key,
+                )
+                return
+            if session_key in getattr(self, "_running_agents", {}):
+                logger.info(
+                    "Skipping provider rate-limit continuation for %s: session is already running",
+                    session_key,
+                )
+                return
+            try:
+                if not self._is_user_authorized(source):
+                    logger.warning(
+                        "Skipping provider rate-limit continuation for %s: session owner is no longer authorized",
+                        session_key,
+                    )
+                    return
+            except Exception as exc:
+                logger.warning(
+                    "Skipping provider rate-limit continuation for %s: authorization check failed: %s",
+                    session_key,
+                    exc,
+                )
+                return
+
+            adapter = self.adapters.get(source.platform)
+            if adapter is None:
+                logger.info(
+                    "Skipping provider rate-limit continuation for %s: adapter not ready for %s",
+                    session_key,
+                    getattr(source.platform, "value", source.platform),
+                )
+                return
+            event = MessageEvent(
+                text=_provider_rate_limit_resume_message(),
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+            await adapter.handle_message(event)
+        except asyncio.CancelledError:
+            raise
+        finally:
+            tasks = getattr(self, "_provider_rate_limit_resume_tasks", None)
+            if isinstance(tasks, dict) and tasks.get(session_key) is asyncio.current_task():
+                tasks.pop(session_key, None)
 
     def _startup_should_abort(self) -> bool:
         return (
@@ -11111,6 +11292,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             except Exception:
                 _intentional_silence = False
+
+            _rate_limit_reset_at = _provider_rate_limit_reset_at(agent_result)
+            if _rate_limit_reset_at is not None and session_key:
+                self._schedule_provider_rate_limit_resume(
+                    session_key=session_key,
+                    source=source,
+                    reset_at=_rate_limit_reset_at,
+                    run_generation=run_generation,
+                )
+                response = _format_provider_rate_limit_resume_notice(
+                    _rate_limit_reset_at
+                )
 
             # Convert the agent's internal "(empty)" sentinel into a
             # user-friendly message.  "(empty)" means the model failed to
@@ -18239,6 +18432,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "interrupted": result.get("interrupted", False),
                     "interrupt_message": result.get("interrupt_message"),
                     "error": result.get("error"),
+                    "failure_reason": result.get("failure_reason"),
+                    "error_context": result.get("error_context"),
                     "compression_exhausted": result.get("compression_exhausted", False),
                     "tools": tools_holder[0] or [],
                     "history_offset": _effective_history_offset,
@@ -18339,7 +18534,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "completed": result_holder[0].get("completed") if result_holder[0] else None,
                 "interrupted": result_holder[0].get("interrupted", False) if result_holder[0] else False,
                 "partial": result_holder[0].get("partial", False) if result_holder[0] else False,
+                "failed": result_holder[0].get("failed", False) if result_holder[0] else False,
                 "error": result_holder[0].get("error") if result_holder[0] else None,
+                "failure_reason": result_holder[0].get("failure_reason") if result_holder[0] else None,
+                "error_context": result_holder[0].get("error_context") if result_holder[0] else None,
                 "interrupt_message": result_holder[0].get("interrupt_message") if result_holder[0] else None,
                 "tools": tools_holder[0] or [],
                 "history_offset": _effective_history_offset,

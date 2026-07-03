@@ -5480,6 +5480,8 @@ class TestRetryExhaustion:
         assert result.get("failed") is True
         assert "error" in result
         assert "rate limited" in result["error"]
+        assert result.get("failure_reason") == "rate_limit"
+        assert result.get("error_context", {}).get("message") == "rate limited"
 
     def test_build_api_kwargs_error_no_unbound_local(self, agent):
         """When _build_api_kwargs raises, except handler must not crash with UnboundLocalError.
