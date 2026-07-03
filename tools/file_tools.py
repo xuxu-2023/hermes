@@ -100,6 +100,16 @@ _BLOCKED_DEVICE_PATHS = frozenset({
     "/dev/fd/0", "/dev/fd/1", "/dev/fd/2",
 })
 
+_INSTRUCTION_FILE_NAMES = frozenset({
+    "skill.md",
+    "agents.md",
+    "claude.md",
+    ".cursorrules",
+    "soul.md",
+    ".hermes.md",
+    "hermes.md",
+})
+
 
 def _resolve_path(filepath: str, task_id: str = "default") -> Path:
     """Resolve a path relative to TERMINAL_CWD (the worktree base directory)
@@ -385,6 +395,28 @@ def _is_blocked_device_path(path: str) -> bool:
         )
     ):
         return True
+    return False
+
+def _is_instruction_bearing_path(resolved: Path) -> bool:
+    """Return True for files whose exact text may need to be re-read verbatim.
+
+    These files act as active instructions rather than reference data:
+    context files such as ``AGENTS.md`` / ``SOUL.md`` and any file inside a
+    skill directory rooted by ``SKILL.md``. Returning a dedup stub for them is
+    harmful because the model may legitimately need the literal text again to
+    follow the workflow correctly.
+    """
+    if resolved.name.lower() in _INSTRUCTION_FILE_NAMES:
+        return True
+
+    parent = resolved.parent
+    if parent.name == "rules" and parent.parent.name == ".cursor" and resolved.suffix.lower() == ".mdc":
+        return True
+
+    for ancestor in (parent, *parent.parents):
+        if (ancestor / "SKILL.md").is_file():
+            return True
+
     return False
 
 
@@ -1140,6 +1172,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         # instead of re-sending the same content.  Saves context tokens.
         resolved_str = str(_resolved)
         dedup_key = (resolved_str, offset, limit)
+        dedup_allowed = not _is_instruction_bearing_path(_resolved)
         with _read_tracker_lock:
             task_data = _read_tracker.setdefault(task_id, {
                 "last_key": None, "consecutive": 0,
@@ -1153,9 +1186,14 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 task_data["dedup_hits"] = {}
             if "read_timestamps" not in task_data:
                 task_data["read_timestamps"] = {}
-            cached_mtime = task_data.get("dedup", {}).get(dedup_key)
+            if not dedup_allowed:
+                task_data.get("dedup", {}).pop(dedup_key, None)
+                task_data["dedup_hits"].pop(dedup_key, None)
+                cached_mtime = None
+            else:
+                cached_mtime = task_data.get("dedup", {}).get(dedup_key)
 
-        if cached_mtime is not None:
+        if dedup_allowed and cached_mtime is not None:
             try:
                 current_mtime = os.path.getmtime(resolved_str)
                 if current_mtime == cached_mtime:
@@ -1266,7 +1304,11 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             #    the agent last read it (external edit, concurrent agent, etc.).
             try:
                 _mtime_now = os.path.getmtime(resolved_str)
-                task_data["dedup"][dedup_key] = _mtime_now
+                if dedup_allowed:
+                    task_data["dedup"][dedup_key] = _mtime_now
+                else:
+                    task_data["dedup"].pop(dedup_key, None)
+                    task_data["dedup_hits"].pop(dedup_key, None)
                 task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
             except OSError:
                 pass  # Can't stat — skip tracking for this entry
