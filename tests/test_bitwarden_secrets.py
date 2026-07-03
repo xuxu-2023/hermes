@@ -838,6 +838,45 @@ def test_disk_cache_use_cache_false_skips_disk(monkeypatch, tmp_path):
     assert call_count["n"] == 2
 
 
+def test_disk_cache_ttl_zero_skips_all_cache_writes(monkeypatch, tmp_path):
+    """cache_ttl_seconds=0 opts out of both in-process and disk caching."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("")
+
+    call_count = {"n": 0}
+
+    def fake_run(*a, **kw):
+        call_count["n"] += 1
+        payload = _fake_bws_payload([{"key": "K1", "value": f"v{call_count['n']}"}])
+        return mock.Mock(returncode=0, stdout=payload, stderr="")
+
+    monkeypatch.setattr(bw.subprocess, "run", fake_run)
+    bw._reset_cache_for_tests(home)
+
+    first, _ = bw.fetch_bitwarden_secrets(
+        access_token="0.t",
+        project_id="proj-1",
+        binary=fake_binary,
+        cache_ttl_seconds=0,
+        home_path=home,
+    )
+    second, _ = bw.fetch_bitwarden_secrets(
+        access_token="0.t",
+        project_id="proj-1",
+        binary=fake_binary,
+        cache_ttl_seconds=0,
+        home_path=home,
+    )
+
+    assert first == {"K1": "v1"}
+    assert second == {"K1": "v2"}
+    assert call_count["n"] == 2
+    assert bw._CACHE == {}
+    assert not bw._disk_cache_path(home).exists()
+
+
 def test_disk_cache_corrupt_file_falls_through(monkeypatch, tmp_path):
     """A garbage cache file must NOT crash startup — we refetch."""
     home = tmp_path / ".hermes"
