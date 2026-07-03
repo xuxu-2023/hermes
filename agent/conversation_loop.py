@@ -16,7 +16,10 @@ resolved through :func:`_ra` so those patches keep working.
 
 from __future__ import annotations
 
+import orjson
+import orjson
 import json
+import orjson
 import logging
 import os
 import random
@@ -927,10 +930,10 @@ def run_conversation(
                         args_obj = json.loads(tc["function"]["arguments"])
                         tc = {**tc, "function": {
                             **tc["function"],
-                            "arguments": json.dumps(
-                                args_obj, separators=(",", ":"),
-                                sort_keys=True,
-                            ),
+                            "arguments": orjson.dumps(
+                                args_obj,
+                                option=orjson.OPT_SORT_KEYS,
+                            ).decode(),
                         }}
                     except Exception:
                         tc["function"]["arguments"] = _repair_tool_call_arguments(
