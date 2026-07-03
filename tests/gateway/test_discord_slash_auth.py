@@ -730,6 +730,68 @@ async def test_skill_autocomplete_returns_choices_for_authorized(
 
 
 @pytest.mark.asyncio
+async def test_skill_autocomplete_empty_allowlist_withholds_catalog(
+    adapter, monkeypatch,
+):
+    """No allowlist configured: the autocomplete must NOT leak the installed
+    skill catalog. Unlike message/slash dispatch — which the gateway runner
+    re-gates fail-closed via _is_user_authorized() — an autocomplete response
+    is returned straight to Discord with no runner backstop. So the adapter's
+    documented no-allowlist fail-open (fine for dispatch) must not surface
+    skill names here, where nothing downstream denies them (SECURITY.md §2.6:
+    adapters must not relay output until an allowlist is set)."""
+    # The adapter fixture has neither _allowed_user_ids nor _allowed_role_ids.
+    entries = [
+        ("alpha", "First skill", "/alpha"),
+        ("beta", "Second skill", "/beta"),
+    ]
+    _handler, autocomplete = _capture_skill_registration(
+        adapter, monkeypatch, entries,
+    )
+
+    interaction = _make_interaction("999999999")
+    result = await autocomplete(interaction, "")
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_skill_autocomplete_empty_allowlist_allow_all_surfaces_catalog(
+    adapter, monkeypatch,
+):
+    """Explicit operator opt-in (DISCORD_ALLOW_ALL_USERS) restores the open
+    catalog, mirroring _component_check_auth and the gateway runner default."""
+    monkeypatch.setenv("DISCORD_ALLOW_ALL_USERS", "true")
+    entries = [
+        ("alpha", "First skill", "/alpha"),
+        ("beta", "Second skill", "/beta"),
+    ]
+    _handler, autocomplete = _capture_skill_registration(
+        adapter, monkeypatch, entries,
+    )
+
+    interaction = _make_interaction("999999999")
+    result = await autocomplete(interaction, "")
+    assert {choice.value for choice in result} == {"alpha", "beta"}
+
+
+@pytest.mark.asyncio
+async def test_skill_autocomplete_empty_allowlist_gateway_allow_all_surfaces_catalog(
+    adapter, monkeypatch,
+):
+    """GATEWAY_ALLOW_ALL_USERS is the cross-platform equivalent opt-in and
+    must open the catalog the same way."""
+    monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
+    entries = [("alpha", "First skill", "/alpha")]
+    _handler, autocomplete = _capture_skill_registration(
+        adapter, monkeypatch, entries,
+    )
+
+    interaction = _make_interaction("999999999")
+    result = await autocomplete(interaction, "")
+    assert {choice.value for choice in result} == {"alpha"}
+
+
+@pytest.mark.asyncio
 async def test_skill_handler_rejects_before_dispatch_for_unauthorized(
     adapter, monkeypatch,
 ):

@@ -3233,6 +3233,20 @@ class DiscordAdapter(BasePlatformAdapter):
     # (not as a user-wide bypass). Slash and on_message both pass the
     # resolved channel ids into ``_is_allowed_user`` after the channel gate.
 
+    def _slash_allow_all_enabled(self) -> bool:
+        """Explicit operator opt-in that opens a slash surface with no allowlist.
+
+        Mirrors ``_component_check_auth`` and the gateway runner's default
+        (SECURITY.md §2.6): ``DISCORD_ALLOW_ALL_USERS`` or the cross-platform
+        ``GATEWAY_ALLOW_ALL_USERS``.
+        """
+        return (
+            os.getenv("DISCORD_ALLOW_ALL_USERS", "").strip().lower()
+            in {"true", "1", "yes"}
+            or os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower()
+            in {"true", "1", "yes"}
+        )
+
     def _evaluate_slash_authorization(
         self, interaction: "discord.Interaction",
     ) -> Tuple[bool, Optional[str]]:
@@ -4288,6 +4302,22 @@ class DiscordAdapter(BasePlatformAdapter):
                 since process start shows up on the very next keystroke.
                 """
                 try:
+                    # Autocomplete responses are returned straight to Discord
+                    # and never pass through the gateway runner's
+                    # _is_user_authorized() gate that re-gates message/slash
+                    # dispatch fail-closed. So _evaluate_slash_authorization's
+                    # no-allowlist fail-open (the documented dispatch
+                    # back-compat) would relay the installed skill catalog to
+                    # any guild member here, with nothing downstream to deny
+                    # it. Withhold it: with no user/role allowlist configured,
+                    # require an explicit allow-all opt-in, mirroring
+                    # _component_check_auth and the runner default
+                    # (SECURITY.md §2.6).
+                    if not (
+                        getattr(self, "_allowed_user_ids", None)
+                        or getattr(self, "_allowed_role_ids", None)
+                    ) and not self._slash_allow_all_enabled():
+                        return []
                     allowed, _reason = self._evaluate_slash_authorization(interaction)
                 except Exception:
                     # Defensive: never raise from autocomplete. Fail
