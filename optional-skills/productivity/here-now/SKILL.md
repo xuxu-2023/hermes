@@ -1,7 +1,19 @@
 ---
 name: here.now
-description: Publish static sites to {slug}.here.now and store private files in cloud Drives for agent-to-agent handoff.
-version: 1.15.3
+description: >
+  here.now lets agents publish websites and store private files in cloud
+  Drives. Use Sites to publish HTML, documents, images, PDFs, videos, and
+  static files to live URLs at {slug}.here.now or custom domains. Use Drives as private cloud
+  folders where agents can store files (documents, context, memory, plans,
+  assets, media, research, code, etc), share them with other agents, and
+  continue across sessions and tools. Use when asked to "publish this", "host
+  this", "deploy this", "share this on the web", "make a website", "put this
+  online", "create a webpage", "generate a URL", "build a chatbot", "save this
+  to my Drive", "store this for later", "write this to cloud storage", "share a
+  folder with another agent", or "use my here.now Drive". Also use when asked
+  to "password protect this site", "make this site private", or "share this
+  site with only certain people".
+version: 1.16.0
 author: here.now
 license: MIT
 prerequisites:
@@ -9,7 +21,7 @@ prerequisites:
 platforms: [macos, linux]
 metadata:
   hermes:
-    tags: [here.now, herenow, publish, deploy, hosting, static-site, web, share, URL, drive, storage]
+    tags: [here.now, herenow, publish, deploy, hosting, static-site, web, share, URL, drive, storage, access-control, password]
     homepage: https://here.now
     requires_toolsets: [terminal]
 ---
@@ -22,6 +34,8 @@ Use here.now for two jobs:
 
 - **Sites**: publish websites and files at `{slug}.here.now`.
 - **Drives**: store private agent files in cloud folders.
+
+Every Site has access control: public link (default), password, or restricted invite-only access.
 
 ## Current docs
 
@@ -38,14 +52,17 @@ Read the docs:
 
 Topics that require current docs (do not rely on local skill text alone):
 
+- Site access control (passwords and restricted access)
 - Drives and Drive sharing
 - custom domains
-- payments and payment gating
-- forking
+- Site Data
+- public profiles
 - proxy routes and service variables
-- handles and links
+- subdomain handles and links
 - limits and quotas
 - SPA routing
+- owner Site search
+- Site analytics
 - error handling and remediation
 - feature availability
 
@@ -91,6 +108,20 @@ bash "$PUBLISH" {file-or-dir} --slug {slug} --client hermes
 The script auto-loads the `claimToken` from `.herenow/state.json` when updating anonymous sites. Pass `--claim-token {token}` to override.
 
 Authenticated updates require a saved API key.
+
+Signed-in users also have public profiles. Agents can help users show or hide Sites on their profile and manage profile settings through the API documented at https://here.now/docs#profile.
+
+## Site access control
+
+A Site uses one access mode at a time:
+
+- **anyone_with_link** (default): anyone with the URL can view.
+- **password**: visitors must enter a shared password.
+- **restricted**: invite-only; only verified email addresses or email domains the owner allows can view.
+
+Manage access with `GET`/`PATCH /api/v1/publish/{slug}/access` (passwords via the metadata endpoint). Restricted access requires a claimed Site. The PATCH replaces the full allowlists — read, merge, then write. Before working with access control, read the current docs:
+
+→ **https://here.now/docs#access-control**
 
 ## Use a Drive
 
@@ -206,11 +237,10 @@ For Drives:
 | `--allow-nonherenow-base-url` | Allow sending auth to non-default `--base-url` |
 | `--api-key {key}`      | API key override (prefer credentials file)    |
 | `--spa`                | Enable SPA routing (serve index.html for unknown paths) |
-| `--forkable`           | Allow others to fork this site                           |
 
 ## Beyond publish.sh
 
-For Drive operations, use `drive.sh` or the Drive API. For broader account and site management — delete, metadata, passwords, payments, domains, handles, links, variables, proxy routes, forking, duplication, and more — see the current docs:
+For Drive operations, use `drive.sh` or the Drive API. For broader account and Site management — Site Data, search, analytics, profiles, delete, metadata, access control, domains, subdomain handles, links, variables, proxy routes, duplication, and more — see the current docs:
 
 → **https://here.now/docs**
 
