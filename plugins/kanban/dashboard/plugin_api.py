@@ -2260,6 +2260,7 @@ class OrchestrationSettingsBody(BaseModel):
     default_assignee: Optional[str] = None
     auto_decompose: Optional[bool] = None
     auto_promote_children: Optional[bool] = None
+    dispatch_in_gateway: Optional[bool] = None
 
 
 @router.get("/orchestration")
@@ -2275,6 +2276,7 @@ def get_orchestration_settings():
     explicit_orch = (kanban_cfg.get("orchestrator_profile") or "").strip()
     explicit_default = (kanban_cfg.get("default_assignee") or "").strip()
     auto_decompose = bool(kanban_cfg.get("auto_decompose", True))
+    dispatch_in_gateway = bool(kanban_cfg.get("dispatch_in_gateway", True))
     auto_promote_children = bool(kanban_cfg.get("auto_promote_children", True))
 
     # Resolve fallbacks the same way the decomposer does.
@@ -2298,6 +2300,7 @@ def get_orchestration_settings():
         "orchestrator_profile": explicit_orch,
         "default_assignee": explicit_default,
         "auto_decompose": auto_decompose,
+        "dispatch_in_gateway": dispatch_in_gateway,
         "auto_promote_children": auto_promote_children,
         "resolved_orchestrator_profile": resolved_orch,
         "resolved_default_assignee": resolved_default,
@@ -2362,7 +2365,15 @@ def set_orchestration_settings(payload: OrchestrationSettingsBody):
         kanban_section["default_assignee"] = name
 
     if payload.auto_decompose is not None:
-        kanban_section["auto_decompose"] = bool(payload.auto_decompose)
+        enabled = bool(payload.auto_decompose)
+        kanban_section["auto_decompose"] = enabled
+        # The dashboard's orchestration toggle is user-facing manual mode:
+        # when it is off, no background specifier/decomposer or worker
+        # dispatcher should launch work without an explicit user action.
+        kanban_section["dispatch_in_gateway"] = enabled
+
+    if payload.dispatch_in_gateway is not None:
+        kanban_section["dispatch_in_gateway"] = bool(payload.dispatch_in_gateway)
 
     if payload.auto_promote_children is not None:
         kanban_section["auto_promote_children"] = bool(payload.auto_promote_children)

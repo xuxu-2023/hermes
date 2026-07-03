@@ -1200,6 +1200,35 @@ def test_config_reads_dashboard_kanban_section(tmp_path, monkeypatch, client):
     assert data["render_markdown"] is False
 
 
+def test_orchestration_manual_mode_disables_decompose_and_dispatch(client):
+    home = Path(os.environ["HERMES_HOME"])
+
+    r = client.put(
+        "/api/plugins/kanban/orchestration",
+        json={"auto_decompose": False},
+    )
+
+    assert r.status_code == 200
+    data = r.json()
+    assert data["auto_decompose"] is False
+    assert data["dispatch_in_gateway"] is False
+    saved = (home / "config.yaml").read_text(encoding="utf-8")
+    assert "auto_decompose: false" in saved
+    assert "dispatch_in_gateway: false" in saved
+
+
+def test_orchestration_can_set_dispatch_gate_explicitly(client):
+    r = client.put(
+        "/api/plugins/kanban/orchestration",
+        json={"auto_decompose": False, "dispatch_in_gateway": True},
+    )
+
+    assert r.status_code == 200
+    data = r.json()
+    assert data["auto_decompose"] is False
+    assert data["dispatch_in_gateway"] is True
+
+
 # ---------------------------------------------------------------------------
 # Runs surfacing (vulcan-artivus RFC feedback)
 # ---------------------------------------------------------------------------
