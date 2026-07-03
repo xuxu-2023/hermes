@@ -12,6 +12,8 @@ asserting the expected env var outcomes.
 import os
 import json
 
+from hermes_cli.config import apply_terminal_config_to_env
+
 
 def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
     """Simulate the gateway config bridge logic from gateway/run.py.
@@ -73,6 +75,27 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
         messaging_cwd = env.get("MESSAGING_CWD") or "/root"  # Path.home() for root
         env["TERMINAL_CWD"] = messaging_cwd
 
+    return env
+
+
+def _apply_terminal_cwd_fallback(env: dict):
+    configured_cwd = env.get("TERMINAL_CWD", "")
+    if not configured_cwd or configured_cwd in {".", "auto", "cwd"}:
+        env["TERMINAL_CWD"] = env.get("MESSAGING_CWD") or "/root"
+
+
+def _simulate_runtime_env_reload(cfg: dict, initial_env: dict | None = None):
+    """Simulate _reload_runtime_env_preserving_config_authority cwd handling."""
+    env = dict(initial_env or {})
+    terminal_cfg = cfg.get("terminal")
+    if isinstance(terminal_cfg, dict):
+        raw_cwd = str(terminal_cfg.get("cwd", "")).strip()
+        if "cwd" not in terminal_cfg or raw_cwd in {".", "auto", "cwd"}:
+            env.pop("TERMINAL_CWD", None)
+    else:
+        env.pop("TERMINAL_CWD", None)
+    apply_terminal_config_to_env(env=env, config=cfg, override=True)
+    _apply_terminal_cwd_fallback(env)
     return env
 
 
@@ -249,3 +272,32 @@ class TestTildeExpansion:
         }
         result = _simulate_config_bridge(cfg)
         assert result["TERMINAL_CWD"] == os.path.expanduser("~/nested")
+
+
+class TestRuntimeReloadTerminalCwd:
+    """Runtime config reload should match startup terminal.cwd fallback rules."""
+
+    def test_runtime_reload_updates_explicit_terminal_cwd(self):
+        cfg = {"terminal": {"cwd": "/new/project", "backend": "docker"}}
+        result = _simulate_runtime_env_reload(
+            cfg,
+            {"TERMINAL_CWD": "/old/project", "TERMINAL_ENV": "local"},
+        )
+        assert result["TERMINAL_CWD"] == "/new/project"
+        assert result["TERMINAL_ENV"] == "docker"
+
+    def test_runtime_reload_placeholder_clears_stale_terminal_cwd(self):
+        cfg = {"terminal": {"cwd": "."}}
+        result = _simulate_runtime_env_reload(
+            cfg,
+            {"TERMINAL_CWD": "/old/project", "MESSAGING_CWD": "/fallback/project"},
+        )
+        assert result["TERMINAL_CWD"] == "/fallback/project"
+
+    def test_runtime_reload_missing_cwd_clears_stale_terminal_cwd(self):
+        cfg = {"terminal": {"backend": "local"}}
+        result = _simulate_runtime_env_reload(
+            cfg,
+            {"TERMINAL_CWD": "/old/project", "MESSAGING_CWD": "/fallback/project"},
+        )
+        assert result["TERMINAL_CWD"] == "/fallback/project"

@@ -1328,6 +1328,28 @@ def _bridge_max_turns_from_config(home: "Path") -> None:
     if isinstance(agent_cfg, dict) and "max_turns" in agent_cfg:
         os.environ["HERMES_MAX_ITERATIONS"] = str(agent_cfg["max_turns"])
 
+    # Re-bridge terminal.* so long-lived gateways pick up config changes on
+    # /new or /reset without needing a full restart. Placeholder cwd values
+    # mean "use the startup fallback"; clear any stale explicit bridge first
+    # so explicit -> placeholder updates do not keep the old TERMINAL_CWD.
+    terminal_cfg = cfg.get("terminal")
+    if isinstance(terminal_cfg, dict):
+        raw_cwd = str(terminal_cfg.get("cwd", "")).strip()
+        if "cwd" not in terminal_cfg or raw_cwd in {".", "auto", "cwd"}:
+            os.environ.pop("TERMINAL_CWD", None)
+    else:
+        os.environ.pop("TERMINAL_CWD", None)
+    from hermes_cli.config import apply_terminal_config_to_env
+    apply_terminal_config_to_env(config=cfg, override=True)
+    _apply_terminal_cwd_fallback()
+
+
+def _apply_terminal_cwd_fallback() -> None:
+    configured_cwd = os.environ.get("TERMINAL_CWD", "")
+    if not configured_cwd or configured_cwd in {".", "auto", "cwd"}:
+        fallback = os.getenv("MESSAGING_CWD") or str(Path.home())
+        os.environ["TERMINAL_CWD"] = fallback
+
 
 def _current_max_iterations() -> int:
     """Return the current per-turn iteration budget after runtime env refresh."""
@@ -1654,10 +1676,7 @@ os.environ["HERMES_EXEC_ASK"] = "1"
 # by the config bridge above).  When it's unset or a placeholder, default
 # to home directory.  MESSAGING_CWD is accepted as a backward-compat
 # fallback (deprecated — the warning above tells users to migrate).
-_configured_cwd = os.environ.get("TERMINAL_CWD", "")
-if not _configured_cwd or _configured_cwd in {".", "auto", "cwd"}:
-    _fallback = os.getenv("MESSAGING_CWD") or str(Path.home())
-    os.environ["TERMINAL_CWD"] = _fallback
+_apply_terminal_cwd_fallback()
 
 from gateway.config import (
     ChannelOverride,
