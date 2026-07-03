@@ -1686,6 +1686,7 @@ from gateway.platforms.base import (
     EphemeralReply,
     MessageEvent,
     MessageType,
+    SILENT_MARKER,
     _reply_anchor_for_event,
     merge_pending_message_event,
 )
@@ -19010,18 +19011,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         previewed=_previewed,
                     )
                     if first_response and not _already_streamed:
-                        try:
+                        # Skip resend if the response is [SILENT] — it was
+                        # intentionally suppressed and shouldn't leak here.
+                        if first_response.strip() == SILENT_MARKER:
                             logger.info(
-                                "Queued follow-up for session %s: final stream delivery not confirmed; sending first response before continuing.",
+                                "Queued follow-up for session %s: first response is %s, skipping resend.",
                                 session_key or "?",
+                                SILENT_MARKER,
                             )
-                            await adapter.send(
-                                source.chat_id,
-                                first_response,
-                                metadata=_status_thread_metadata,
-                            )
-                        except Exception as e:
-                            logger.warning("Failed to send first response before queued message: %s", e)
+                        else:
+                            try:
+                                logger.info(
+                                    "Queued follow-up for session %s: final stream delivery not confirmed; sending first response before continuing.",
+                                    session_key or "?",
+                                )
+                                await adapter.send(
+                                    source.chat_id,
+                                    first_response,
+                                    metadata=_status_thread_metadata,
+                                )
+                            except Exception as e:
+                                logger.warning("Failed to send first response before queued message: %s", e)
                     elif first_response:
                         logger.info(
                             "Queued follow-up for session %s: skipping resend because final streamed delivery was confirmed.",

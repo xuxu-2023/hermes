@@ -182,6 +182,15 @@ SKILLS_GUIDANCE = (
     "Skills that aren't maintained become liabilities."
 )
 
+SILENT_RESPONSE_GUIDANCE = (
+    "If you have nothing meaningful to add in a conversation, you can suppress delivery "
+    "by responding with the exact string '[SILENT]'. This must be the ONLY content "
+    "of your response; any additional characters, whitespace, emojis, or commentary "
+    "will cause the message to leak and be delivered to the user. The transcript entry "
+    "is preserved for continuity. This works for the gateway's final_response "
+    "delivery path — direct send_message tool calls are not affected."
+)
+
 KANBAN_GUIDANCE = (
     "# Kanban task execution protocol\n"
     "You have been assigned ONE task from "

@@ -36,6 +36,7 @@ from agent.prompt_builder import (
     PARALLEL_TOOL_CALL_GUIDANCE,
     PLATFORM_HINTS,
     SESSION_SEARCH_GUIDANCE,
+    SILENT_RESPONSE_GUIDANCE,
     SKILLS_GUIDANCE,
     STEER_CHANNEL_NOTE,
     TASK_COMPLETION_GUIDANCE,
@@ -163,6 +164,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
+
+    # [SILENT] response marker — always available, regardless of tools/platform.
+    stable_parts.append(SILENT_RESPONSE_GUIDANCE)
 
     # Universal task-completion / no-fabrication guidance.  Applied to ALL
     # models regardless of tool_use_enforcement gating — the failure modes
