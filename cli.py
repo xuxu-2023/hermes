@@ -3765,6 +3765,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._stream_buf = ""        # Partial line buffer for line-buffered rendering
         self._stream_started = False  # True once first delta arrives
         self._stream_box_opened = False  # True once the response box header is printed
+        # Total count of visible (non-deferred, non-tag-only) characters the
+        # streaming display has actually emitted so far.  Used by
+        # conversation_loop.py to decide whether _response_was_previewed
+        # should be set after stream_delta_callback(None): if nothing visible
+        # was streamed, the CLI should still render the final response panel.
+        self._stream_flushed_chars = 0
         self._reasoning_preview_buf = ""  # Coalesce tiny reasoning chunks for [thinking] output
         # Table-row buffer.  When a streamed line looks like it could be
         # part of a markdown table, hold it here until the block ends so
@@ -5745,6 +5751,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if not text:
             return
 
+        # Track total visible characters we've accepted for emission.
+        # Counts text deferred for after the reasoning box closes too —
+        # those are still part of the user's visible response, just
+        # ordered after reasoning.  conversation_loop.py reads this
+        # counter (via stream_delta_callback.__self__) after firing
+        # stream_delta_callback(None) to decide whether the final
+        # Rich Panel render should be suppressed (response was already
+        # previewed live) or still drawn (nothing visible streamed).
+        self._stream_flushed_chars += len(text)
+
         # When show_reasoning is on and reasoning is still rendering,
         # defer content until the reasoning box closes.  This ensures the
         # reasoning block always appears BEFORE the response in the terminal.
@@ -5845,6 +5861,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._emit_stream_text(self._stream_prefilt)
             self._stream_prefilt = ""
 
+        # Recover any text held back by partial-tag detection.  _stream_delta
+        # holds characters that could be the start of a <think>/<reasoning>
+        # tag (e.g. a trailing "<" or "<t" at a chunk boundary).  When the
+        # stream ends without more chunks, this held text must be emitted
+        # rather than silently dropped.
+        if not getattr(self, "_in_reasoning_block", False) and getattr(self, "_stream_prefilt", ""):
+            self._emit_stream_text(self._stream_prefilt)
+            self._stream_prefilt = ""
+
         # Close reasoning box if still open (in case no content tokens arrived)
         self._close_reasoning_box()
 
@@ -5900,6 +5925,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._deferred_content = ""
         self._stream_table_buf = []
         self._in_stream_table = False
+        self._stream_flushed_chars = 0
 
     def _slow_command_status(self, command: str) -> str:
         """Return a user-facing status message for slower slash commands."""
