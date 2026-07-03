@@ -19,7 +19,7 @@ backends reject.
 
 import json
 
-from tools.memory_tool import MEMORY_SCHEMA
+from tools.memory_tool import MEMORY_SCHEMA, check_memory_requirements
 
 
 _FORBIDDEN_TOP_LEVEL_KEYS = ("allOf", "anyOf", "oneOf", "enum", "not")
@@ -52,3 +52,30 @@ def test_memory_schema_is_well_formed():
 
 def test_memory_schema_is_json_serializable():
     json.dumps(MEMORY_SCHEMA)
+
+
+def test_memory_tool_hidden_when_built_in_memory_disabled(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"memory": {"memory_enabled": False, "user_profile_enabled": False}},
+    )
+
+    assert check_memory_requirements() is False
+
+
+def test_memory_tool_available_when_memory_enabled(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"memory": {"memory_enabled": True, "user_profile_enabled": False}},
+    )
+
+    assert check_memory_requirements() is True
+
+
+def test_memory_tool_available_when_user_profile_enabled(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"memory": {"memory_enabled": False, "user_profile_enabled": True}},
+    )
+
+    assert check_memory_requirements() is True

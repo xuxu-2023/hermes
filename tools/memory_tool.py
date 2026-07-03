@@ -1029,8 +1029,17 @@ def memory_tool(
 
 
 def check_memory_requirements() -> bool:
-    """Memory tool has no external requirements -- always available."""
-    return True
+    """Expose the built-in memory tool only when built-in memory is enabled."""
+    try:
+        from hermes_cli.config import load_config
+
+        memory_config = load_config().get("memory", {})
+    except Exception:
+        return False
+    return bool(
+        memory_config.get("memory_enabled")
+        or memory_config.get("user_profile_enabled")
+    )
 
 
 def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[str, Any]:
@@ -1140,7 +1149,6 @@ registry.register(
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
 
 
 
