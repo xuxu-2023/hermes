@@ -328,6 +328,46 @@ TASK_COMPLETION_GUIDANCE = (
     "is always better than inventing a result."
 )
 
+WORK_VISIBILITY_GUIDANCE = (
+    "# Work visibility\n"
+    "When working interactively, make your progress legible without exposing private reasoning.\n"
+    "- Before using tools, briefly acknowledge the request and name the immediate next checks.\n"
+    "- Treat natural assistant updates as the primary user-facing timeline; tool progress is supporting evidence, not a substitute for orientation.\n"
+    "- When you change phases, find something material, hit a blocker, or need approval, send a short task-level update before continuing.\n"
+    "- Keep updates concise and concrete. Mention what you are checking, what you learned, and what you will do next.\n"
+    "- Do not dump raw tool logs, machine payloads, hidden reasoning, or approval boilerplate as the user-facing explanation.\n"
+    "- End with a concise final synthesis: outcome, evidence, action taken or proposed, and the next step."
+)
+
+
+def work_visibility_enabled_for_agent(agent) -> bool:
+    """Return whether conversational progress guidance should be included."""
+    if not getattr(agent, "valid_tool_names", None):
+        return False
+    platform = str(getattr(agent, "platform", "") or "").lower().strip()
+    if platform == "cron":
+        return False
+
+    try:
+        from hermes_cli.config import load_config
+
+        config = load_config() or {}
+    except Exception:
+        config = {}
+
+    display = config.get("display") if isinstance(config, dict) else None
+    if not isinstance(display, dict):
+        return False
+
+    platforms = display.get("platforms")
+    if platform and isinstance(platforms, dict):
+        platform_display = platforms.get(platform)
+        if isinstance(platform_display, dict) and "conversational_progress" in platform_display:
+            return bool(platform_display.get("conversational_progress"))
+
+    return bool(display.get("conversational_progress", False))
+
+
 # Universal parallel-tool-call guidance — applied to ALL models.
 #
 # Why this matters for cost: every assistant turn resends the entire
