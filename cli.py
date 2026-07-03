@@ -5037,6 +5037,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
     def _build_status_bar_text(self, width: Optional[int] = None) -> str:
         """Return a compact one-line session status string for the TUI footer."""
+        from hermes_cli.skin_engine import get_active_status_prefix
+        _prefix = get_active_status_prefix()
         try:
             snapshot = self._get_status_bar_snapshot()
             if width is None:
@@ -5047,12 +5049,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             yolo_active = self._is_session_yolo_active()
             if width < 52:
-                text = f"⚕ {snapshot['model_short']} · {duration_label}"
+                text = f"{_prefix}{snapshot['model_short']} · {duration_label}"
                 if yolo_active:
                     text += " · ⚠ YOLO"
                 return self._trim_status_bar_text(text, width)
             if width < 76:
-                parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                parts = [f"{_prefix}{snapshot['model_short']}", percent_label]
                 compressions = snapshot.get("compressions", 0)
                 if compressions:
                     parts.append(f"🗜️ {compressions}")
@@ -5078,7 +5080,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 context_label = "ctx --"
 
             compressions = snapshot.get("compressions", 0)
-            parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            parts = [f"{_prefix}{snapshot['model_short']}", context_label, percent_label]
             if compressions:
                 parts.append(f"🗜️ {compressions}")
             bg_count = snapshot.get("active_background_tasks", 0)
@@ -5101,12 +5103,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 parts.append("⚠ YOLO")
             return self._trim_status_bar_text(" │ ".join(parts), width)
         except Exception:
-            return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
+            return f"{_prefix}{self.model if getattr(self, 'model', None) else 'Hermes'}"
 
     def _get_status_bar_fragments(self):
         if not self._status_bar_visible or getattr(self, '_model_picker_state', None):
             return []
         try:
+            from hermes_cli.skin_engine import get_active_status_prefix
+            _prefix = get_active_status_prefix()
             snapshot = self._get_status_bar_snapshot()
             # Use prompt_toolkit's own terminal width when running inside the
             # TUI — shutil.get_terminal_size() can return stale or fallback
@@ -5119,7 +5123,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             if width < 52:
                 frags = [
-                    ("class:status-bar", " ⚕ "),
+                    ("class:status-bar", f" {_prefix}"),
                     ("class:status-bar-strong", snapshot["model_short"]),
                     ("class:status-bar-dim", " · "),
                     ("class:status-bar-dim", duration_label),
@@ -5137,7 +5141,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     bg_proc_count = snapshot.get("active_background_processes", 0)
                     bg_subagent_count = snapshot.get("active_background_subagents", 0)
                     frags = [
-                        ("class:status-bar", " ⚕ "),
+                        ("class:status-bar", f" {_prefix}"),
                         ("class:status-bar-strong", snapshot["model_short"]),
                         ("class:status-bar-dim", " · "),
                         (self._status_bar_context_style(percent), percent_label),
@@ -5176,7 +5180,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     bg_proc_count = snapshot.get("active_background_processes", 0)
                     bg_subagent_count = snapshot.get("active_background_subagents", 0)
                     frags = [
-                        ("class:status-bar", " ⚕ "),
+                        ("class:status-bar", f" {_prefix}"),
                         ("class:status-bar-strong", snapshot["model_short"]),
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", context_label),
@@ -12833,7 +12837,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if self._command_running:
             return _state_fragment("class:prompt-working", self._command_spinner_frame())
         if self._agent_running:
-            return _state_fragment("class:prompt-working", "⚕")
+            _working_icon = "⚕"
+            try:
+                from hermes_cli.skin_engine import get_active_status_prefix
+                _working_icon = get_active_status_prefix().rstrip()
+            except Exception:
+                pass
+            return _state_fragment("class:prompt-working", _working_icon)
         if self._voice_mode:
             return _state_fragment("class:voice-prompt", "🎤")
         return [("class:prompt", symbol)]
