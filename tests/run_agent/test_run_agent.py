@@ -6021,11 +6021,18 @@ class TestGpt5ApiModeRouting:
         assert agent.api_mode == "chat_completions"
 
     def test_is_azure_openai_url_detection(self, agent):
+        # Legacy Azure pattern (pre-2024 resources)
         assert agent._is_azure_openai_url("https://foo.openai.azure.com/openai/v1") is True
+        # Modern Azure pattern (post-2024 resources)
+        assert agent._is_azure_openai_url("https://my-resource.services.ai.azure.com/") is True
+        assert agent._is_azure_openai_url("https://eastus.api.ai.azure.com/openai/v1") is True
+        # Non-Azure URLs
         assert agent._is_azure_openai_url("https://api.openai.com/v1") is False
         assert agent._is_azure_openai_url("https://openrouter.ai/api/v1") is False
-        # Path-embedded azure string should still detect — we're ~substring matching
+        # Instance-level detection (no arg, uses self.base_url)
         agent.base_url = "https://my-resource.openai.azure.com/openai/v1"
+        assert agent._is_azure_openai_url() is True
+        agent.base_url = "https://my-resource.services.ai.azure.com/"
         assert agent._is_azure_openai_url() is True
 
 
