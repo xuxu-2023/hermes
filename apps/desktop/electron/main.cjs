@@ -6316,7 +6316,13 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
 
 ipcMain.handle('hermes:profile:get', async () => ({ profile: readActiveDesktopProfile() }))
 ipcMain.handle('hermes:profile:set', async (_event, name) => {
+  const previous = primaryProfileKey()
   const next = writeActiveDesktopProfile(name)
+  const nextKey = next || 'default'
+
+  if (nextKey === previous) {
+    return { profile: next }
+  }
 
   // Switching profiles is a backend re-home: relaunch the dashboard under the
   // new HERMES_HOME. Pool backends keep their own homes, so only the primary
