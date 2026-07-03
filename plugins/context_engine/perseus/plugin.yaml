@@ -1,0 +1,6 @@
+name: perseus
+description: Live context engine powered by Perseus — resolves @file, @memory, @search, @query, @agent, @tool, @skills, and 20+ directives at inference time
+version: "1.0"
+author: Perseus Computing LLC
+homepage: https://perseus.observer
+license: MIT
