@@ -2211,8 +2211,38 @@ def _resolve_use_tui(args) -> bool:
         return False
 
 
+def _apply_isolation_env(args) -> None:
+    """Apply per-invocation isolation flags before startup side effects."""
+    # --safe-mode: troubleshooting mode that disables ALL customizations.
+    # Inspired by Claude Code v2.1.169's --safe-mode (June 2026): run with a
+    # pristine environment to isolate whether a problem comes from the user's
+    # setup (config, rules files, plugins, MCP servers) or from Hermes itself.
+    # Implemented as a superset of --ignore-user-config + --ignore-rules plus
+    # plugin/MCP discovery suppression (HERMES_SAFE_MODE is checked by
+    # hermes_cli/plugins.py and tools/mcp_tool.py).
+    if getattr(args, "safe_mode", False):
+        os.environ["HERMES_SAFE_MODE"] = "1"
+        os.environ["HERMES_IGNORE_USER_CONFIG"] = "1"
+        os.environ["HERMES_IGNORE_RULES"] = "1"
+
+    # --ignore-user-config: make load_cli_config() / load_config() skip the
+    # user's ~/.hermes/config.yaml and return built-in defaults. This must be
+    # set before importing cli (which runs `CLI_CONFIG = load_cli_config()` at
+    # module import time). Credentials in .env are still loaded — this flag
+    # only ignores behavioral/config settings.
+    if getattr(args, "ignore_user_config", False):
+        os.environ["HERMES_IGNORE_USER_CONFIG"] = "1"
+
+    # --ignore-rules: skip auto-injection of AGENTS.md/SOUL.md/.cursorrules
+    # (rules), memory entries, and any preloaded skills coming from user config.
+    # Maps to AIAgent(skip_context_files=True, skip_memory=True).
+    if getattr(args, "ignore_rules", False):
+        os.environ["HERMES_IGNORE_RULES"] = "1"
+
+
 def cmd_chat(args):
     """Run interactive chat CLI."""
+    _apply_isolation_env(args)
     use_tui = _resolve_use_tui(args)
 
     # Resolve --continue into --resume with the latest session or by name
@@ -2324,32 +2354,6 @@ def cmd_chat(args):
     # --yolo: bypass all dangerous command approvals
     if getattr(args, "yolo", False):
         os.environ["HERMES_YOLO_MODE"] = "1"
-
-    # --safe-mode: troubleshooting mode that disables ALL customizations.
-    # Inspired by Claude Code v2.1.169's --safe-mode (June 2026): run with a
-    # pristine environment to isolate whether a problem comes from the user's
-    # setup (config, rules files, plugins, MCP servers) or from Hermes itself.
-    # Implemented as a superset of --ignore-user-config + --ignore-rules plus
-    # plugin/MCP discovery suppression (HERMES_SAFE_MODE is checked by
-    # hermes_cli/plugins.py and tools/mcp_tool.py).
-    if getattr(args, "safe_mode", False):
-        os.environ["HERMES_SAFE_MODE"] = "1"
-        os.environ["HERMES_IGNORE_USER_CONFIG"] = "1"
-        os.environ["HERMES_IGNORE_RULES"] = "1"
-
-    # --ignore-user-config: make load_cli_config() / load_config() skip the
-    # user's ~/.hermes/config.yaml and return built-in defaults. Set BEFORE
-    # importing cli (which runs `CLI_CONFIG = load_cli_config()` at module
-    # import time). Credentials in .env are still loaded — this flag only
-    # ignores behavioral/config settings.
-    if getattr(args, "ignore_user_config", False):
-        os.environ["HERMES_IGNORE_USER_CONFIG"] = "1"
-
-    # --ignore-rules: skip auto-injection of AGENTS.md/SOUL.md/.cursorrules
-    # (rules), memory entries, and any preloaded skills coming from user config.
-    # Maps to AIAgent(skip_context_files=True, skip_memory=True).
-    if getattr(args, "ignore_rules", False):
-        os.environ["HERMES_IGNORE_RULES"] = "1"
 
     # --source: tag session source for filtering (e.g. 'tool' for third-party integrations)
     if getattr(args, "source", None):
@@ -12173,6 +12177,7 @@ def _try_termux_fast_cli_launch() -> bool:
         return True
 
     if getattr(args, "oneshot", None):
+        _apply_isolation_env(args)
         _prepare_agent_startup(args)
         from hermes_cli.oneshot import run_oneshot
 
@@ -12182,6 +12187,7 @@ def _try_termux_fast_cli_launch() -> bool:
                 model=getattr(args, "model", None),
                 provider=getattr(args, "provider", None),
                 toolsets=getattr(args, "toolsets", None),
+                ignore_rules=getattr(args, "ignore_rules", False) or getattr(args, "safe_mode", False),
             )
         )
 
@@ -12200,6 +12206,7 @@ def _try_termux_fast_cli_launch() -> bool:
             if getattr(args, "accept_hooks", False):
                 os.environ["HERMES_ACCEPT_HOOKS"] = "1"
         else:
+            _apply_isolation_env(args)
             _prepare_agent_startup(args)
         cmd_chat(args)
         return True
@@ -13592,6 +13599,8 @@ def main():
         cmd_version(args)
         return
 
+    _apply_isolation_env(args)
+
     # Discover Python plugins and register shell hooks once, before any
     # command that can fire lifecycle hooks.  Both are idempotent; gated
     # so introspection/management commands (hermes hooks list, cron
@@ -13610,6 +13619,7 @@ def main():
                 model=getattr(args, "model", None),
                 provider=getattr(args, "provider", None),
                 toolsets=getattr(args, "toolsets", None),
+                ignore_rules=getattr(args, "ignore_rules", False) or getattr(args, "safe_mode", False),
             )
         )
 
