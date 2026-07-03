@@ -11236,6 +11236,12 @@ def _(rid, params: dict) -> dict:
             cat_map[cat].append([c, desc])
 
         for name, desc, cat in _TUI_EXTRA:
+            # Registry aliases win over TUI-only extras.  This prevents a
+            # client palette/catalog collision when a global command later
+            # claims a name that used to be local to the TUI (e.g. /compact is
+            # now an alias for /compress, not the compact-display toggle).
+            if name.lower() in canon:
+                continue
             all_pairs.append([name, desc])
             if cat not in cat_map:
                 cat_map[cat] = []
