@@ -168,6 +168,18 @@ function ModelResults({
 
   const q = search.trim().toLowerCase()
 
+  // Defensive: some providers (custom endpoints with hand-edited
+  // ``~/.hermes/config.yaml`` or legacy disk caches) can return a
+  // ``models`` entry as a `{id, ...}` object rather than a string. The
+  // TypeScript type says ``string[]`` but the runtime can deviate; without
+  // this filter the next ``model.toLowerCase()`` raises
+  // ``'dict' object has no attribute 'lower'`` (or the equivalent on
+  // ``model.trim()``) and the whole picker dropdown is replaced with an
+  // error stub — see #57405. We coerce to string and silently drop
+  // anything that doesn't look like a model id.
+  const isStringModel = (m: unknown): m is string =>
+    typeof m === 'string' && m.length > 0
+
   const matches = (provider: ModelOptionProvider, model: string) =>
     !q ||
     model.toLowerCase().includes(q) ||
@@ -177,13 +189,18 @@ function ModelResults({
   // Only configured providers (those with curated models) are selectable
   // here. Switching to a NOT-yet-configured provider goes through the
   // "Add provider" footer button, which opens the full onboarding selector.
-  const configured = providers.filter(p => (p.models ?? []).length > 0)
+  const configured = providers
+    .map(p => ({
+      ...p,
+      models: (p.models ?? []).filter(isStringModel)
+    }))
+    .filter(p => p.models.length > 0)
 
   return (
     <>
       {configured.map(provider => {
         // Preserve the backend's curated order — filter in place, no re-sort.
-        const models = (provider.models ?? []).filter(m => matches(provider, m))
+        const models = provider.models.filter(m => matches(provider, m))
 
         if (models.length === 0) {
           return null
