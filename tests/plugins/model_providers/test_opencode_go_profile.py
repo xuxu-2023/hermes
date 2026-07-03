@@ -17,9 +17,9 @@ def opencode_go_profile():
 
 
 class TestOpenCodeGoKimiReasoning:
-    """Kimi K2 models use Moonshot's thinking + reasoning_effort shape on OpenCode Go."""
+    """Kimi K2 models avoid conflicting thinking + reasoning_effort on OpenCode Go."""
 
-    def test_high_effort_emits_thinking_and_effort(self, opencode_go_profile):
+    def test_high_effort_emits_only_effort(self, opencode_go_profile):
         extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": "high"},
             model="kimi-k2.6",
@@ -36,12 +36,12 @@ class TestOpenCodeGoKimiReasoning:
         assert top_level == {}
 
     def test_minimal_effort_enables_thinking_without_effort(self, opencode_go_profile):
-        # "minimal" is not a Moonshot-supported value — drop it, keep thinking on.
+        # "minimal" is not an OpenCode Go Kimi-supported value.
         extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": "minimal"},
             model="kimi-k2.6",
         )
-        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert extra_body == {}
         assert top_level == {}
 
     @pytest.mark.parametrize(
