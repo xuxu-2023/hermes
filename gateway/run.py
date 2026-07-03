@@ -15550,6 +15550,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if id(agent) in running_ids:
             return
 
+        # Notify memory providers that the session is ending (idle eviction,
+        # /new, /reset, cap enforcement) so they can flush buffered data
+        # that hasn't been retained yet (e.g. auto-retain tail buffer).
+        try:
+            mm = getattr(agent, "_memory_manager", None)
+            if mm is not None:
+                msgs = list(getattr(agent, "_session_messages", None) or [])
+                mm.on_session_end(msgs)
+        except Exception:
+            pass
+
         try:
             threading.Thread(
                 target=self._release_evicted_agent_soft,
