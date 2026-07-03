@@ -219,8 +219,23 @@ def _load_provider_from_dir(provider_dir: Path) -> Optional["MemoryProvider"]:
     module_name = f"plugins.memory.{name}" if _is_bundled else f"{_USER_NAMESPACE}.{name}"
     init_file = provider_dir / "__init__.py"
 
+    # Pip-installed packages often put their module in a subdirectory
+    # (e.g. plugins/mimir/hermes_mimir/__init__.py instead of
+    # plugins/mimir/__init__.py). Probe subdirectories when the root
+    # __init__.py is missing.
     if not init_file.exists():
-        return None
+        for sub in sorted(provider_dir.iterdir()):
+            if not sub.is_dir() or sub.name.startswith("."):
+                continue
+            sub_init = sub / "__init__.py"
+            if sub_init.exists():
+                init_file = sub_init
+                # submodule_search_locations should include the subdirectory
+                # so relative imports inside the plugin resolve correctly
+                provider_dir = sub
+                break
+        else:
+            return None
 
     # Check if already loaded.  A synthetic package shell registered by
     # discover_plugin_cli_commands() for relative-import support has no
