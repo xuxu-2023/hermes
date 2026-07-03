@@ -1700,6 +1700,15 @@ function resolveGitBinary() {
   }
 
   _gitBinaryCache = candidates.find(fileExists) || findOnPath('git') || 'git'
+  // simple-git's customBinaryPlugin rejects paths containing spaces (its
+  // isBadArgument regex only allows [a-z0-9/._~-]). On Windows the canonical
+  // Git install lives under "C:\Program Files", so convert a found absolute
+  // path to its 8.3 short form before caching. Falls back to the original
+  // path if the short-form lookup fails.
+  if (_gitBinaryCache && _gitBinaryCache !== 'git' && path.isAbsolute(_gitBinaryCache)) {
+    const { toShortPath } = require('./windows-short-path.cjs')
+    _gitBinaryCache = toShortPath(_gitBinaryCache)
+  }
   return _gitBinaryCache
 }
 

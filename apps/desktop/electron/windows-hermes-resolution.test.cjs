@@ -65,3 +65,22 @@ test('Windows bootstrap recovery chooses --update when any real-install signal i
     'recovery regressed to gating only on the hermes.exe shim, which forces destructive --repair'
   )
 })
+
+test('resolveGitBinary converts absolute Windows git path to 8.3 short path', () => {
+  const source = readMain()
+  assert.match(
+    source,
+    /const { toShortPath } = require\('\.\/windows-short-path\.cjs'\)/,
+    'resolveGitBinary must import toShortPath from the shared helper'
+  )
+  assert.match(
+    source,
+    /if \(_gitBinaryCache && _gitBinaryCache !== 'git' && path\.isAbsolute\(_gitBinaryCache\)\)/,
+    'resolveGitBinary must convert found absolute paths on Windows'
+  )
+  assert.match(
+    source,
+    /_gitBinaryCache = toShortPath\(_gitBinaryCache\)/,
+    'resolveGitBinary must assign the short-path result back to the cache'
+  )
+})
