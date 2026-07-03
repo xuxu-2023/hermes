@@ -1758,6 +1758,7 @@ AUTHOR_MAP = {
     "120500656+oooindefatigable@users.noreply.github.com": "ooovenenoso",
     "vanthinh6886@gmail.com": "vanthinh6886",  # PR #28018 salvage (yaml/flock/atomic write guards)
     "erik.engervall@gmail.com": "erikengervall",  # PR #28774 (firecrawl integration tag)
+    "261211168@qq.com": "liuboacean",  # PR #29002 (SSE keepalive race fix)
     "egilewski@egilewski.com": "egilewski",  # PR #30432 (MEDIA path traversal fix, GHSA-jmf9-9729-7pp8)
     "edison@mcclean.codes": "McClean-Edison",  # PR #29817 (register_auxiliary_task plugin API)
     "OYLFLMH@users.noreply.github.com": "OYLFLMH",  # PR #48312 salvage (cli_refresh_interval config, #48309)
