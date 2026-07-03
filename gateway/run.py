@@ -15588,6 +15588,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if hasattr(agent, "_last_flushed_db_idx"):
                 agent._last_flushed_db_idx = 0
         agent._api_call_count = 0
+        # Delegate per-turn guardrails cleanup to the native reset_for_turn()
+        # in conversation_loop.py — it covers both original and nudge-specific
+        # fields (_no_progress_nudge, _pending_nudge) so we don't duplicate
+        # state management logic here.
+        if hasattr(agent, "_tool_guardrails"):
+            agent._tool_guardrails.reset_for_turn()
 
     def _commit_memory_before_soft_evict(self, agent: Any, key: str) -> None:
         """Fire on_session_end extraction before soft-evicting a live agent.

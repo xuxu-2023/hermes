@@ -942,6 +942,9 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             stage=f"tool result {name}",
         )
 
+        # Inject nudge user message if guardrail detected a loop
+        agent._take_nudge_and_inject(messages)
+
         # ── Per-tool /steer drain ───────────────────────────────────
         # Same as the sequential path: drain between each collected
         # result so the steer lands as early as possible.
@@ -1590,6 +1593,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             messages,
             stage=f"tool result {function_name}",
         )
+
+        # Inject nudge user message if guardrail detected a loop
+        agent._take_nudge_and_inject(messages)
 
         # ── Per-tool /steer drain ───────────────────────────────────
         # Drain pending steer BETWEEN individual tool calls so the
